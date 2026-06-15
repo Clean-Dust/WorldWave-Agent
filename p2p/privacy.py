@@ -174,7 +174,7 @@ class DifferentialPrivacy:
         noisy = copy.deepcopy(model)
         d = noisy.to_dict()
         self.protect_weights(d["params"])
-        from .predictor import DeepRiskNet
+        from core.predictor import DeepRiskNet
         return DeepRiskNet.from_dict(d)
 
     def stats(self) -> Dict[str, Any]:

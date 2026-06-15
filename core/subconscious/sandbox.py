@@ -32,9 +32,9 @@ def _safe_risk(pred: Any) -> float:
     """Extract crash_risk from TriageVector or return float directly."""
     return getattr(pred, 'crash_risk', pred)
 
-from .features import PADDED_FEATURES
+from core.features import PADDED_FEATURES
 
-from .predictor import DecisionTree, DecisionNode, RandomForest  # noqa: F401 — legacy aliases
+from core.predictor import DecisionTree, DecisionNode, RandomForest  # noqa: F401 — legacy aliases
 # v8: sandbox now uses DeepRiskNet for validation
 # DecisionTree/DecisionNode/RandomForest are aliases for DeepRiskNet
 

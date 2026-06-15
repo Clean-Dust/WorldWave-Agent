@@ -53,7 +53,7 @@ def register_routes(server, subconscious: "Subconscious"):
     def sub_features():
         """when  featurevector"""
         vec = subconscious.feature_extractor.extract()
-        from .features import FEATURE_NAMES
+        from core.features import FEATURE_NAMES
         return {
             "features": {
                 name: round(vec[i], 3) if isinstance(vec[i], float) else vec[i]

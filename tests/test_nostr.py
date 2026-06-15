@@ -13,7 +13,7 @@ print("=" * 50)
 
 # ══ 1. secp256k1 curve operations ══
 print("\n=== 1. secp256k1 curve computation ===")
-from core.subconscious.nostr import (
+from p2p.nostr import (
     _point_add, _point_mul, _xonly_point, _lift_x,
     SECP256K1_G, SECP256K1_N,
 )
@@ -44,7 +44,7 @@ print("🎯 Curve operations: ALL PASSED")
 
 # ══ 2. BIP-340 Schnorr signature ══
 print("\n=== 2. BIP-340 Schnorr ===")
-from core.subconscious.nostr import (
+from p2p.nostr import (
     generate_keypair, schnorr_sign, schnorr_verify,
 )
 
@@ -89,7 +89,7 @@ print("🎯 BIP-340 Schnorr: ALL PASSED")
 
 # ══ 3. Nostr Event ══
 print("\n=== 3. Nostr Event ===")
-from core.subconscious.nostr import NostrEvent
+from p2p.nostr import NostrEvent
 
 event = NostrEvent(
     pubkey=pubkey,
@@ -125,7 +125,7 @@ print("🎯 Nostr Event: ALL PASSED")
 
 # ══ 4. Pack/Unpack Model Update ══
 print("\n=== 4. Model Update Pack/Unpack ===")
-from core.subconscious.nostr import pack_model_update, unpack_model_update
+from p2p.nostr import pack_model_update, unpack_model_update
 
 delta = {
     "node_id": "test_node",
@@ -166,7 +166,7 @@ print("🎯 Pack/Unpack: ALL PASSED")
 # ══ 5. Keypair Persistence ══
 print("\n=== 5. Keypair Persistence ===")
 import shutil
-from core.subconscious.nostr import RelayPool
+from p2p.nostr import RelayPool
 
 # Clean
 nostr_dir = os.path.expanduser("~/worldwave/data/subconscious/nostr")

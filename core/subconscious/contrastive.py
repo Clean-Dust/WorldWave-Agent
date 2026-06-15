@@ -30,7 +30,7 @@ import math
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
-from .predictor import DecisionTree, RandomForest
+from core.predictor import DecisionTree, RandomForest
 
 logger = logging.getLogger("ww.subconscious.contrastive")
 

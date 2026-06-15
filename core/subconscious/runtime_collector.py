@@ -17,8 +17,8 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from .features import FeatureExtractor
-from .predictor import RandomForest  # noqa: F401 — legacy alias, actual class is DeepRiskNet
+from core.features import FeatureExtractor
+from core.predictor import RandomForest  # noqa: F401 — legacy alias, actual class is DeepRiskNet
 from .signal_pipeline import SignalCollector, TrainingTriple, SignalSource
 from .contrastive import ContrastiveEngine
 

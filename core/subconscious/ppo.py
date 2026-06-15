@@ -29,7 +29,7 @@ _basedir = os.path.dirname(os.path.abspath(__file__))
 if _basedir not in _sys.path:
     _sys.path.insert(0, _basedir)
 
-from predictor import Linear, ReLU, Adam, ParameterGroup
+from core.predictor import Linear, ReLU, Adam, ParameterGroup
 
 
 # ── Small helpers not in predictor ──

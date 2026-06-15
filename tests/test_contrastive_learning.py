@@ -12,8 +12,8 @@ from core.subconscious.signal_pipeline import (
 )
 from core.subconscious.contrastive import ContrastiveEngine
 from core.subconscious.runtime_collector import RuntimeCollector
-from core.subconscious.features import FeatureExtractor, PADDED_FEATURES
-from core.subconscious.predictor import DeepRiskNet
+from core.features import FeatureExtractor, PADDED_FEATURES
+from core.predictor import DeepRiskNet
 
 
 def p15(v15):

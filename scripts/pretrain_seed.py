@@ -21,8 +21,8 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core.subconscious.predictor import RandomForest
-from core.subconscious.features import PADDED_FEATURES, NUM_FEATURES
+from core.predictor import RandomForest
+from core.features import PADDED_FEATURES, NUM_FEATURES
 
 
 def generate_synthetic_data(n_samples: int = 500) -> tuple:
@@ -185,7 +185,7 @@ def main():
 
     # Quick validate
     print("🔍 fastvalidate:")
-    from core.subconscious.features import FeatureExtractor
+    from core.features import FeatureExtractor
     fe = FeatureExtractor()
     # 15-dimensional testvector → autopadding to 32 dimensions
     def p15(v15):

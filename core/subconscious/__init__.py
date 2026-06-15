@@ -43,30 +43,25 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..consent import ConsentManager
 
-from .features import FeatureExtractor, FEATURE_NAMES, PADDED_FEATURES, pad_vector
-from .predictor import DeepRiskNet, TriageVector  # v8: replaced RandomForest
-from .gossip import GossipModule  # v8: gossip learning
+from core.features import FeatureExtractor, FEATURE_NAMES, PADDED_FEATURES, pad_vector
+from core.predictor import DeepRiskNet, TriageVector  # v8: replaced RandomForest
 from .rewind import RewindEngine
-from .federation import FederationAggregator, CrashReport
-from .chain import Chain
-from .network import GlobalP2PNetwork
-from .blockchain import Blockchain, Block, Transaction, create_genesis_block
 
 # ── Sybil Defense (v7) ──
-from .pow import solve as pow_solve, verify as pow_verify, DifficultyAdjuster
+from p2p.pow import solve as pow_solve, verify as pow_verify, DifficultyAdjuster
 from .sandbox import SandboxValidator, ValidationSetManager
-from .aggregation import (
+from p2p.aggregation import (
     trimmed_mean, median_aggregation, krum_aggregation, multi_krum_aggregation,
     aggregate_forest,
 )
-from .reputation import ReputationTracker, ReputationEntry
+from p2p.reputation import ReputationTracker, ReputationEntry
 
 # ── Translation Layer (v12) ──
 from .rule_dict import RuleDictionary
 from .wrapper import SubconsciousWrapper, SignalMatcher, Intervention
 
 # ── Nostr Relay Communication (v7) ──
-from .nostr import (
+from p2p.nostr import (
     NostrEvent, NostrRelayClient, RelayPool,
     pack_model_update, unpack_model_update,
     generate_keypair,
@@ -78,7 +73,7 @@ from .signal_pipeline import SignalCollector, TrainingTriple, SignalSource
 from .contrastive import ContrastiveEngine, CFREngine
 from .runtime_collector import RuntimeCollector
 from .snapshot import SnapshotManager
-from .privacy import DifferentialPrivacy
+from p2p.privacy import DifferentialPrivacy
 
 # ── Resource Scheduling + PPO (v8) ──
 from .scheduler import ResourceScheduler, TaskBudgetTracker
@@ -154,6 +149,15 @@ class Subconscious:
         self.rewind_engine = RewindEngine(
             rewind_threshold=rewind_threshold,
         )
+
+        # ── Lazy P2P imports (deferred to break circular import) ──
+        from p2p.chain import Chain
+        from p2p.blockchain import Blockchain
+        from p2p.network import GlobalP2PNetwork
+        from p2p.gossip import GossipModule
+        from p2p.federation import FederationAggregator
+        from p2p.nostr import RelayPool
+
         self.chain = Chain()
 
         # ── CFR regret minimization ──
@@ -1075,6 +1079,7 @@ class Subconscious:
             self._emit_event("cfr_error", "CFR training failed after rewind", {})
 
         # Commit federation report
+        from p2p.federation import CrashReport
         report = CrashReport(
             node_id=self.federation.node_id,
             trigger_event=reason,
@@ -1134,6 +1139,7 @@ class Subconscious:
         if not self.blockchain:
             return False
         try:
+            from p2p.blockchain import Block
             block = Block.from_dict(block_data)
             return self.blockchain.add_block(block, broadcast=False)
         except Exception:
@@ -1144,6 +1150,7 @@ class Subconscious:
         if not self.blockchain:
             return False
         try:
+            from p2p.blockchain import Transaction
             tx = Transaction.from_dict(tx_data)
             return self.blockchain.add_transaction(tx)
         except Exception:
@@ -1258,7 +1265,7 @@ class Subconscious:
                     self.predictor._has_trained = True
                     # Force enable temporal mode on loaded models
                     if self.predictor.temporal_buffer is None:
-                        from .predictor import TemporalBuffer, TemporalConvNet
+                        from core.predictor import TemporalBuffer, TemporalConvNet
                         self.predictor.use_temporal = True
                         self.predictor.temporal_buffer = TemporalBuffer(
                             capacity=8, input_dim=self.predictor.n_features)

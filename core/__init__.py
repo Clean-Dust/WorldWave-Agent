@@ -1,15 +1,15 @@
 """ww/core — Worldwave core module
 
-- state.py: statemanagement  (checkpointing / HITL / recovery) 
+- state.py: state management (checkpointing / HITL / recovery)
 - loop.py: Spiral main loop engine
-- subconscious/: subconscious v4 meta learningengine (decision treeensemble) 
-  - features.py: 12-dimensional feature extraction
-  - predictor.py: Pure Python Random Forest
-  - rewind.py: Rewind revival engine
-  - federation.py: Cross-node federation aggregation
+- subconscious/: subconscious meta learning engine
+- p2p/: Decentralized P2P networking and blockchain (→ p2p/)
+- integrations/: Platform integrations (→ integrations/)
 """
 
-from core.subconscious import Subconscious
+# Note: Subconscious is NOT eagerly imported here to avoid circular imports
+# with p2p.federation → core.predictor → core.__init__ → core.subconscious.
+# Import directly: from core.subconscious import Subconscious
 
 __all__ = [
     "Subconscious",

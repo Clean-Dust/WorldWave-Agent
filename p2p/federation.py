@@ -29,19 +29,19 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from .predictor import DeepRiskNet
+from core.predictor import DeepRiskNet
 
 # 32-dimensional fixed vector
-from .features import PADDED_FEATURES
+from core.features import PADDED_FEATURES
 
 # ── Sybil Defense ──
-from .pow import solve as pow_solve, verify as pow_verify, DifficultyAdjuster
-from .sandbox import SandboxValidator, ValidationSetManager
-from .aggregation import (
+from p2p.pow import solve as pow_solve, verify as pow_verify, DifficultyAdjuster
+from core.subconscious.sandbox import SandboxValidator, ValidationSetManager
+from p2p.aggregation import (
     trimmed_mean, median_aggregation, krum_aggregation, multi_krum_aggregation,
     aggregate_forest, evaluate_model, balancer_protection, local_validation_check,
 )
-from .reputation import ReputationTracker
+from p2p.reputation import ReputationTracker
 
 logger = logging.getLogger("ww.subconscious.federation")
 

@@ -22,8 +22,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from .rule_dict import RuleDictionary
-from .predictor import TriageVector  # noqa: F401 — legacy alias, actual class is DeepRiskNet
-from .features import FeatureExtractor, PADDED_FEATURES, pad_vector, FEATURE_NAMES
+from core.predictor import TriageVector  # noqa: F401 — legacy alias, actual class is DeepRiskNet
+from core.features import FeatureExtractor, PADDED_FEATURES, pad_vector, FEATURE_NAMES
 
 logger = logging.getLogger("ww.subconscious.wrapper")
 

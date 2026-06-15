@@ -39,8 +39,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from .predictor import DeepRiskNet
-from .aggregation import (
+from core.predictor import DeepRiskNet
+from p2p.aggregation import (
     aggregate_forest,
     balancer_protection,
     balance_gradient_defense,

@@ -23,7 +23,7 @@ print("=" * 50)
 
 # ══ 1. PoW — lightweight PoW ══
 print("\n=== 1. PoW ===")
-from core.subconscious.pow import solve, verify, DifficultyAdjuster
+from p2p.pow import solve, verify, DifficultyAdjuster
 
 # Solve 4-bit challenge (fast)
 data = b"hello_world"
@@ -69,7 +69,7 @@ print("✅ PoW: stats OK")
 # ══ 2. Sandbox ══
 print("\n=== 2. Sandbox ===")
 from core.subconscious.sandbox import SandboxValidator, ValidationSetManager
-from core.subconscious.predictor import DeepRiskNet
+from core.predictor import DeepRiskNet
 
 # ValidationSetManager
 vsm = ValidationSetManager(max_size=20)
@@ -117,7 +117,7 @@ print(f"✅ Sandbox: accuracy comparison works")
 
 # ══ 3. Aggregation ══
 print("\n=== 3. Aggregation ===")
-from core.subconscious.aggregation import (
+from p2p.aggregation import (
     trimmed_mean, median_aggregation, krum_aggregation, aggregate_forest,
 )
 
@@ -181,7 +181,7 @@ print("✅ Aggregation: aggregate_forest OK")
 
 # ══ 4. Reputation ══
 print("\n=== 4. Reputation ===")
-from core.subconscious.reputation import ReputationTracker, ReputationEntry
+from p2p.reputation import ReputationTracker, ReputationEntry
 
 rt = ReputationTracker()
 
@@ -224,7 +224,7 @@ print("✅ Reputation: top peers correct")
 
 # ══ 5. Federation Integration ══
 print("\n=== 5. Federation Integration ===")
-from core.subconscious.federation import FederationAggregator, CrashReport
+from p2p.federation import FederationAggregator, CrashReport
 
 agg = FederationAggregator()
 agg.enable_defense(aggregation_method="median")

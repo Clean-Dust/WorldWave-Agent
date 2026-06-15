@@ -9,7 +9,7 @@ import random
 random.seed(42)
 
 # ══ 1. FeatureExtractor ══
-from core.subconscious.features import FeatureExtractor, FEATURE_NAMES
+from core.features import FeatureExtractor, FEATURE_NAMES
 
 fex = FeatureExtractor()
 vec = fex.extract()
@@ -55,7 +55,7 @@ print(f"✅ FeatureExtractor: stats OK (obs={stats['observations']}, tools={stat
 print("=== 1. FeatureExtractor ALL PASSED ===")
 
 # ══ 2. DeepRiskNet ══
-from core.subconscious.predictor import DeepRiskNet
+from core.predictor import DeepRiskNet
 
 # Train a tiny model
 X = [[0,0,0,0,0], [1,0,1,1,0], [0,1,0,0,1], [1,1,1,1,1]]
@@ -141,7 +141,7 @@ print(f"✅ RewindEngine: stats OK")
 print("=== 3. RewindEngine ALL PASSED ===")
 
 # ══ 4. Federation ══
-from core.subconscious.federation import CrashReport, FederationAggregator
+from p2p.federation import CrashReport, FederationAggregator
 import tempfile
 
 tmpdir = tempfile.mkdtemp()

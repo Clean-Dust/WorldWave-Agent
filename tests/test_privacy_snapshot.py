@@ -18,9 +18,9 @@ import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from core.subconscious.privacy import DifferentialPrivacy
+from p2p.privacy import DifferentialPrivacy
 from core.subconscious.snapshot import SnapshotManager
-from core.subconscious.predictor import DeepRiskNet
+from core.predictor import DeepRiskNet
 
 
 # ════════════════════════════════════════════════
@@ -364,7 +364,7 @@ def test_snapshot_integration():
 
 def test_privacy_integration():
     """Test Federation export with DP."""
-    from core.subconscious.federation import FederationAggregator
+    from p2p.federation import FederationAggregator
 
     agg = FederationAggregator(privacy_epsilon=5.0)
     assert agg.privacy_active

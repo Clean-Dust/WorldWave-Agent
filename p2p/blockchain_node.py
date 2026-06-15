@@ -65,8 +65,8 @@ def main():
     logger.info("=" * 50)
 
     # ── Import blockchain ──
-    from core.subconscious.blockchain import Blockchain, Transaction
-    from core.subconscious.network import GlobalP2PNetwork
+    from p2p.blockchain import Blockchain, Transaction
+    from p2p.network import GlobalP2PNetwork
 
     # Ensure directory exists at 
     os.makedirs(BLOCKCHAIN_DIR, exist_ok=True)
@@ -174,7 +174,7 @@ def main():
 
 def bc_receive_block(bc, block_data: dict) -> bool:
     """from P2P receive to new block."""
-    from core.subconscious.blockchain import Block
+    from p2p.blockchain import Block
     try:
         block = Block.from_dict(block_data)
         return bc.add_block(block, broadcast=False)
@@ -185,7 +185,7 @@ def bc_receive_block(bc, block_data: dict) -> bool:
 
 def bc_receive_tx(bc, tx_data: dict) -> bool:
     """from P2P receive to new transaction."""
-    from core.subconscious.blockchain import Transaction
+    from p2p.blockchain import Transaction
     try:
         tx = Transaction.from_dict(tx_data)
         return bc.add_transaction(tx)

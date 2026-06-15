@@ -28,7 +28,7 @@ import math
 import random
 from typing import Any, Dict, List, Optional, Tuple
 
-from .predictor import DeepRiskNet
+from core.predictor import DeepRiskNet
 
 
 # ════════════════════════════════════════════════════════════════

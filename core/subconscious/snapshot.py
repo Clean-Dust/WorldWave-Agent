@@ -22,7 +22,7 @@ import shutil
 import time
 from typing import Any, Dict, List, Optional
 
-from .predictor import DeepRiskNet
+from core.predictor import DeepRiskNet
 
 logger = logging.getLogger("ww.subconscious.snapshot")
 
