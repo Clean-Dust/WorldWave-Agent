@@ -1,0 +1,85 @@
+// Wavegate Gateway Service v1
+// The external-facing gRPC service that platform adapters call to push incoming messages.
+
+syntax = "proto3";
+
+package wavegate.v1;
+
+option go_package = "github.com/clean-dust/worldwave/proto/wavegate/v1;wavegatev1";
+
+import "proto/wavegate/v1/unified_message.proto";
+import "google/protobuf/empty.proto";
+
+// ── Gateway Service ───────────────────────────────────────────
+// Implemented by the Wavegate daemon. Platform adapters use this to
+// inject normalized messages into the system.
+
+service Gateway {
+  // Push a single message into the system. Returns immediately with an ACK.
+  // The message is queued and processed asynchronously by the Agent runtime.
+  rpc Ingest(IngestRequest) returns (IngestResponse);
+
+  // Open a bidirectional stream for a platform adapter.
+  // The adapter sends UnifiedMessages; the gateway streams back AgentResponses.
+  // Used for platforms that need real-time streaming replies (Telegram, Discord).
+  rpc StreamIngest(stream UnifiedMessage) returns (stream AgentResponse);
+
+  // Query the current queue state for a session.
+  rpc GetQueueState(QueueStateRequest) returns (QueueStateResponse);
+
+  // Send an interrupt signal to abort the current task for a session.
+  rpc Interrupt(InterruptRequest) returns (InterruptResponse);
+
+  // Health check.
+  rpc Health(google.protobuf.Empty) returns (HealthResponse);
+}
+
+// ── Request / Response messages ───────────────────────────────
+
+message IngestRequest {
+  // The normalized message from a platform adapter.
+  UnifiedMessage message = 1;
+
+  // If true, bypass queue and process immediately (for interrupt/steer).
+  bool immediate = 2;
+}
+
+message IngestResponse {
+  // ACK: the event was accepted and assigned an event_id if not provided.
+  string event_id = 1;
+
+  // Whether the message was queued or processed immediately.
+  bool queued = 2;
+
+  // Estimated position in queue (0 = processing now).
+  int32 queue_position = 3;
+}
+
+message QueueStateRequest {
+  string session_key = 1;
+}
+
+message QueueStateResponse {
+  string session_key = 1;
+  int32 queued_messages = 2;
+  string current_status = 3;  // "idle", "processing", "waiting_approval"
+  string current_goal = 4;    // If processing, what the agent is doing.
+}
+
+message InterruptRequest {
+  string session_key = 1;
+  string reason = 2;  // Human-readable reason for the interrupt.
+}
+
+message InterruptResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message HealthResponse {
+  bool healthy = 1;
+  string version = 2;
+  int32 active_sessions = 3;
+  int32 queued_messages = 4;
+  repeated string connected_platforms = 5;
+}

@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WW Blockchain Wallet</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface2: #21262d;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text2: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #da3633;
+    --purple: #bc8cff;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5; padding: 16px;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin-bottom: 16px; }
+  h1 span { color: var(--accent); }
+  h2 { font-size: 1.1rem; margin-bottom: 12px; color: var(--text); }
+  
+  /* Status bar */
+  .status-bar {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 12px; margin-bottom: 20px;
+  }
+  .stat-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 14px; text-align: center;
+  }
+  .stat-card .label { font-size: .75rem; color: var(--text2); text-transform: uppercase; letter-spacing: .5px; }
+  .stat-card .value { font-size: 1.4rem; font-weight: 700; color: var(--accent); margin-top: 4px; }
+  .stat-card .value.green { color: var(--green); }
+  .stat-card .value.orange { color: var(--orange); }
+  .stat-card .value.purple { color: var(--purple); }
+  
+  /* Panels */
+  .panel {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 16px; margin-bottom: 16px;
+  }
+  .panel-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 12px;
+  }
+  .panel-header h2 { margin: 0; }
+  .panel-header button { font-size: .8rem; }
+  
+  /* Latest block */
+  .block-header {
+    background: var(--surface2); border-radius: 6px; padding: 10px;
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: .82rem;
+    line-height: 1.7;
+  }
+  .block-header .label { color: var(--text2); }
+  .block-header .val { color: var(--text); }
+  
+  /* Block list */
+  .block-row {
+    display: grid; grid-template-columns: 60px 1fr 100px 80px;
+    padding: 8px 10px; border-bottom: 1px solid var(--border);
+    font-family: 'SF Mono', 'Fira Code', monospace; font-size: .8rem;
+    cursor: pointer; transition: background .15s;
+  }
+  .block-row:hover { background: var(--surface2); }
+  .block-row:last-child { border-bottom: none; }
+  .block-row .h { color: var(--text2); }
+  .block-row .hash { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .block-row .txs { color: var(--green); text-align: center; }
+  .block-row .time { color: var(--text2); text-align: right; }
+  
+  /* Form */
+  .form-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+  }
+  .form-grid .full { grid-column: 1 / -1; }
+  label { display: block; font-size: .8rem; color: var(--text2); margin-bottom: 4px; }
+  input, textarea, select {
+    width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--text); font-family: inherit; font-size: .85rem;
+  }
+  textarea { min-height: 60px; resize: vertical; font-family: 'SF Mono', 'Fira Code', monospace; }
+  input:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  button {
+    padding: 8px 18px; border-radius: 6px; border: none; cursor: pointer;
+    font-size: .85rem; font-weight: 600; transition: opacity .15s;
+  }
+  button:hover { opacity: .85; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-success { background: var(--green); color: #fff; }
+  .btn-sm { padding: 4px 12px; font-size: .75rem; }
+  
+  /* Experience list */
+  .exp-item {
+    padding: 10px; border-bottom: 1px solid var(--border); font-size: .82rem;
+  }
+  .exp-item:last-child { border-bottom: none; }
+  .exp-item .meta { color: var(--text2); font-size: .75rem; }
+  .exp-item .fv { color: var(--accent); font-family: 'SF Mono', 'Fira Code', monospace; }
+  
+  /* Config */
+  .config-bar {
+    display: flex; gap: 10px; align-items: center; margin-bottom: 16px;
+    padding: 10px 14px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; flex-wrap: wrap;
+  }
+  .config-bar input { width: 280px; }
+  .toast {
+    position: fixed; bottom: 20px; right: 20px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 18px; font-size: .85rem; opacity: 0; transition: opacity .3s;
+    max-width: 360px;
+  }
+  .toast.show { opacity: 1; }
+
+  /* Tabs */
+  .tabs { display: flex; gap: 0; margin-bottom: 16px; border-bottom: 1px solid var(--border); }
+  .tab {
+    padding: 10px 18px; cursor: pointer; font-size: .85rem; color: var(--text2);
+    border-bottom: 2px solid transparent; transition: all .15s;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab-content { display: none; }
+  .tab-content.active { display: block; }
+
+  /* Loading */
+  .loading { color: var(--text2); font-size: .85rem; text-align: center; padding: 20px; }
+  .error { color: var(--red); font-size: .85rem; }
+
+  @media (max-width: 600px) {
+    .form-grid { grid-template-columns: 1fr; }
+    .config-bar input { width: 100%; }
+    .block-row { grid-template-columns: 50px 1fr 70px 60px; font-size: .72rem; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>🌍 <span>WW</span> Blockchain Wallet</h1>
+
+  <!-- Config bar -->
+  <div class="config-bar">
+    <label style="margin:0;white-space:nowrap">Gateway:</label>
+    <input id="gwUrl" value="http://localhost:8080" placeholder="http://host:port">
+    <button class="btn-primary" onclick="connect()">Connect</button>
+    <span id="connStatus" style="font-size:.8rem;color:var(--text2)">—</span>
+    <button class="btn-sm" onclick="window.open('about:blank','_blank').location=document.getElementById('gwUrl').value">Open GW</button>
+  </div>
+
+  <!-- Status bar -->
+  <div class="status-bar" id="statusBar">
+    <div class="stat-card"><div class="label">Height</div><div class="value" id="sHeight">—</div></div>
+    <div class="stat-card"><div class="label">Blocks</div><div class="value" id="sBlocks">—</div></div>
+    <div class="stat-card"><div class="label">Experiences</div><div class="value purple" id="sExps">0</div></div>
+    <div class="stat-card"><div class="label">Mempool</div><div class="value orange" id="sMempool">0</div></div>
+    <div class="stat-card"><div class="label">Peers</div><div class="value green" id="sPeers">0</div></div>
+  </div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <div class="tab active" onclick="switchTab('blocks')">Blocks</div>
+    <div class="tab" onclick="switchTab('submit')">Submit</div>
+    <div class="tab" onclick="switchTab('experiences')">Experiences</div>
+  </div>
+
+  <!-- Tab: Blocks -->
+  <div class="tab-content active" id="tabBlocks">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Latest Block</h2>
+        <button class="btn-sm btn-primary" onclick="refreshStatus()">↻</button>
+      </div>
+      <div class="block-header" id="latestBlock">
+        <div class="loading">Connect to gateway...</div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-header">
+        <h2>Recent Blocks</h2>
+        <div>
+          <span id="blockRange" style="font-size:.8rem;color:var(--text2);margin-right:8px"></span>
+          <button class="btn-sm" onclick="loadBlocks(blockOffset-20)" id="prevBtn" disabled>← Prev</button>
+          <button class="btn-sm" onclick="loadBlocks(blockOffset+20)" id="nextBtn">Next →</button>
+        </div>
+      </div>
+      <div id="blockList"><div class="loading">—</div></div>
+    </div>
+  </div>
+
+  <!-- Tab: Submit -->
+  <div class="tab-content" id="tabSubmit">
+    <div class="panel">
+      <h2>Submit Subconscious Experience</h2>
+      <p style="color:var(--text2);font-size:.82rem;margin-bottom:12px">
+        Submit a subconscious experience to the chain. This will be queued and mined by the Banane node.
+      </p>
+      <div class="form-grid">
+        <div>
+          <label>Sender ID</label>
+          <input id="txSender" value="browser-wallet" placeholder="your-node-id">
+        </div>
+        <div>
+          <label>Reward (WW Credits)</label>
+          <input id="txReward" value="0.5" placeholder="0.5" type="number" step="0.1">
+        </div>
+        <div class="full">
+          <label>Feature Vector (12 floats, comma-separated)</label>
+          <input id="txFeatures" value="0.15, 0.82, 0.04, 0.91, 0.33, 0.67, 0.12, 0.55, 0.78, 0.22, 0.44, 0.60" placeholder="0.1, 0.2, ... 12 values">
+        </div>
+        <div class="full">
+          <label>Tool Sequence (comma-separated tool IDs)</label>
+          <input id="txTools" value="terminal, web_search, write_file, read_file" placeholder="tool_a, tool_b">
+        </div>
+        <div class="full" style="text-align:right">
+          <button class="btn-success" onclick="submitExperience()">Submit Experience ➜</button>
+        </div>
+      </div>
+      <div id="submitResult" style="margin-top:10px;font-size:.85rem"></div>
+    </div>
+  </div>
+
+  <!-- Tab: Experiences -->
+  <div class="tab-content" id="tabExperiences">
+    <div class="panel">
+      <div class="panel-header">
+        <h2>On-Chain Experiences</h2>
+        <button class="btn-sm btn-primary" onclick="loadExperiences()">↻</button>
+      </div>
+      <div id="expList"><div class="loading">Connect to gateway...</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── State ──
+let GW = '';
+let blockOffset = 0;
+let autoRefresh = null;
+
+// ── API helpers ──
+async function api(path) {
+  const url = GW.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+async function apiPost(path, data) {
+  const url = GW.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json();
+}
+
+// ── Toast helper ──
+function toast(msg, isError = false) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.color = isError ? 'var(--red)' : 'var(--green)';
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 4000);
+}
+
+// ── Connect ──
+async function connect() {
+  GW = document.getElementById('gwUrl').value.trim();
+  document.getElementById('connStatus').textContent = 'Connecting...';
+  try {
+    const status = await api('api/status');
+    document.getElementById('connStatus').textContent = '✅ Connected';
+    toast('Connected!');
+    await refreshAll(status);
+    if (autoRefresh) clearInterval(autoRefresh);
+    autoRefresh = setInterval(refreshStatus, 8000);
+  } catch(e) {
+    document.getElementById('connStatus').textContent = '❌ ' + e.message;
+    toast('Connection failed: ' + e.message, true);
+  }
+}
+
+// ── Refresh status ──
+async function refreshStatus() {
+  try {
+    const s = await api('api/status');
+    await refreshAll(s);
+  } catch(e) { /* silent */ }
+}
+
+async function refreshAll(status) {
+  // Update stat cards
+  document.getElementById('sHeight').textContent = status.height.toLocaleString();
+  document.getElementById('sBlocks').textContent = status.blocks.toLocaleString();
+  document.getElementById('sExps').textContent = status.total_experiences.toLocaleString();
+  document.getElementById('sMempool').textContent = status.mempool.toLocaleString();
+
+  // Update latest block
+  const lh = status.latest_header;
+  const blockHtml = `
+    <span class="label">Hash</span> <span class="val">${status.latest_hash}...</span><br>
+    <span class="label">Height</span> <span class="val">${status.height}</span><br>
+    <span class="label">Time</span> <span class="val">${new Date(lh.timestamp * 1000).toLocaleTimeString()}</span><br>
+    <span class="label">Nonce</span> <span class="val">${lh.nonce.toLocaleString()}</span>
+    <span style="margin-left:16px"><span class="label">Bits</span> <span class="val">0x${lh.bits.toString(16)}</span></span>
+  `;
+  document.getElementById('latestBlock').innerHTML = blockHtml;
+
+  // Load blocks
+  await loadBlocks(blockOffset);
+
+  // Peers
+  try {
+    const ps = await api('p2p/stats');
+    document.getElementById('sPeers').textContent = ps.active || 0;
+  } catch { document.getElementById('sPeers').textContent = '?'; }
+}
+
+// ── Block list ──
+async function loadBlocks(from) {
+  if (from < 0) from = 0;
+  blockOffset = from;
+  try {
+    const data = await api('api/blocks?from=' + from + '&limit=20');
+    const list = document.getElementById('blockList');
+    document.getElementById('blockRange').textContent =
+      `${from}–${Math.min(from + 19, data.total - 1)} of ${data.total}`;
+    document.getElementById('prevBtn').disabled = from <= 0;
+    document.getElementById('nextBtn').disabled = from + 20 >= data.total;
+
+    if (!data.blocks || data.blocks.length === 0) {
+      list.innerHTML = '<div class="loading">No blocks</div>';
+      return;
+    }
+
+    // Show blocks in reverse (newest first)
+    const rev = [...data.blocks].reverse();
+    list.innerHTML = rev.map(b => {
+      const h = b.header || {};
+      const ago = h.timestamp ? timeAgo(h.timestamp) : '?';
+      return `<div class="block-row" onclick="showBlock('${b.hash}')">
+        <span class="h">#${b.height ?? b.header?.height ?? '?'}</span>
+        <span class="hash" title="${b.hash}">${b.hash.slice(0, 16)}</span>
+        <span class="txs">${b.tx_count ?? 0} tx</span>
+        <span class="time">${ago}</span>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('blockList').innerHTML = `<div class="error">${e.message}</div>`;
+  }
+}
+
+// ── Block detail (alert-based for now) ──
+async function showBlock(hash) {
+  try {
+    const data = await api('api/block/' + hash);
+    if (data.block) {
+      const b = data.block;
+      const h = b.header || {};
+      alert(JSON.stringify({
+        hash: b.hash,
+        height: b.height ?? h.height,
+        nonce: h.nonce,
+        timestamp: new Date(h.timestamp * 1000).toISOString(),
+        transactions: b.tx_count,
+        byte_size: b.byte_size,
+      }, null, 2));
+    }
+  } catch(e) { toast(e.message, true); }
+}
+
+// ── Submit experience ──
+async function submitExperience() {
+  const sender = document.getElementById('txSender').value.trim() || 'browser-wallet';
+  const reward = parseFloat(document.getElementById('txReward').value) || 0.5;
+  const featuresStr = document.getElementById('txFeatures').value.trim();
+  const toolsStr = document.getElementById('txTools').value.trim();
+
+  // Parse features
+  const features = featuresStr.split(',').map(s => parseFloat(s.trim())).filter(n => !isNaN(n));
+  if (features.length !== 12) {
+    document.getElementById('submitResult').innerHTML =
+      `<span style="color:var(--red)">❌ Need exactly 12 feature values (got ${features.length})</span>`;
+    return;
+  }
+
+  // Parse tools
+  const tools = toolsStr.split(',').map(s => s.trim()).filter(Boolean);
+
+  const tx = {
+    type: 'subconscious_experience',
+    sender,
+    timestamp: Date.now() / 1000,
+    data: {
+      dimension: 12,
+      feature_vector: features,
+      tools_sequence: tools,
+      reward,
+      node_id: sender,
+      context: 'browser-wallet-submission',
+    },
+    signature: 'browser-' + Date.now().toString(16),
+  };
+
+  document.getElementById('submitResult').innerHTML =
+    `<span style="color:var(--text2)">⏳ Submitting...</span>`;
+
+  try {
+    const result = await apiPost('api/transaction', tx);
+    document.getElementById('submitResult').innerHTML =
+      `<span style="color:var(--green)">✅ ${result.accepted ? 'Accepted' : 'Rejected'} — hash: ${result.hash}</span>`;
+    toast('Experience submitted!');
+    setTimeout(() => refreshStatus(), 1000);
+  } catch(e) {
+    document.getElementById('submitResult').innerHTML =
+      `<span style="color:var(--red)">❌ ${e.message}</span>`;
+    toast('Submit failed: ' + e.message, true);
+  }
+}
+
+// ── Experiences ──
+async function loadExperiences() {
+  try {
+    const data = await api('api/experiences?limit=20');
+    const list = document.getElementById('expList');
+    if (!data.experiences || data.experiences.length === 0) {
+      list.innerHTML = '<div class="loading">No experiences on chain yet.</div>';
+      return;
+    }
+    list.innerHTML = data.experiences.map(e => {
+      const fv = (e.feature_vector || []).map(v => v.toFixed(3)).join(', ');
+      const tools = e.failed_tool_sequence || e.tools_sequence || [];
+      const reward = e.successful_correction || e.reward || 0;
+      return `<div class="exp-item">
+        <div class="meta">Block #${e.block_height} · ${e.block_hash} · Sender: ${e.node_id || e.sender || '?'}</div>
+        <div class="fv">[${fv}]</div>
+        <div class="meta">Tools: ${tools.join(', ')} · Reward: ${reward}</div>
+      </div>`;
+    }).join('');
+  } catch(e) {
+    document.getElementById('expList').innerHTML = `<div class="error">${e.message}</div>`;
+  }
+}
+
+// ── Time ago ──
+function timeAgo(ts) {
+  const sec = Math.floor(Date.now() / 1000 - ts);
+  if (sec < 5) return 'now';
+  if (sec < 60) return sec + 's ago';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm ago';
+  return Math.floor(sec / 3600) + 'h ago';
+}
+
+// ── Tabs ──
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+  document.querySelector(`.tab[onclick*="'${name}'"]`).classList.add('active');
+  document.getElementById('tab' + name.charAt(0).toUpperCase() + name.slice(1)).classList.add('active');
+
+  if (name === 'blocks') refreshStatus();
+  if (name === 'experiences') loadExperiences();
+}
+
+// ── Auto-connect on load ──
+document.addEventListener('DOMContentLoaded', () => {
+  // Check if gateway responds
+  setTimeout(connect, 300);
+});
+</script>
+</body>
+</html>

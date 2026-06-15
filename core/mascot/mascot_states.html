@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"></head>
+<body style="margin:0;background:transparent">
+<style>
+svg { width: 200px; height: auto; display: block; }
+</style>
+<div id="root"></div>
+<script>
+// Read ?state= from URL
+const state = new URLSearchParams(location.search).get('state') || 'idle';
+const NS = 'http://www.w3.org/2000/svg';
+
+function svg() {
+  const s = document.createElementNS(NS, 'svg');
+  s.setAttribute('viewBox', '0 0 200 220');
+  s.setAttribute('width', '200');
+  s.setAttribute('height', '220');
+  s.setAttribute('xmlns', NS);
+  return s;
+}
+
+function el(name, attrs, children) {
+  const e = document.createElementNS(NS, name);
+  for (const [k, v] of Object.entries(attrs || {})) e.setAttribute(k, v);
+  for (const c of (children || [])) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+  return e;
+}
+
+function body(cx, cy, rx, ry) {
+  return [
+    el('ellipse', { cx, cy, rx, ry, fill: '#3D6B80' }),
+    el('ellipse', { cx: cx, cy: cy + 15, rx: rx - 14, ry: ry - 20, fill: '#5A8AA0', opacity: '0.3' }),
+    el('ellipse', { cx: cx, cy: cy + 23, rx: rx - 26, ry: ry - 32, fill: '#C8E0EC' }),
+    el('ellipse', { cx: cx, cy: cy + 27, rx: rx - 34, ry: ry - 40, fill: '#E8F4FA', opacity: '0.5' }),
+  ];
+}
+
+function fin(cx, cy, ry) {
+  return el('path', { d: `M ${cx-10} ${cy-ry+4} L ${cx} ${cy-ry-30} L ${cx+10} ${cy-ry+4} Z`, fill: '#2D5A6E', 'stroke-linejoin': 'round' });
+}
+
+function arms(cx, cy, rx, armState) {
+  const c = '#2D5A6E';
+  const w = '8', r = '5';
+  if (armState === 'up') {
+    // Arms pointing up (startled)
+    return [
+      el('path', { d: `M ${cx-rx+1} ${cy} L ${cx-rx-8} ${cy-20}`, stroke: c, 'stroke-width': w, 'stroke-linecap': 'round', fill: 'none' }),
+      el('circle', { cx: cx-rx+1, cy: cy, r, fill: c }),
+      el('path', { d: `M ${cx+rx-1} ${cy} L ${cx+rx+8} ${cy-20}`, stroke: c, 'stroke-width': w, 'stroke-linecap': 'round', fill: 'none' }),
+      el('circle', { cx: cx+rx-1, cy: cy, r, fill: c }),
+    ];
+  }
+  // Default: arms hanging
+  return [
+    el('path', { d: `M ${cx-rx+1} ${cy} L ${cx-rx-1} ${cy+28}`, stroke: c, 'stroke-width': w, 'stroke-linecap': 'round', fill: 'none' }),
+    el('circle', { cx: cx-rx+1, cy: cy, r, fill: c }),
+    el('path', { d: `M ${cx+rx-1} ${cy} L ${cx+rx+1} ${cy+28}`, stroke: c, 'stroke-width': w, 'stroke-linecap': 'round', fill: 'none' }),
+    el('circle', { cx: cx+rx-1, cy: cy, r, fill: c }),
+  ];
+}
+
+function legs(cx, cy, ry, legState) {
+  const c = '#2D5A6E';
+  const w = '8', r = '6';
+  const ly1 = cy + ry - 2;
+  
+  if (legState === 'sitting') {
+    // Legs bent outward at knees (sitting pose)
+    return [
+      el('path', { d: `M ${cx-7} ${ly1} L ${cx-18} ${ly1+15} L ${cx-22} ${ly1+28}`, stroke: c, 'stroke-width': w, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', fill: 'none' }),
+      el('ellipse', { cx: cx-22, cy: ly1+28, rx: r, ry: r/2, fill: c }),
+      el('path', { d: `M ${cx+7} ${ly1} L ${cx+18} ${ly1+15} L ${cx+22} ${ly1+28}`, stroke: c, 'stroke-width': w, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', fill: 'none' }),
+      el('ellipse', { cx: cx+22, cy: ly1+28, rx: r, ry: r/2, fill: c }),
+    ];
+  }
+  if (legState === 'lying') {
+    // Legs extended (lying down - body will be drawn differently)
+    return [
+      el('path', { d: `M ${cx-7} ${ly1} L ${cx-5} ${ly1+28}`, stroke: c, 'stroke-width': w, 'stroke-linecap': 'round', fill: 'none' }),
+      el('ellipse', { cx: cx-5, cy: ly1+28, rx: r, ry: r/2, fill: c }),
+      el('path', { d: `M ${cx+7} ${ly1} L ${cx+9} ${ly1+28}`, stroke: c, 'stroke-width': w, 'stroke-linecap': 'round', fill: 'none' }),
+      el('ellipse', { cx: cx+9, cy: ly1+28, rx: r, ry: r/2, fill: c }),
+    ];
+  }
+  // Standing legs (default)
+  return [
+    el('path', { d: `M ${cx-7} ${ly1} L ${cx-9} ${ly1+28}`, stroke: c, 'stroke-width': w, 'stroke-linecap': 'round', fill: 'none' }),
+    el('ellipse', { cx: cx-9, cy: ly1+28, rx: r, ry: r/2, fill: c }),
+    el('path', { d: `M ${cx+7} ${ly1} L ${cx+9} ${ly1+28}`, stroke: c, 'stroke-width': w, 'stroke-linecap': 'round', fill: 'none' }),
+    el('ellipse', { cx: cx+9, cy: ly1+28, rx: r, ry: r/2, fill: c }),
+  ];
+}
+
+function eyesOpen(cx, cy, ry) {
+  const ey = cy - ry * 0.25;
+  const er = 18;
+  return [
+    el('ellipse', { cx: cx - 30, cy: ey, rx: er, ry: er, fill: 'white' }),
+    el('ellipse', { cx: cx - 26, cy: ey, rx: 11, ry: 13, fill: '#1A2A38' }),
+    el('ellipse', { cx: cx - 23, cy: ey - 5, rx: 5, ry: 5, fill: 'white' }),
+    el('ellipse', { cx: cx + 30, cy: ey, rx: er, ry: er, fill: 'white' }),
+    el('ellipse', { cx: cx + 26, cy: ey, rx: 11, ry: 13, fill: '#1A2A38' }),
+    el('ellipse', { cx: cx + 29, cy: ey - 5, rx: 5, ry: 5, fill: 'white' }),
+  ];
+}
+
+function eyesClosed(cx, cy, ry) {
+  const ey = cy - ry * 0.25;
+  const er = 18;
+  return [
+    el('line', { x1: cx - 32, y1: ey, x2: cx - 18, y2: ey, stroke: '#1A2A38', 'stroke-width': 3, 'stroke-linecap': 'round' }),
+    el('line', { x1: cx + 18, y1: ey, x2: cx + 32, y2: ey, stroke: '#1A2A38', 'stroke-width': 3, 'stroke-linecap': 'round' }),
+  ];
+}
+
+function eyesHalfClosed(cx, cy, ry) {
+  const ey = cy - ry * 0.25;
+  const er = 18;
+  // Half-closed: top of eye is visible, bottom is covered
+  return [
+    el('ellipse', { cx: cx - 30, cy: ey, rx: er, ry: er * 0.3, fill: 'white' }),
+    el('ellipse', { cx: cx - 28, cy: ey, rx: 7, ry: 5, fill: '#1A2A38' }),
+    el('ellipse', { cx: cx + 30, cy: ey, rx: er, ry: er * 0.3, fill: 'white' }),
+    el('ellipse', { cx: cx + 28, cy: ey, rx: 7, ry: 5, fill: '#1A2A38' }),
+    // Drop lids
+    el('rect', { x: cx - 48, y: ey - 12, width: 36, height: 12, fill: '#3D6B80' }),
+    el('rect', { x: cx + 12, y: ey - 12, width: 36, height: 12, fill: '#3D6B80' }),
+  ];
+}
+
+function eyesWideOpen(cx, cy, ry) {
+  const ey = cy - ry * 0.25;
+  const er = 20; // bigger!
+  return [
+    el('ellipse', { cx: cx - 30, cy: ey, rx: er, ry: er + 2, fill: 'white' }),
+    el('ellipse', { cx: cx - 26, cy: ey, rx: 12, ry: 14, fill: '#1A2A38' }),
+    el('ellipse', { cx: cx - 23, cy: ey - 6, rx: 5, ry: 5, fill: 'white' }),
+    el('ellipse', { cx: cx + 30, cy: ey, rx: er, ry: er + 2, fill: 'white' }),
+    el('ellipse', { cx: cx + 26, cy: ey, rx: 12, ry: 14, fill: '#1A2A38' }),
+    el('ellipse', { cx: cx + 29, cy: ey - 6, rx: 5, ry: 5, fill: 'white' }),
+  ];
+}
+
+function smile(cx, cy, ry, type) {
+  const sy = cy - ry * 0.25 + 18 * 1.8;
+  if (type === 'big') {
+    return el('path', { d: `M ${cx-22} ${sy} Q ${cx} ${sy+18} ${cx+22} ${sy}`, stroke: '#1A4A5E', 'stroke-width': 3.5, fill: 'none', 'stroke-linecap': 'round' });
+  }
+  // normal smile
+  return el('path', { d: `M ${cx-18} ${sy} Q ${cx} ${sy+18} ${cx+18} ${sy}`, stroke: '#1A4A5E', 'stroke-width': 3.5, fill: 'none', 'stroke-linecap': 'round' });
+}
+
+function blush(cx, cy, ry) {
+  const sy = cy - ry * 0.25 + 18 * 1.8;
+  return [
+    el('ellipse', { cx: cx - 46, cy: sy - 1, rx: 11, ry: 8, fill: '#D47070', opacity: '0.45' }),
+    el('ellipse', { cx: cx + 46, cy: sy - 1, rx: 11, ry: 8, fill: '#D47070', opacity: '0.45' }),
+  ];
+}
+
+function zzz(cx, cy, ry) {
+  return [
+    el('text', { x: cx + 55, y: cy - ry - 30, fill: 'rgba(255,255,255,0.4)', 'font-size': '14', 'font-family': 'sans-serif' }, ['z']),
+    el('text', { x: cx + 65, y: cy - ry - 45, fill: 'rgba(255,255,255,0.3)', 'font-size': '18', 'font-family': 'sans-serif' }, ['z']),
+    el('text', { x: cx + 78, y: cy - ry - 65, fill: 'rgba(255,255,255,0.2)', 'font-size': '22', 'font-family': 'sans-serif' }, ['z']),
+  ];
+}
+
+function render() {
+  const root = document.getElementById('root');
+  root.innerHTML = '';
+  
+  const cx = 100, cy = 115, rx = 76, ry = 72;
+  // Arms hang from body center + 20 (baseline: y=135)
+  const armY = cy + 20;
+  let s = svg();
+
+  switch (state) {
+    case 'blink': {
+      body(cx, cy, rx, ry).forEach(e => s.appendChild(e));
+      s.appendChild(fin(cx, cy, ry));
+      arms(cx, armY, rx, 'down').forEach(e => s.appendChild(e));
+      legs(cx, cy, ry, 'standing').forEach(e => s.appendChild(e));
+      eyesClosed(cx, cy, ry).forEach(e => s.appendChild(e));
+      s.appendChild(smile(cx, cy, ry, 'normal'));
+      blush(cx, cy, ry).forEach(e => s.appendChild(e));
+      break;
+    }
+
+    case 'sitting': {
+      // Sitting pose: body lower, legs bent, sleepy eyes
+      const by = cy + 25; // body lower
+      body(cx, by, rx, ry - 5).forEach(e => s.appendChild(e));
+      s.appendChild(fin(cx, by, ry - 5));
+      arms(cx, armY, rx, 'down').forEach(e => s.appendChild(e));
+      legs(cx, by, ry - 5, 'sitting').forEach(e => s.appendChild(e));
+      eyesHalfClosed(cx, by, ry - 5).forEach(e => s.appendChild(e));
+      break;
+    }
+
+    case 'lying': {
+      // Lying down: body horizontal, eyes closed, no smile, zzz above head
+      const lx = cx + 10, ly = cy + 25;
+      s.appendChild(el('ellipse', { cx: lx, cy: ly, rx: ry - 5, ry: rx - 10, fill: '#3D6B80' }));
+      s.appendChild(el('ellipse', { cx: lx + 15, cy: ly + 10, rx: ry - 20, ry: rx - 25, fill: '#C8E0EC' }));
+      // Fin on top
+      s.appendChild(el('path', { d: `M ${lx-20} ${ly-rx+15} L ${lx-10} ${ly-rx-5} L ${lx-3} ${ly-rx+15} Z`, fill: '#2D5A6E' }));
+      // Arms
+      s.appendChild(el('path', { d: `M ${lx-ry+5} ${ly} L ${lx-ry-5} ${ly+20}`, stroke: '#2D5A6E', 'stroke-width': '8', 'stroke-linecap': 'round', fill: 'none' }));
+      s.appendChild(el('circle', { cx: lx-ry+5, cy: ly, r: '5', fill: '#2D5A6E' }));
+      s.appendChild(el('path', { d: `M ${lx+ry-5} ${ly} L ${lx+ry+5} ${ly+20}`, stroke: '#2D5A6E', 'stroke-width': '8', 'stroke-linecap': 'round', fill: 'none' }));
+      s.appendChild(el('circle', { cx: lx+ry-5, cy: ly, r: '5', fill: '#2D5A6E' }));
+      // Legs
+      s.appendChild(el('path', { d: `M ${lx-7} ${ly+rx-10} L ${lx-10} ${ly+rx+10}`, stroke: '#2D5A6E', 'stroke-width': '8', 'stroke-linecap': 'round', fill: 'none' }));
+      s.appendChild(el('ellipse', { cx: lx-10, cy: ly+rx+10, rx: '6', ry: '3', fill: '#2D5A6E' }));
+      s.appendChild(el('path', { d: `M ${lx+7} ${ly+rx-10} L ${lx+10} ${ly+rx+10}`, stroke: '#2D5A6E', 'stroke-width': '8', 'stroke-linecap': 'round', fill: 'none' }));
+      s.appendChild(el('ellipse', { cx: lx+10, cy: ly+rx+10, rx: '6', ry: '3', fill: '#2D5A6E' }));
+      // Closed eyes (no smile)
+      s.appendChild(el('line', { x1: lx-35, y1: ly-5, x2: lx-20, y2: ly-5, stroke: '#1A2A38', 'stroke-width': '3', 'stroke-linecap': 'round' }));
+      s.appendChild(el('line', { x1: lx+20, y1: ly-5, x2: lx+35, y2: ly-5, stroke: '#1A2A38', 'stroke-width': '3', 'stroke-linecap': 'round' }));
+      // Zzz above head
+      s.appendChild(el('text', { x: lx - 50, y: ly - rx, fill: 'rgba(255,255,255,0.5)', 'font-size': '14', 'font-family': 'sans-serif' }, ['z']));
+      s.appendChild(el('text', { x: lx - 60, y: ly - rx - 18, fill: 'rgba(255,255,255,0.35)', 'font-size': '18', 'font-family': 'sans-serif' }, ['z']));
+      s.appendChild(el('text', { x: lx - 72, y: ly - rx - 40, fill: 'rgba(255,255,255,0.2)', 'font-size': '22', 'font-family': 'sans-serif' }, ['z']));
+      break;
+    }
+
+    case 'awake': {
+      const by = cy - 10;
+      body(cx, by, rx, ry - 8).forEach(e => s.appendChild(e));
+      s.appendChild(fin(cx, by, ry - 8));
+      arms(cx, armY - 10, rx, 'up').forEach(e => s.appendChild(e));
+      legs(cx, by, ry - 8, 'standing').forEach(e => s.appendChild(e));
+      eyesWideOpen(cx, by, ry - 8).forEach(e => s.appendChild(e));
+      s.appendChild(smile(cx, by, ry - 8, 'big'));
+      blush(cx, by, ry - 8).forEach(e => s.appendChild(e));
+      s.appendChild(el('text', { x: cx + 65, y: by - ry - 10, fill: '#FFD700', 'font-size': '18', 'font-weight': 'bold', 'font-family': 'sans-serif' }, ['!']));
+      break;
+    }
+
+    default: {
+      body(cx, cy, rx, ry).forEach(e => s.appendChild(e));
+      s.appendChild(fin(cx, cy, ry));
+      arms(cx, armY, rx, 'down').forEach(e => s.appendChild(e));
+      legs(cx, cy, ry, 'standing').forEach(e => s.appendChild(e));
+      eyesOpen(cx, cy, ry).forEach(e => s.appendChild(e));
+      s.appendChild(smile(cx, cy, ry, 'normal'));
+      blush(cx, cy, ry).forEach(e => s.appendChild(e));
+    }
+  }
+
+  root.appendChild(s);
+}
+
+render();
+</script>
+</body></html>

@@ -1,0 +1,14 @@
+[Unit]
+Description=Worldwave AI Agent Server
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/worldwave/scripts/start-ww.sh
+WorkingDirectory=%h/worldwave
+Restart=always
+RestartSec=10
+EnvironmentFile=%h/worldwave/.env
+
+[Install]
+WantedBy=default.target

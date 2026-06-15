@@ -1,0 +1,13 @@
+{
+  "name": "Worldwave AI",
+  "short_name": "WW",
+  "description": "Worldwave AI Agent — next-gen autonomous AI coding agent",
+  "start_url": "/app/",
+  "display": "standalone",
+  "background_color": "#1a1a2e",
+  "theme_color": "#3D6B80",
+  "icons": [
+    { "src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

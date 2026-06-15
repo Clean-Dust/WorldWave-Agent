@@ -1,0 +1,144 @@
+// Wavegate Agent Service v1
+// The gRPC service that the WW Agent Runtime (Core) exposes to Wavegate.
+// Wavegate calls this to delegate task execution and stream results back.
+
+syntax = "proto3";
+
+package wavegate.v1;
+
+option go_package = "github.com/clean-dust/worldwave/proto/wavegate/v1;wavegatev1";
+
+import "proto/wavegate/v1/unified_message.proto";
+import "google/protobuf/empty.proto";
+
+// ── Agent Service ─────────────────────────────────────────────
+// Implemented by the WW Agent Runtime. Wavegate calls this service
+// to submit tasks, stream results, and manage sessions.
+
+service Agent {
+  // Submit a task for synchronous execution. Blocks until the first response.
+  // For long-running tasks, subsequent responses arrive via the stream.
+  rpc RunTask(RunTaskRequest) returns (stream AgentResponse);
+
+  // Submit a goal for autonomous background execution (Goal Mode).
+  // Returns immediately with a task_id; progress arrives via StatusUpdate stream.
+  rpc RunGoal(RunGoalRequest) returns (RunGoalResponse);
+
+  // Subscribe to status updates for a running goal.
+  rpc WatchGoal(WatchGoalRequest) returns (stream StatusUpdate);
+
+  // Cancel a running goal.
+  rpc CancelGoal(CancelGoalRequest) returns (CancelGoalResponse);
+
+  // Steer an in-progress task: inject new context without interrupting.
+  rpc SteerTask(SteerTaskRequest) returns (SteerTaskResponse);
+
+  // Abort the currently running task for a session.
+  rpc AbortTask(AbortTaskRequest) returns (AbortTaskResponse);
+
+  // Get agent health and capability info.
+  rpc AgentInfo(google.protobuf.Empty) returns (AgentInfoResponse);
+}
+
+// ── Request / Response messages ───────────────────────────────
+
+message RunTaskRequest {
+  // Session identifier.
+  string session_key = 1;
+
+  // The task goal / command.
+  string goal = 2;
+
+  // Sender context for ACL and personalization.
+  Sender sender = 3;
+
+  // Maximum spirals allowed.
+  int32 max_spirals = 4;
+
+  // Model override (optional).
+  string model = 5;
+
+  // Platform for response formatting hints.
+  string platform = 6;
+}
+
+message RunGoalRequest {
+  // Session identifier.
+  string session_key = 1;
+
+  // The autonomous goal description.
+  string goal = 2;
+
+  // Sender context.
+  Sender sender = 3;
+
+  // Maximum iterations (0 = unlimited, bounded by max_runtime).
+  int32 max_iterations = 4;
+
+  // Maximum runtime in seconds (0 = unlimited).
+  int32 max_runtime_seconds = 5;
+
+  // Explorer/Critic configuration.
+  GoalConfig config = 6;
+}
+
+message GoalConfig {
+  // Number of explorer agents (default 3).
+  int32 explorer_count = 1;
+
+  // Whether to enable critic review loop.
+  bool critic_enabled = 2;
+
+  // Auto-fix on test failure (closed loop).
+  bool auto_fix = 3;
+}
+
+message RunGoalResponse {
+  // Unique task identifier for status tracking.
+  string task_id = 1;
+
+  // Whether the goal was accepted and started.
+  bool accepted = 2;
+}
+
+message WatchGoalRequest {
+  string task_id = 1;
+}
+
+message CancelGoalRequest {
+  string task_id = 1;
+  string reason = 2;
+}
+
+message CancelGoalResponse {
+  bool cancelled = 1;
+  string message = 2;
+}
+
+message SteerTaskRequest {
+  string session_key = 1;
+  string context = 2;  // New information to inject.
+}
+
+message SteerTaskResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+message AbortTaskRequest {
+  string session_key = 1;
+  string reason = 2;
+}
+
+message AbortTaskResponse {
+  bool aborted = 1;
+  string message = 2;
+}
+
+message AgentInfoResponse {
+  string version = 1;
+  int32 active_sessions = 2;
+  int32 active_goals = 3;
+  repeated string available_tools = 4;
+  repeated string supported_models = 5;
+}

@@ -1,0 +1,200 @@
+// Wavegate Unified Message Schema v1
+// Standard format for all messages crossing the Control Plane / Execution Plane boundary.
+// Every platform adapter normalizes its incoming events into this schema.
+
+syntax = "proto3";
+
+package wavegate.v1;
+
+option go_package = "github.com/clean-dust/worldwave/proto/wavegate/v1;wavegatev1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/struct.proto";
+
+// ── Core message envelope ──────────────────────────────────────
+
+message UnifiedMessage {
+  // Globally unique event identifier (UUID v4).
+  string event_id = 1;
+
+  // Source platform: "telegram", "discord", "slack", "webhook", "signal", "mqtt".
+  string platform = 2;
+
+  // Composite session key: "{platform}:{user_id}:{chat_id}:{thread_id}".
+  // This is the routing key used by NATS and the session manager.
+  string session_key = 3;
+
+  // When the original event was received (platform timestamp if available).
+  google.protobuf.Timestamp received_at = 4;
+
+  // ── Sender identity ──────────────────────────────────────────
+  Sender sender = 5;
+
+  // ── Normalized content ───────────────────────────────────────
+  Content content = 6;
+
+  // ── Opaque metadata (raw media refs, platform-specific fields, env vars, etc.)
+  google.protobuf.Struct metadata = 7;
+
+  // ── Routing hints ────────────────────────────────────────────
+  RoutingHints routing = 8;
+}
+
+message Sender {
+  // Platform-native user/chat identifier.
+  string platform_id = 1;
+
+  // Human-readable display name.
+  string display_name = 2;
+
+  // WW role: "operator", "admin", "node", "visitor".
+  string role = 3;
+
+  // Tenant namespace for multi-tenancy.
+  string tenant_id = 4;
+
+  // Permission level (maps to contacts PermissionLevel: 1=CONTACT, 2=PARTNER, 3=TRUSTED).
+  int32 permission_level = 5;
+}
+
+message Content {
+  // One of these content types is set.
+  oneof payload {
+    TextContent text = 1;
+    MediaContent media = 2;
+    ToolResult tool_result = 3;
+    Command command = 4;
+  }
+}
+
+message TextContent {
+  // The actual text body (after STT, if voice was transcribed).
+  string body = 1;
+
+  // Original command prefix if detected: "goal", "steer", "status", etc.
+  string command_prefix = 2;
+
+  // Cleaned text with command prefix and @mentions stripped.
+  string clean_text = 3;
+}
+
+message MediaContent {
+  // MIME type: "image/png", "audio/ogg", "video/mp4", "application/pdf", etc.
+  string mime_type = 1;
+
+  // NATS Object Store key or local file path.
+  string storage_key = 2;
+
+  // Original URL if the media is remote.
+  string source_url = 3;
+
+  // File size in bytes.
+  int64 size_bytes = 4;
+
+  // For audio: STT transcription result (populated by the STT pipeline).
+  string transcription = 5;
+}
+
+message ToolResult {
+  // Name of the tool that produced this result.
+  string tool_name = 1;
+
+  // Serialized result (JSON string or structured).
+  string result_json = 2;
+
+  // Whether this is an intermediate result (streaming) or final.
+  bool is_final = 3;
+}
+
+message Command {
+  // Built-in commands: "/goal", "/status", "/stop", "/update", "/pairing".
+  string name = 1;
+
+  // Arguments after the command.
+  repeated string args = 2;
+}
+
+// ── Routing hints ──────────────────────────────────────────────
+
+message RoutingHints {
+  // Queue mode to use when the agent is busy:
+  // "steer" - inject into current reasoning (default)
+  // "followup" - FIFO queue after current task
+  // "collect" - debounce window, merge fragments
+  // "interrupt" - abort current and start fresh
+  string queue_mode = 1;
+
+  // If set, this message is a direct reply to a prior message_id.
+  string reply_to_event_id = 2;
+
+  // Priority: 0=normal, 1=high, 2=urgent (for interrupt_queue).
+  int32 priority = 3;
+}
+
+// ── Response envelope ──────────────────────────────────────────
+
+message AgentResponse {
+  // Echoes the event_id of the request that triggered this response.
+  string correlation_id = 1;
+
+  // The target session_key (same as the request's session_key).
+  string session_key = 2;
+
+  // Response payload.
+  ResponsePayload payload = 3;
+
+  // Whether this is a partial (streaming) or final response.
+  bool is_final = 4;
+
+  // If is_final=false, this is a stream sequence number.
+  int32 stream_seq = 5;
+}
+
+message ResponsePayload {
+  oneof payload {
+    string text = 1;                  // Plain text response.
+    StreamChunk stream_chunk = 2;     // Streaming token chunk.
+    ToolCall tool_call = 3;           // Agent wants to call a tool.
+    StatusUpdate status = 4;          // Goal Mode progress update.
+    ErrorInfo error = 5;              // Error details.
+  }
+}
+
+message StreamChunk {
+  // Incremental token text.
+  string delta = 1;
+
+  // Sequence number in this stream.
+  int32 seq = 2;
+
+  // Type: "thinking", "tool_output", "final_text".
+  string stream_type = 3;
+}
+
+message ToolCall {
+  string tool_name = 1;
+  google.protobuf.Struct parameters = 2;
+}
+
+message StatusUpdate {
+  // Goal Mode status: "planning", "executing", "testing", "reviewing", "completed", "blocked".
+  string phase = 1;
+
+  // Human-readable progress description.
+  string message = 2;
+
+  // Progress percentage (0-100).
+  int32 progress_pct = 3;
+
+  // Current iteration number.
+  int32 iteration = 4;
+
+  // Total spirals used so far.
+  int32 spirals_used = 5;
+}
+
+message ErrorInfo {
+  string code = 1;       // "RATE_LIMITED", "AUTH_FAILED", "TOOL_ERROR", "TIMEOUT", etc.
+  string message = 2;
+  google.protobuf.Struct details = 3;
+}

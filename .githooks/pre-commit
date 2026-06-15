@@ -1,0 +1,52 @@
+#!/bin/bash
+# WW Pre-commit hook — block personal/private data from leaking into public repo
+set -e
+
+RED='\033[0;31m'
+NC='\033[0m'
+VIOLATIONS=0
+
+# Patterns that should NEVER appear in public code
+FORBIDDEN=(
+    # Home directory paths (any user's)
+    '/home/[a-z]'
+    '/Users/[a-z]'
+
+    # Windows user paths
+    '/mnt/c/Users'
+)
+
+# Staged files only (don't scan the whole tree)
+STAGED=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.(py|md|json|toml|yaml|yml|sh|js|ts|jsx|tsx|css|html)$' || true)
+
+if [ -z "$STAGED" ]; then
+    exit 0
+fi
+
+for pattern in "${FORBIDDEN[@]}"; do
+    matches=$(git diff --cached -G"$pattern" --name-only --diff-filter=ACMR 2>/dev/null || true)
+    if [ -n "$matches" ]; then
+        echo -e "${RED}[PII LEAK DETECTED]${NC} Pattern: $pattern"
+        echo "$matches" | while IFS= read -r f; do
+            echo "  → $f"
+        done
+        VIOLATIONS=$((VIOLATIONS + 1))
+    fi
+done
+
+# Check for staged files that look like .env (API keys, bot tokens)
+STAGED_ENV=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.env$' || true)
+if [ -n "$STAGED_ENV" ]; then
+    echo -e "${RED}[PII LEAK DETECTED]${NC} .env files should never be committed!"
+    echo "$STAGED_ENV"
+    VIOLATIONS=$((VIOLATIONS + 1))
+fi
+
+if [ $VIOLATIONS -gt 0 ]; then
+    echo ""
+    echo -e "${RED}✗ Commit blocked: $VIOLATIONS PII violation(s) found.${NC}"
+    echo "  Use git commit --no-verify to bypass (not recommended)."
+    exit 1
+fi
+
+exit 0

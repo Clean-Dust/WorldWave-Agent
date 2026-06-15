@@ -1,0 +1,140 @@
+# WW Benchmark CI — Weekly SWE-bench + HumanEval + LiveCodeBench
+#
+# Runs every Sunday at 00:00 UTC. Also triggerable manually via
+# the Actions tab → "Weekly SWE-bench" → Run workflow.
+#
+# Requirements:
+#   - WW_BENCH_API_KEY secret set in repo Settings → Secrets
+#   - WW_BENCH_MODEL secret (e.g., deepseek-v4-pro)
+
+name: Weekly SWE-bench
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'   # Every Sunday
+  workflow_dispatch:        # Manual trigger
+    inputs:
+      instances:
+        description: 'Number of SWE-bench instances to evaluate'
+        default: '50'
+        type: string
+      model:
+        description: 'Model to use for evaluation'
+        default: 'deepseek-v4-pro'
+        type: string
+
+jobs:
+  swe-bench:
+    name: SWE-bench Lite (${{ github.event.inputs.instances || '50' }} instances)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install WW
+        run: |
+          pip install -e .
+
+      - name: Download SWE-bench Lite dataset
+        run: |
+          pip install swebench
+          python -c "
+          import json, os
+          os.makedirs('/tmp/swe_bench_data', exist_ok=True)
+          # Download from HuggingFace
+          from huggingface_hub import hf_hub_download
+          path = hf_hub_download(
+              repo_id='princeton-nlp/SWE-bench_Lite',
+              filename='swe-bench-lite.json',
+              repo_type='dataset',
+              cache_dir='/tmp/swe_bench_data',
+          )
+          import shutil
+          shutil.copy(path, '/tmp/swe_bench_data/swe-bench-lite.json')
+          print(f'Dataset downloaded to {path}')
+          " || echo "SKIP: dataset already downloaded or unavailable"
+
+      - name: Run SWE-bench evaluation
+        env:
+          WW_MODEL: ${{ github.event.inputs.model || 'deepseek-v4-pro' }}
+          SWE_BENCH_DATA_DIR: /tmp/swe_bench_data
+          WW_API_KEY: ${{ secrets.WW_BENCH_API_KEY }}
+        run: |
+          python -m tests.eval.swe_bench \
+            --instances ${{ github.event.inputs.instances || '50' }} \
+            --model $WW_MODEL \
+            --output results/swe-bench-$(date +%Y%m%d).json
+
+      - name: Run HumanEval
+        if: always()
+        env:
+          WW_MODEL: ${{ github.event.inputs.model || 'deepseek-v4-pro' }}
+          WW_API_KEY: ${{ secrets.WW_BENCH_API_KEY }}
+        run: |
+          python -m tests.eval.humaneval \
+            --instances 164 \
+            --model $WW_MODEL \
+            --output results/humaneval-$(date +%Y%m%d).json || echo "HumanEval harness not yet ready, skipping"
+
+      - name: Run LiveCodeBench
+        if: always()
+        env:
+          WW_MODEL: ${{ github.event.inputs.model || 'deepseek-v4-pro' }}
+          WW_API_KEY: ${{ secrets.WW_BENCH_API_KEY }}
+        run: |
+          python -m tests.eval.livecodebench \
+            --model $WW_MODEL \
+            --output results/livecodebench-$(date +%Y%m%d).json || echo "LiveCodeBench harness not yet ready, skipping"
+
+      - name: Generate comparison report
+        if: always()
+        run: |
+          python -c "
+          import json, os, glob
+          report = {
+              'timestamp': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+              'model': '${{ github.event.inputs.model || 'deepseek-v4-pro' }}',
+              'results': {}
+          }
+          for path in glob.glob('results/*.json'):
+              name = os.path.basename(path).replace('.json', '')
+              with open(path) as f:
+                  data = json.load(f)
+              report['results'][name] = data.get('resolution_rate', 'N/A')
+          os.makedirs('results', exist_ok=True)
+          with open('results/benchmark-report.json', 'w') as f:
+              json.dump(report, f, indent=2)
+          print(json.dumps(report, indent=2))
+          "
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: results/
+
+      - name: Post summary to job
+        if: always()
+        run: |
+          echo "## Benchmark Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Benchmark | Score |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          for f in results/swe-bench-*.json; do
+            if [ -f "$f" ]; then
+              RATE=$(python -c "import json; d=json.load(open('$f')); print(f\"{d.get('resolution_rate',0):.1%}\")")
+              echo "| SWE-bench Lite | $RATE |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          for f in results/humaneval-*.json; do
+            if [ -f "$f" ]; then
+              RATE=$(python -c "import json; d=json.load(open('$f')); print(f\"{d.get('pass_at_1',0):.1%}\")")
+              echo "| HumanEval | $RATE |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done

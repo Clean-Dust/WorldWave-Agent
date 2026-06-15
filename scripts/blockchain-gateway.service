@@ -1,0 +1,21 @@
+[Unit]
+Description=WW Blockchain Gateway (HTTP API + CORS)
+After=blockchain-node.service
+Wants=blockchain-node.service
+
+[Service]
+Type=simple
+User=%u
+WorkingDirectory=%h/worldwave
+ExecStart=/usr/bin/python3 %h/worldwave/scripts/bootstrap_server.py \
+    --blockchain %h/worldwave/data/subconscious/blockchain/blockchain.json \
+    --mempool %h/worldwave/data/subconscious/blockchain/mempool.json
+Restart=always
+RestartSec=10
+Environment=PORT=8080
+Environment=BLOCKCHAIN_FILE=%h/worldwave/data/subconscious/blockchain/blockchain.json
+Environment=MEMPOOL_FILE=%h/worldwave/data/subconscious/blockchain/mempool.json
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

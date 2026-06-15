@@ -1,0 +1,40 @@
+# Secrets & config
+.env
+SOUL.md
+
+# Runtime data
+data/
+**/archive.jsonl
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# Deployment-specific (not for public repo)
+scripts/ww.service
+scripts/ww_bridge.py
+
+# Temp files
+*.bak
+*.swp
+/tmp/
+
+# Build artifacts
+*.egg-info/
+
+# Credential store
+credentials.json
+
+# Kanban data files
+kanban_*.json
+
+# Config directory
+.ww/
+
+# OS files
+.DS_Store
+Thumbs.db
+audit_log.txt
+context.py.v1_backup
+*.v*_backup
+.gitkeep

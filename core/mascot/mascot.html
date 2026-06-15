@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🐋 WW Mascot</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+  background: transparent !important;
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  min-height: 100vh;
+  overflow: hidden;
+  user-select: none;
+}
+
+/* ── Mascot Container (transparent, no frame) ── */
+.mascot {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  cursor: grab;
+  -webkit-app-region: drag;
+  background: transparent !important;
+}
+.mascot:active { cursor: grabbing; }
+
+/* ── SVG Shark (1/4 of original 260px) ── */
+.shark-svg { width: 65px; height: auto; display: block; }
+
+/* ── Animations ── */
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-3px); }
+}
+@keyframes float-sleep {
+  0%, 100% { transform: translateY(0px) scale(0.98); }
+  50% { transform: translateY(-1px) scale(1.02); }
+}
+@keyframes bob-think {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-1px) rotate(-2deg); }
+  75% { transform: translateX(1px) rotate(2deg); }
+}
+@keyframes bounce-happy {
+  0%, 100% { transform: translateY(0) scale(1); }
+  30% { transform: translateY(-8px) scale(1.08); }
+  60% { transform: translateY(-3px) scale(0.98); }
+}
+@keyframes shake-sad {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-2px) rotate(-3deg); }
+  40%, 80% { transform: translateX(2px) rotate(3deg); }
+}
+@keyframes shake-error {
+  0%, 100% { transform: translateX(0) rotate(0); }
+  10%, 50%, 90% { transform: translateX(-3px) rotate(-5deg); }
+  30%, 70% { transform: translateX(3px) rotate(5deg); }
+}
+@keyframes pulse-glow {
+  0%, 100% { filter: drop-shadow(0 0 3px rgba(74, 122, 142, 0.4)); }
+  50% { filter: drop-shadow(0 0 8px rgba(74, 122, 142, 0.7)); }
+}
+@keyframes sparkle {
+  0% { opacity: 0; transform: scale(0) rotate(0deg); }
+  50% { opacity: 1; transform: scale(1) rotate(180deg); }
+  100% { opacity: 0; transform: scale(0) rotate(360deg); }
+}
+@keyframes tear-drop {
+  0% { opacity: 0; transform: translateY(-2px); }
+  50% { opacity: 0.8; }
+  100% { opacity: 0; transform: translateY(6px); }
+}
+@keyframes think-bubble {
+  0%, 100% { opacity: 0; transform: scale(0.5); }
+  20%, 80% { opacity: 0.7; transform: scale(1); }
+}
+
+/* ── Emotion-specific styles ── */
+.shark-svg.idle { animation: float 3s ease-in-out infinite, pulse-glow 4s ease-in-out infinite; }
+.shark-svg.thinking { animation: bob-think 1.5s ease-in-out infinite; }
+.shark-svg.happy { animation: bounce-happy 0.8s ease-in-out 3; }
+.shark-svg.sad { animation: shake-sad 1.2s ease-in-out 2; }
+.shark-svg.excited { animation: bounce-happy 0.4s ease-in-out infinite; }
+.shark-svg.sleep { animation: float-sleep 4s ease-in-out infinite; }
+.shark-svg.error { animation: shake-error 0.5s ease-in-out 3; }
+
+/* ── Emotion transitions ── */
+.shark-svg { transition: filter 0.5s ease; }
+
+/* ── Status Text ── */
+.status-bar {
+  margin-top: 2px;
+  text-align: center;
+  line-height: 1;
+}
+.status-text {
+  font-size: 9px;
+  color: rgba(255,255,255,0.6);
+  letter-spacing: 0.3px;
+  transition: all 0.4s ease;
+  background: transparent;
+}
+.status-text.thinking { color: #7BA7BC; }
+.status-text.happy { color: #7BCF8C; }
+.status-text.sad { color: #E88070; }
+.status-text.excited { color: #FFD700; }
+.status-text.sleep { color: rgba(255,255,255,0.25); }
+.status-text.error { color: #FF6B6B; }
+.status-text.idle { color: rgba(255,255,255,0.45); }
+
+/* ── Thought Bubble ── */
+.thought-bubble {
+  position: absolute;
+  top: -8px;
+  right: -4px;
+  display: none;
+  pointer-events: none;
+}
+.thought-bubble.visible { display: block; animation: think-bubble 2s ease-in-out infinite; }
+.thought-bubble span {
+  display: inline-block;
+  background: rgba(255,255,255,0.12);
+  border-radius: 10px;
+  padding: 2px 6px;
+  font-size: 10px;
+  color: #7BA7BC;
+}
+
+/* ── Sparkles ── */
+.sparkle-container {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+  display: none;
+}
+.sparkle-container.visible { display: block; }
+.sparkle {
+  position: absolute;
+  font-size: 7px;
+  animation: sparkle 1.2s ease-in-out infinite;
+}
+.sparkle:nth-child(1) { top: 2%; left: 0%; animation-delay: 0s; }
+.sparkle:nth-child(2) { top: 0%; right: 5%; animation-delay: 0.3s; }
+.sparkle:nth-child(3) { bottom: 10%; left: 0%; animation-delay: 0.6s; }
+.sparkle:nth-child(4) { bottom: 5%; right: 0%; animation-delay: 0.9s; }
+
+/* ── Tear drops ── */
+.tear-container {
+  position: absolute;
+  bottom: 8px;
+  left: 40%;
+  pointer-events: none;
+  display: none;
+}
+.tear-container.visible { display: block; }
+.tear {
+  font-size: 6px;
+  animation: tear-drop 1.5s ease-in infinite;
+}
+.tear:nth-child(2) { animation-delay: 0.5s; margin-left: 4px; }
+
+/* ── Zzz ── */
+.zzz-container {
+  position: absolute;
+  top: 2px;
+  right: 8px;
+  pointer-events: none;
+  display: none;
+}
+.zzz-container.visible { display: block; }
+.zzz {
+  font-size: 8px;
+  color: rgba(255,255,255,0.3);
+  animation: float 2s ease-in-out infinite;
+}
+.zzz:nth-child(2) { font-size: 10px; animation-delay: 0.4s; }
+.zzz:nth-child(3) { font-size: 12px; animation-delay: 0.8s; }
+
+/* ── Connection Status ── */
+.connection-dot {
+  display: inline-block;
+  width: 4px; height: 4px;
+  border-radius: 50%;
+  margin-right: 2px;
+  transition: all 0.3s ease;
+  background: transparent;
+}
+.connection-dot.connected { background: #7BCF8C; box-shadow: 0 0 4px #7BCF8C; }
+.connection-dot.disconnected { background: #E88070; box-shadow: 0 0 4px #E88070; }
+
+</style>
+</head>
+<body>
+
+<div class="mascot" id="mascot">
+
+  <!-- Sparkles -->
+  <div class="sparkle-container" id="sparkles">
+    <span class="sparkle">✦</span>
+    <span class="sparkle">✧</span>
+    <span class="sparkle">✦</span>
+    <span class="sparkle">✧</span>
+  </div>
+
+  <!-- Tears -->
+  <div class="tear-container" id="tears">
+    <span class="tear">💧</span>
+    <span class="tear">💧</span>
+  </div>
+
+  <!-- Zzz -->
+  <div class="zzz-container" id="zzz">
+    <span class="zzz">z</span>
+    <span class="zzz">z</span>
+    <span class="zzz">z</span>
+  </div>
+
+  <!-- Thought Bubble -->
+  <div class="thought-bubble" id="thoughtBubble">
+    <span>💭</span>
+  </div>
+
+  <!-- SVG Mascot (hand-drawn style, based on user's sketch) -->
+  <svg class="shark-svg idle" id="shark" viewBox="0 0 200 220" xmlns="http://www.w3.org/2000/svg">
+    <!-- Body (round blob) -->
+    <ellipse cx="100" cy="115" rx="76" ry="72" fill="#3D6B80" />
+    <ellipse cx="100" cy="130" rx="62" ry="52" fill="#5A8AA0" opacity="0.3" />
+
+    <!-- Belly -->
+    <ellipse cx="100" cy="138" rx="50" ry="40" fill="#C8E0EC" />
+    <ellipse cx="100" cy="142" rx="42" ry="32" fill="#E8F4FA" opacity="0.5" />
+
+    <!-- Top fin (single shark dorsal fin) -->
+    <path d="M 90 50 L 100 15 L 110 50 Z" fill="#2D5A6E" stroke-linejoin="round" />
+
+    <!-- Left arm (straight hanging, naturally follows body contour) -->
+    <path d="M 24 135 L 18 163" stroke="#2D5A6E" stroke-width="8" stroke-linecap="round" fill="none" id="leftArm">
+      <animateTransform attributeName="transform" type="rotate" values="0 24 135;5 24 135;0 24 135;-2 24 135;0 24 135" dur="4s" repeatCount="indefinite" />
+    </path>
+    <!-- Left shoulder joint -->
+    <circle cx="24" cy="135" r="5" fill="#2D5A6E" />
+
+    <!-- Right arm (straight hanging, naturally follows body contour) -->
+    <path d="M 176 135 L 182 163" stroke="#2D5A6E" stroke-width="8" stroke-linecap="round" fill="none" id="rightArm">
+      <animateTransform attributeName="transform" type="rotate" values="0 176 135;-5 176 135;0 176 135;2 176 135;0 176 135" dur="4s" repeatCount="indefinite" />
+    </path>
+    <!-- Right shoulder joint -->
+    <circle cx="176" cy="135" r="5" fill="#2D5A6E" />
+
+    <!-- Left leg (simple short line) -->
+    <path d="M 72 182 L 68 210" stroke="#2D5A6E" stroke-width="8" stroke-linecap="round" fill="none" />
+    <ellipse cx="66" cy="210" rx="6" ry="3" fill="#2D5A6E" />
+
+    <!-- Right leg (simple short line) -->
+    <path d="M 128 182 L 132 210" stroke="#2D5A6E" stroke-width="8" stroke-linecap="round" fill="none" />
+    <ellipse cx="134" cy="210" rx="6" ry="3" fill="#2D5A6E" />
+
+    <!-- Eyes (big and round) -->
+    <g id="leftEye">
+      <ellipse cx="70" cy="95" rx="18" ry="20" fill="white" />
+      <ellipse cx="74" cy="95" rx="11" ry="13" fill="#1A2A38" />
+      <ellipse cx="77" cy="90" rx="5" ry="5" fill="white" />
+      <ellipse cx="72" cy="97" rx="3" ry="3" fill="rgba(0,0,0,0.15)" />
+    </g>
+
+    <g id="rightEye">
+      <ellipse cx="130" cy="95" rx="18" ry="20" fill="white" />
+      <ellipse cx="126" cy="95" rx="11" ry="13" fill="#1A2A38" />
+      <ellipse cx="129" cy="90" rx="5" ry="5" fill="white" />
+      <ellipse cx="124" cy="97" rx="3" ry="3" fill="rgba(0,0,0,0.15)" />
+    </g>
+
+    <!-- Smile -->
+    <path d="M 82 126 Q 100 144 118 126" stroke="#1A4A5E" stroke-width="3.5" fill="none" stroke-linecap="round" id="mouth" />
+
+    <!-- Cheek blush -->
+    <ellipse cx="54" cy="116" rx="11" ry="8" fill="#D47070" opacity="0.45" />
+    <ellipse cx="146" cy="116" rx="11" ry="8" fill="#D47070" opacity="0.45" />
+  </svg>
+
+  <!-- Status Bar -->
+  <div class="status-bar">
+    <span class="connection-dot disconnected" id="connDot"></span>
+    <span class="status-text idle" id="statusText">waiting...</span>
+  </div>
+
+</div>
+
+<script>
+// ── State Machine ──
+class MascotState {
+  constructor() {
+    this.current = 'idle';
+    this.sseReconnectMs = 3000;
+    this.sse = null;
+    this.init();
+  }
+
+  init() {
+    this.shark = document.getElementById('shark');
+    this.statusText = document.getElementById('statusText');
+    this.connDot = document.getElementById('connDot');
+    this.sparkles = document.getElementById('sparkles');
+    this.tears = document.getElementById('tears');
+    this.zzz = document.getElementById('zzz');
+    this.thoughtBubble = document.getElementById('thoughtBubble');
+    this.connectSSE();
+  }
+
+  connectSSE() {
+    const base = `http://${window.location.host}`;
+    if (this.sse) this.sse.close();
+
+    this.sse = new EventSource(`${base}/ww/mascot/events`);
+    this.sse.onopen = () => {
+      this.connDot.className = 'connection-dot connected';
+    };
+
+    this.sse.onmessage = (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.state) this.setState(data.state);
+        if (data.message && data.message !== this._lastMsg) {
+          this._lastMsg = data.message;
+          this.statusText.textContent = data.message;
+        }
+      } catch (err) {}
+    };
+
+    this.sse.onerror = () => {
+      this.connDot.className = 'connection-dot disconnected';
+      this.sse.close();
+      setTimeout(() => this.connectSSE(), this.sseReconnectMs);
+    };
+  }
+
+  setState(newState) {
+    if (newState === this.current) return;
+
+    this.sparkles.className = 'sparkle-container';
+    this.tears.className = 'tear-container';
+    this.zzz.className = 'zzz-container';
+    this.thoughtBubble.className = 'thought-bubble';
+
+    this.shark.className = 'shark-svg';
+    this.statusText.className = 'status-text';
+
+    this.current = newState;
+    this.shark.classList.add(newState);
+    this.statusText.classList.add(newState);
+
+    switch (newState) {
+      case 'idle': this.statusText.textContent = 'waiting...'; break;
+      case 'thinking': this.statusText.textContent = 'thinking...'; this.thoughtBubble.className = 'thought-bubble visible'; break;
+      case 'happy': this.statusText.textContent = 'done! ✨'; this.sparkles.className = 'sparkle-container visible'; setTimeout(() => { if (this.current === 'happy') this.setState('idle'); }, 3500); break;
+      case 'sad': this.statusText.textContent = 'failed... '; this.tears.className = 'tear-container visible'; setTimeout(() => { if (this.current === 'sad') this.setState('idle'); }, 4000); break;
+      case 'excited': this.statusText.textContent = 'amazing! 🎉'; this.sparkles.className = 'sparkle-container visible'; setTimeout(() => { if (this.current === 'excited') this.setState('idle'); }, 4000); break;
+      case 'sleep': this.statusText.textContent = 'zzz...'; this.zzz.className = 'zzz-container visible'; break;
+      case 'error': this.statusText.textContent = 'error! 💥'; setTimeout(() => { if (this.current === 'error') this.setState('idle'); }, 3000); break;
+      default: this.statusText.textContent = newState;
+    }
+  }
+}
+
+// ── Start ──
+document.addEventListener('DOMContentLoaded', () => { window.mascot = new MascotState(); });
+
+// ── Drag Support ──
+let isDragging = false;
+let dragX, dragY, origX, origY;
+document.addEventListener('mousedown', (e) => {
+  if (e.target.closest('.mascot')) {
+    isDragging = true;
+    dragX = e.clientX; dragY = e.clientY;
+    const win = window;
+    origX = win.screenX; origY = win.screenY;
+  }
+});
+document.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  window.moveTo(origX + e.clientX - dragX, origY + e.clientY - dragY);
+});
+document.addEventListener('mouseup', () => { isDragging = false; });
+</script>
+</body>
+</html>

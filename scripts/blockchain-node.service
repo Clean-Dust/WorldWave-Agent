@@ -1,0 +1,18 @@
+[Unit]
+Description=WW Blockchain Node (P2P + Mining)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%u
+WorkingDirectory=%h/worldwave
+ExecStart=/usr/bin/python3 %h/worldwave/scripts/blockchain_node.py
+Restart=always
+RestartSec=10
+Environment=MINER_ID=banana
+Environment=P2P_PORT=9833
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target
