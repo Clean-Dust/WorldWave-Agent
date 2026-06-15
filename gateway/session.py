@@ -163,7 +163,7 @@ class SessionManager:
                         self._persist_session(session_key, session)
                         return session
             except Exception:
-                pass
+                log.debug("NATS session_get failed for %s", session_key)
 
         # Fall back to in-memory
         return self.get_or_create(session_key, sender, platform)
@@ -208,7 +208,7 @@ class SessionManager:
             try:
                 asyncio.create_task(self._nats.session_delete(session_key))
             except Exception:
-                pass
+                log.debug("NATS session_delete failed for %s", session_key)
 
     # ── Distributed Lock ──────────────────────────────────────
 

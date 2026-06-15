@@ -144,44 +144,74 @@ class CodeSandbox:
     def _static_analysis(self, code: str) -> List[str]:
         """
         Statically analyze code, check for dangerous operations.
-        
+
         Checks:
         - Blacklisted modules in import
-        - exec/eval/compile
-        - __import__
+        - exec/eval/compile/__import__
         - os.system/subprocess (if not in sandbox context)
+        - Reflection bypass: getattr(obj, 'method'), obj.__dict__['method']
+        - Builtins escape: __builtins__.__dict__['exec']
         """
         violations = []
-        
+
         try:
             tree = ast.parse(code)
         except SyntaxError as e:
             return [f"Syntax error: {e}"]
-        
+
         for node in ast.walk(tree):
-            # Check imports
+            # ── Check imports ──────────────────────────────────
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name not in ALLOWED_MODULES and \
                        not alias.name.startswith("ww_"):
                         violations.append(f"Disallowed module: {alias.name}")
-            
+
             if isinstance(node, ast.ImportFrom):
                 if node.module and node.module not in ALLOWED_MODULES:
                     violations.append(f"Disallowed source: {node.module}")
-                for alias in node.names:
-                    name = alias.name if alias.name else alias.asname
-                    # Allow import typing etc.
-                
-            # Check dangerous built-in functions
+
+            # ── Check dangerous function calls ─────────────────
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Name):
                     if node.func.id in ("exec", "eval", "compile", "__import__"):
                         violations.append(f"Dangerous function: {node.func.id}")
+                    if node.func.id == "__builtins__":
+                        violations.append("Dangerous: direct access to __builtins__")
+
+                    # getattr(obj, 'system') — reflection to access dangerous methods
+                    if node.func.id == "getattr" and len(node.args) >= 2:
+                        if isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
+                            target = node.args[1].value
+                            if target in ("system", "popen", "call", "run", "exec", "eval",
+                                          "compile", "__import__"):
+                                violations.append(
+                                    f"Reflection bypass: getattr(..., '{target}')"
+                                )
+
+                # obj.system(...) / obj.popen(...) / ...
                 if isinstance(node.func, ast.Attribute):
                     if node.func.attr in ("system", "popen", "call", "run"):
                         violations.append(f"Dangerous method: {node.func.attr}")
-        
+
+            # ── Check __dict__ / __builtins__ access ───────────
+            # obj.__dict__['system'] — dictionary bypass
+            if isinstance(node, ast.Subscript):
+                if isinstance(node.value, ast.Attribute) and node.value.attr == "__dict__":
+                    if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+                        key = node.slice.value
+                        if key in ("system", "popen", "exec", "eval", "compile",
+                                   "__import__", "run", "call", "Popen"):
+                            violations.append(
+                                f"Dict bypass: .__dict__['{key}']"
+                            )
+
+            # Access to __builtins__ (potential escape)
+            if isinstance(node, ast.Attribute) and node.attr == "__builtins__":
+                violations.append("Dangerous: access to __builtins__")
+            if isinstance(node, ast.Name) and node.id == "__builtins__":
+                violations.append("Dangerous: access to __builtins__")
+
         return violations
     
     def _wrap_code(self, code: str, context: Dict) -> str:

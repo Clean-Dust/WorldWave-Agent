@@ -21,6 +21,7 @@ import logging
 import os
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Callable, Optional
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -69,6 +70,10 @@ class WebhookAdapter(BaseAdapter):
         self._running = False
         self._server: Optional[HTTPServer] = None
         self._thread: Optional[threading.Thread] = None
+        self._executor = ThreadPoolExecutor(
+            max_workers=int(os.environ.get("WEBHOOK_WW_MAX_WORKERS", "16")),
+            thread_name_prefix="webhook-worker",
+        )
 
     # ── Adapter interface ──────────────────────────────────────
 
@@ -105,12 +110,9 @@ class WebhookAdapter(BaseAdapter):
                     handler.end_headers()
                     handler.wfile.write(b'{"status":"accepted"}')
 
-                    threading.Thread(
-                        target=adapter_ref._process,
-                        args=(data,),
-                        daemon=True,
-                        name="webhook-callback",
-                    ).start()
+                    adapter_ref._executor.submit(
+                        adapter_ref._process, data
+                    )
                 except Exception as e:
                     log.debug("Webhook error: %s", e)
                     try:
@@ -152,6 +154,7 @@ class WebhookAdapter(BaseAdapter):
             self._server.shutdown()
         if self._thread:
             self._thread.join(timeout=5)
+        self._executor.shutdown(wait=False, cancel_futures=True)
         log.info("Webhook adapter stopped")
 
     def send_message(self, chat_id: str, text: str, **kwargs) -> bool:

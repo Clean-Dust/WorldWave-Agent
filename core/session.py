@@ -11,6 +11,7 @@ feature:
 
 from __future__ import annotations
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -23,6 +24,8 @@ from typing import Any, Dict, List, Optional
 
 SESSION_DB = os.path.expanduser("~/.ww/sessions.db")
 SESSION_TTL_DAYS = 7  # Sessions older than this get auto-cleaned
+
+log = logging.getLogger(__name__)
 
 
 class SessionManager:
@@ -261,8 +264,8 @@ class SessionManager:
                     conn.execute("DELETE FROM checkpoints WHERE session_id = ?", (sid,))
                     conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
                 conn.execute("DELETE FROM sessions WHERE updated_at < ?", (cutoff,))
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("SQLite cleanup error: %s", e)
 
     def cleanup(self):
         """Manual cleanup trigger."""
