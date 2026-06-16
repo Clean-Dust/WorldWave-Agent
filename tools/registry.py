@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -24,6 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+logger = logging.getLogger("ww.tools.registry")
 
 # ── permission level ──────────────────────────────────────
 PERMISSION_SAFE = "safe"
@@ -287,8 +289,7 @@ class ToolRegistry:
             finally:
                 sb.clean()
         except ImportError:
-            # Fallback: execute unsandboxed
-            pass
+            logger.warning("Sandbox (coding.sandbox) import failed, executing unsandboxed with guardrails")
         except Exception as e:
             return {"success": False, "error": f"sandbox error: {e}"}
 
@@ -339,7 +340,7 @@ class ToolRegistry:
                 session_id=getattr(self, '_session_id', None),
             )
             import asyncio
-            results = asyncio.new_event_loop().run_until_complete(reg.run(ctx))
+            results = asyncio.run(reg.run(ctx))
             return [{
                 "allowed": r.allowed,
                 "modified_params": r.modified_params,
@@ -364,7 +365,7 @@ class ToolRegistry:
                 session_id=getattr(self, '_session_id', None),
             )
             import asyncio
-            results = asyncio.new_event_loop().run_until_complete(reg.run(ctx))
+            results = asyncio.run(reg.run(ctx))
             return [{
                 "context_injection": r.context_injection,
                 "metadata": r.metadata,
