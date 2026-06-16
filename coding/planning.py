@@ -17,7 +17,7 @@ import os
 import re
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -192,12 +192,12 @@ class ExecPlan:
         self.title = title
         self.goal = goal
         self.tickets = tickets or []
-        self.created_at = datetime.utcnow().isoformat()
+        self.created_at = datetime.now(timezone.utc).isoformat()
         self.updated_at = self.created_at
 
     def add_ticket(self, ticket: ExecTicket):
         self.tickets.append(ticket)
-        self.updated_at = datetime.utcnow().isoformat()
+        self.updated_at = datetime.now(timezone.utc).isoformat()
 
     def next_ticket(self) -> Optional[ExecTicket]:
         """Get the next ticket whose dependencies are all done."""
@@ -221,14 +221,14 @@ class ExecPlan:
             if ticket.id == ticket_id:
                 ticket.status = "done"
                 break
-        self.updated_at = datetime.utcnow().isoformat()
+        self.updated_at = datetime.now(timezone.utc).isoformat()
 
     def mark_failed(self, ticket_id: str, reason: str = ""):
         for ticket in self.tickets:
             if ticket.id == ticket_id:
                 ticket.status = "failed"
                 break
-        self.updated_at = datetime.utcnow().isoformat()
+        self.updated_at = datetime.now(timezone.utc).isoformat()
 
     def is_complete(self) -> bool:
         return all(t.status == "done" for t in self.tickets) if self.tickets else False

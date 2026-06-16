@@ -32,7 +32,7 @@ import json
 import time
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from fastapi import FastAPI, HTTPException, Request
@@ -348,7 +348,7 @@ class WorldwaveServer:
         self._last_result = self.ww.run(goal, max_spirals, image_path=image_path)
         self._task_history.append({
             "goal": goal[:100],
-            "time": datetime.utcnow().isoformat(),
+            "time": datetime.now(timezone.utc).isoformat(),
             "status": self._last_result.get("status", "?"),
             "spirals": self._last_result.get("spirals_completed", 0),
         })
@@ -833,7 +833,7 @@ def gateway_send(req: GatewayMessage):
             "channel": req.channel,
             "message": req.message,
             "user": req.user,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         })
         mqtt_host = os.environ.get("WW_MQTT_HOST", "localhost")
         result = subprocess.run(
@@ -1004,7 +1004,7 @@ def scheduler_stop():
 @app.post("/ww/scheduler/add")
 def scheduler_add(req: ScheduleRequest):
     task = server.scheduler.add(
-        name=req.name or "task-" + datetime.utcnow().strftime("%H%M%S"),
+        name=req.name or "task-" + datetime.now(timezone.utc).strftime("%H%M%S"),
         goal=req.goal,
         schedule=req.schedule,
         max_spirals=req.max_spirals,

@@ -21,7 +21,7 @@ import re
 import subprocess
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -509,7 +509,7 @@ class CircuitBreaker:
                 r["fingerprint"] for r in records
             )),
             "records": records,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "recommendation": (
                 f"Circuit breaker tripped for {filepath} after "
                 f"{len(records)} attempts. Changes auto-rolled back. "

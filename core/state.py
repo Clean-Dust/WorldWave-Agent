@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, field, asdict
 
@@ -56,7 +56,7 @@ class SpiralState:
         if not self.id:
             self.id = uuid.uuid4().hex[:12]
         if not self.started_at:
-            self.started_at = datetime.utcnow().isoformat()
+            self.started_at = datetime.now(timezone.utc).isoformat()
 
 
 class StateManager:
@@ -88,7 +88,7 @@ class StateManager:
         
         # Global context (persistent across spirals)
         self.global_context: Dict[str, Any] = {
-            "session_started": datetime.utcnow().isoformat(),
+            "session_started": datetime.now(timezone.utc).isoformat(),
             "total_spirals": 0,
             "interrupts": [],
         }
@@ -124,7 +124,7 @@ class StateManager:
     def complete_spiral(self):
         """complete when spiral."""
         if self.current:
-            self.current.completed_at = datetime.utcnow().isoformat()
+            self.current.completed_at = datetime.now(timezone.utc).isoformat()
             self.current_phase = "idle"
             self._checkpoint("spiral_complete")
             self._save_session()
@@ -139,7 +139,7 @@ class StateManager:
             id=uuid.uuid4().hex[:8],
             spiral_number=self.current_spiral,
             phase=self.current_phase,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             context=self._build_context(),
             interrupted=True,
             interrupt_reason=reason,
@@ -199,7 +199,7 @@ class StateManager:
             id=uuid.uuid4().hex[:8],
             spiral_number=self.current_spiral,
             phase=self.current_phase,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             context=self._build_context(),
         )
         self.checkpoints.append(cp)
@@ -234,7 +234,7 @@ class StateManager:
             "spirals": [
                 asdict(s) for s in self.spirals[-10:]  # keep the latest 10 spirals
             ],
-            "last_updated": datetime.utcnow().isoformat(),
+            "last_updated": datetime.now(timezone.utc).isoformat(),
         }
         with open(path, "w") as f:
             json.dump(data, f, indent=2, default=str)

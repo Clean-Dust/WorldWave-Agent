@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from pathlib import Path
 
@@ -44,7 +44,7 @@ class WWLogger:
     def log(self, level: str, source: str, message: str,
             data: Optional[Dict] = None, session_id: str = ""):
         entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "level": level,
             "source": source,
             "message": message[:200],
