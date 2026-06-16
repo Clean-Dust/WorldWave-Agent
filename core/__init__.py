@@ -12,7 +12,6 @@
 # Import directly: from core.subconscious import Subconscious
 
 __all__ = [
-    "Subconscious",
     "MemorySystem", "MemoryAtom",
     "ContextWindow", "ConversationManager", "ContextMessage",
     "SpiralContextSummarizer", "estimate_tokens",

@@ -42,6 +42,7 @@ websockets = ["websockets>=12.0"]
 contacts = ["cryptography>=41.0.0"]
 nats = ["nats-py>=0.8.0"]
 stt = ["openai-whisper>=20231117"]
+dev = ["python-dotenv>=1.0.0"]
 test = ["pytest>=7.0.0", "cryptography>=41.0.0"]
 all = [
     "playwright>=1.30.0",
@@ -64,7 +65,7 @@ gateway-server = "gateway.__main__:main"
 py-modules = ["ww_cli"]
 
 [tool.setuptools.packages.find]
-include = ["core*", "contacts*", "gateway*", "gateway*", "proto*", "memory*", "pm*", "sandbox*", "tools*"]
+include = ["core*", "contacts*", "gateway*", "proto*", "memory*", "pm*", "sandbox*", "tools*"]
 namespaces = false
 
 [tool.setuptools.package-data]

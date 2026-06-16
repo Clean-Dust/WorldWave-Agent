@@ -263,24 +263,27 @@ class ToolRegistry:
 
             sb = Sandbox(timeout=60, memory_limit_mb=256)
             try:
-                # Serialize the tool+params and run in sandbox
                 import json as _json
-                code = (
-                    "import json as _j\n"
-                    "_params = _j.loads('''" + _json.dumps(params or {}) + "''')\n"
-                    "_result = None\n"
+                params_json = _json.dumps(params or {})
+
+                script = (
+                    "import json\n"
+                    "with open('__params.json') as f:\n"
+                    "    _params = json.load(f)\n"
                     "_module = __import__('tools.registry', fromlist=['ToolRegistry'])\n"
                     "_reg = _module.ToolRegistry()\n"
-                    "_tool = _reg.get('" + tool.name + "')\n"
+                    "_tool = _reg.get(" + _json.dumps(tool.name) + ")\n"
                     "if _tool:\n"
                     "    _result = _tool.handler(**_params)\n"
-                    "print(_j.dumps(_result))\n"
+                    "print(json.dumps(_result))\n"
                 )
-                result = sb.execute(code, files={})
-                if result.get("stdout"):
-                    import json as _json
-                    return _json.loads(result["stdout"])
-                return {"success": False, "error": result.get("stderr", "sandbox error")}
+                result = sb.execute(
+                    "python3 __script.py",
+                    files={"__script.py": script, "__params.json": params_json},
+                )
+                if result.output:
+                    return _json.loads(result.output)
+                return {"success": False, "error": result.error or "sandbox error"}
             finally:
                 sb.clean()
         except ImportError:

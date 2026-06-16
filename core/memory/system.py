@@ -51,7 +51,7 @@ class _CompatStore:
         )
 
     def get(self, key: str) -> Optional[Dict]:
-        return self._ms.hippocampus.get(memory_id)
+        return self._ms.hippocampus.get(key)
 
     def get_recent(self, limit: int = 20) -> List[MemoryAtom]:
         atoms = self._ms.hippocampus.all()

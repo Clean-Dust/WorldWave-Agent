@@ -1304,7 +1304,7 @@ class Subconscious:
                 try:
                     ppo_ckpt = os.path.join(SUBCONSCIOUS_DIR, "ppo", "checkpoint.json")
                     if os.path.isfile(ppo_ckpt):
-                        self.ppo.save_checkpoint(ppo_ckpt)  # read-only, just verify
+                        self.ppo.load_checkpoint(ppo_ckpt)
                         logger.info(f"🤖 PPO checkpoint available: {self.ppo.total_steps} steps")
                 except Exception:
                     pass

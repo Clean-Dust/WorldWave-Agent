@@ -821,3 +821,15 @@ class PPOAgent:
         # Save policy separately
         policy_path = path.replace(".json", "_policy.json")
         self.save_policy(policy_path)
+
+    def load_checkpoint(self, path: str):
+        """Load full agent checkpoint."""
+        with open(path) as f:
+            data = json.load(f)
+        self.total_steps = data.get("total_steps", 0)
+        self.update_count = data.get("update_count", 0)
+        self.temperature = data.get("temperature", 1.0)
+        # Load policy separately
+        policy_path = path.replace(".json", "_policy.json")
+        if os.path.isfile(policy_path):
+            self.load_policy(policy_path)
