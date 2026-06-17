@@ -411,6 +411,8 @@ def cmd_run(args):
     Without a goal: interactive chat mode (REPL).
     """
     goal = " ".join(args.goal) if args.goal else ""
+    max_spirals_default = getattr(args, "spirals", None) or 5
+    effort = getattr(args, "reasoning_effort", None) or ""
 
     # Proactive update check
     _notify_if_update()
@@ -448,7 +450,10 @@ def cmd_run(args):
                 print(f"{Colors.dim('Context cleared')}")
                 continue
             print(f"{Colors.cyan('⟳')} Thinking...", end="", flush=True)
-            result = api_post("/ww/run", {"goal": line, "max_spirals": max_spirals})
+            payload = {"goal": line, "max_spirals": max_spirals}
+            if effort:
+                payload["reasoning_effort"] = effort
+            result = api_post("/ww/run", payload)
             print("\r", end="", flush=True)
             if result:
                 response = ""
@@ -467,8 +472,11 @@ def cmd_run(args):
         return
 
     # ── One-shot mode ──
-    max_spirals = getattr(args, "spirals", None) or 5
-    result = api_post("/ww/run", {"goal": goal, "max_spirals": max_spirals})
+    max_spirals = getattr(args, "spirals", None) or max_spirals_default
+    payload = {"goal": goal, "max_spirals": max_spirals}
+    if effort:
+        payload["reasoning_effort"] = effort
+    result = api_post("/ww/run", payload)
     if result:
         status = result.get("status", "?")
         spirals = result.get("spirals_completed", 0)
@@ -1270,6 +1278,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-color", action="store_true", help="Disable colors")
     parser.add_argument("-h", "--help", action="store_true", help="Show help")
     parser.add_argument("--compat", dest="compat_mode", help="Compatibility mode (claude, openclaw, hermes, codex)")
+    parser.add_argument("--effort", dest="reasoning_effort", help="Reasoning effort: low/medium/high/xhigh")
     parser.add_argument("command", nargs="?", help="command")
     parser.add_argument("goal", nargs="*", help="Task goal")
     return parser

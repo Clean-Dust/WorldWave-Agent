@@ -359,7 +359,7 @@ class Worldwave:
             "reflex": True,
         }
 
-    def run(self, goal: str, max_spirals: int = 3, image_path: str = "") -> Dict[str, Any]:
+    def run(self, goal: str, max_spirals: int = 3, image_path: str = "", reasoning_effort: str = "") -> Dict[str, Any]:
         """
         Execute a goal-driven spiral cycle sequence. 
 
@@ -367,9 +367,13 @@ class Worldwave:
             goal: Goal to be completed (Human language description) 
             max_spirals: Maximum number of spirals to execute
             image_path: Optional path to image file to attach to the goal
+            reasoning_effort: DeepSeek reasoning effort level (low/medium/high/xhigh)
         Returns:
             {status, spirals_completed, results, session_id, summary}
         """
+        # Set reasoning_effort on LLM client for this run
+        if reasoning_effort:
+            self.llm.reasoning_effort = reasoning_effort
         # If image_path provided, prepend it to the goal for the LLM
         if image_path:
             goal = f"[Attached image: {image_path}]\n{goal}"

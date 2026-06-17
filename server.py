@@ -85,6 +85,7 @@ class TaskRequest(BaseModel):
     model: Optional[str] = None
     provider: Optional[str] = None
     image_path: Optional[str] = None
+    reasoning_effort: Optional[str] = None  # DeepSeek: low/medium/high/xhigh
 
 class AutonomousRequest(BaseModel):
     interval: int = Field(300, ge=30, le=86400)
@@ -326,7 +327,8 @@ class WorldwaveServer:
     # ── Task Execution ──
 
     def run_task(self, goal: str, max_spirals: int = 10,
-                 model: str = "", provider: str = "", image_path: str = "") -> Dict[str, Any]:
+                 model: str = "", provider: str = "", image_path: str = "",
+                 reasoning_effort: str = "") -> Dict[str, Any]:
         """Execute a task."""
         # Notify Mascot: Start thinking
         try:
@@ -344,7 +346,8 @@ class WorldwaveServer:
             except Exception as e:
                 logger.warning(f"Model switch failed: {e}")
 
-        self._last_result = self.ww.run(goal, max_spirals, image_path=image_path)
+        self._last_result = self.ww.run(goal, max_spirals, image_path=image_path,
+                                        reasoning_effort=reasoning_effort)
         self._task_history.append({
             "goal": goal[:100],
             "time": datetime.now(timezone.utc).isoformat(),
@@ -661,7 +664,8 @@ def root():
 
 @app.post("/ww/run")
 def run(req: TaskRequest):
-    return server.run_task(req.goal, req.max_spirals, req.model or "", req.provider or "", req.image_path or "")
+    return server.run_task(req.goal, req.max_spirals, req.model or "", req.provider or "",
+                           req.image_path or "", req.reasoning_effort or "")
 
 
 @app.post("/ww/run/background")

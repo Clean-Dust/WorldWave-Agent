@@ -108,11 +108,13 @@ class LLMClient:
         provider: str = "",
         failover: bool = False,
         transports: Optional[TransportRegistry] = None,
+        reasoning_effort: str = "",
     ):
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
         self.failover = failover
+        self.reasoning_effort = reasoning_effort  # DeepSeek: low/medium/high/xhigh
 
         # Transport layer
         self._registry = transports or TransportRegistry()
@@ -278,6 +280,10 @@ class LLMClient:
             for t in tools:
                 if isinstance(t, dict):
                     openai_tools.append(t)
+
+        # Inject reasoning_effort if set and not already provided
+        if self.reasoning_effort and "reasoning_effort" not in kwargs:
+            kwargs["reasoning_effort"] = self.reasoning_effort
 
         # Try providers in failover chain
         providers_to_try = self._build_provider_chain()
