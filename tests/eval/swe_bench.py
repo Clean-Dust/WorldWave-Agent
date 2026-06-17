@@ -28,8 +28,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 log = logging.getLogger("ww.eval.swe_bench")
 
@@ -94,17 +93,17 @@ class SWEBenchReport:
     def to_markdown(self) -> str:
         lines = [
             f"# SWE-bench Results — {self.model}",
-            f"",
-            f"| Metric | Value |",
-            f"|--------|-------|",
+            "",
+            "| Metric | Value |",
+            "|--------|-------|",
             f"| Instances | {self.total} |",
             f"| Resolved | {self.resolved} |",
             f"| Resolution Rate | {self.resolution_rate:.1%} |",
             f"| Avg Duration | {self.avg_duration:.0f}s |",
             f"| Timestamp | {self.timestamp} |",
-            f"",
-            f"## Per-Instance Results",
-            f"",
+            "",
+            "## Per-Instance Results",
+            "",
         ]
         for r in self.results:
             status = "✅" if r.resolved else "❌"

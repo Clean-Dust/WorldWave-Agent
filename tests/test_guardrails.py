@@ -1,6 +1,5 @@
 """Tests: Guardrails module"""
 import os
-import pytest
 from core.guardrails import Guardrails, GuardrailsResult
 
 

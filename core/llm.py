@@ -11,15 +11,12 @@ Based on Transport abstraction layer, new LLM client:
 
 from __future__ import annotations
 import json
-import os
-import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from core.transports import (
     ProviderTransport,
     NormalizedResponse,
     TransportRegistry,
-    default_transports,
     infer_provider,
     find_available_providers,
 )
@@ -447,10 +444,10 @@ class LLMClient:
                 ):
                     yield (chunk, finish)
                 return
-            except Exception as e:
+            except Exception:
                 continue
 
-        raise RuntimeError(f"No streaming provider available")
+        raise RuntimeError("No streaming provider available")
 
 
 def create_llm(config: Optional[Dict[str, Any]] = None) -> LLMClient:

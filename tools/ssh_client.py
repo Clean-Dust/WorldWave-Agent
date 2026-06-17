@@ -187,7 +187,6 @@ class SSHPool:
 
 
 # default SSH connectionsetting
-from tools.registry import ToolDef
 
 _ssh_pool_instance = None
 

@@ -21,12 +21,10 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import random
 import socket
-import struct
 import threading
 import time
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("ww.subconscious.dht")
 

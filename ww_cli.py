@@ -26,7 +26,6 @@ Environment Variables:
 
 from __future__ import annotations
 import argparse
-import cmd
 import json
 import os
 import shutil
@@ -34,9 +33,7 @@ import stat
 import subprocess
 import sys
 import time
-from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 # Load .env for API keys (before any WW imports)
 try:
@@ -324,9 +321,9 @@ def cmd_init(args):
 
     if not api_key:
         print(f"\n  {Colors.yellow('⚠')} No API key detected")
-        print(f"  Edit your .env to add at least one provider:")
+        print("  Edit your .env to add at least one provider:")
         print(f"    {Colors.dim('nano ' + os.path.join(ww_home, '.env'))}")
-        print(f"  Supported: DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY")
+        print("  Supported: DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY")
         print()
     else:
         print(f"  {Colors.green('✓')} API key: {provider.upper()} configured")
@@ -509,7 +506,7 @@ def cmd_config(args):
                 print(f"  {mark} {Colors.cyan(p)}")
             if not profiles:
                 print(f"  {Colors.dim('(no profiles)')}")
-            print(f"\\n  Use: ww config profile create <name>")
+            print("\\n  Use: ww config profile create <name>")
 
         elif args.profile_action == "create":
             name = args.profile_name or "default"
@@ -1008,7 +1005,7 @@ def cmd_pairing(args):
 
     else:
         print(f"  {Colors.yellow(chr(9888))} Unknown action: {action}")
-        print(f"  Actions: list, approve <CODE>, reject <CODE>, remove <PLATFORM> <USER_ID>")
+        print("  Actions: list, approve <CODE>, reject <CODE>, remove <PLATFORM> <USER_ID>")
 
 
 def cmd_gateway(args):
@@ -1105,7 +1102,7 @@ def cmd_mascot(args):
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print(f"{Colors.green('🐋')} Opened (browser)")
         else:
-            print(f"  Mascot URL: http://localhost:9300/ww/mascot")
+            print("  Mascot URL: http://localhost:9300/ww/mascot")
 
     elif action == 'tray':
         # System tray mode -- no browser needed
@@ -1140,12 +1137,12 @@ def cmd_mascot(args):
 
     else:
         print(f"{Colors.bold('🐋 🐋 WW Mascot')}")
-        print(f"  Usage: ww mascot                     # Open window")
-        print(f"        ww mascot open                 # Open window")
-        print(f"        ww mascot state                # View current state")
-        print(f"        ww mascot state <emotion>      # Set state")
-        print(f"")
-        print(f"  States: idle / thinking / happy / sad / excited / sleep / error")
+        print("  Usage: ww mascot                     # Open window")
+        print("        ww mascot open                 # Open window")
+        print("        ww mascot state                # View current state")
+        print("        ww mascot state <emotion>      # Set state")
+        print("")
+        print("  States: idle / thinking / happy / sad / excited / sleep / error")
 
 def cmd_migrate(args):
     """Cross-generation migration: import configs from other AI agent systems."""
@@ -1214,15 +1211,15 @@ def cmd_migrate(args):
         return
 
     print(f"\n  {Colors.bold('ww migrate')}")
-    print(f"  Scan:       ww migrate [scan]")
-    print(f"  Migrate:    ww migrate <openclaw|claude_code|hermes|codex>")
-    print(f"  Dry run:    ww migrate <source> --dry-run")
-    print(f"  Rollback:   ww migrate --rollback <snapshot-id>")
+    print("  Scan:       ww migrate [scan]")
+    print("  Migrate:    ww migrate <openclaw|claude_code|hermes|codex>")
+    print("  Dry run:    ww migrate <source> --dry-run")
+    print("  Rollback:   ww migrate --rollback <snapshot-id>")
 
 
 def cmd_help(args):
     """Show help"""
-    print(f"""
+    print("""
 
   ww <command> [options]
 

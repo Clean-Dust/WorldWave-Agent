@@ -21,17 +21,14 @@ Usage:
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import os
 import re
 import sqlite3
 import threading
-import time
 from collections import Counter
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 # ── Lightweight TF-IDF (zero deps, pure Python) ──────────────────

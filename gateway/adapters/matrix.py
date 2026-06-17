@@ -7,11 +7,10 @@ Env vars: MATRIX_HOMESERVER, MATRIX_USER_ID, MATRIX_ACCESS_TOKEN
 
 from __future__ import annotations
 import asyncio
-import json
 import logging
 import os
 import time
-from typing import Callable, Dict, Optional
+from typing import Callable, Optional
 
 logger = logging.getLogger("ww.gateway.matrix")
 

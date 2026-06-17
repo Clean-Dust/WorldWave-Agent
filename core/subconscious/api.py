@@ -6,7 +6,6 @@ Mount to WW server, providing subconscious state query and control.
 
 from __future__ import annotations
 import logging
-from typing import Any, Dict, List, Optional
 
 from .blockchain import bits_to_target, Transaction
 

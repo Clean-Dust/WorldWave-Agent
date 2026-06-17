@@ -12,8 +12,6 @@ Usage:
 """
 
 import argparse
-import json
-import math
 import os
 import random
 import sys
@@ -22,7 +20,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from core.predictor import RandomForest
-from core.features import PADDED_FEATURES, NUM_FEATURES
+from core.features import PADDED_FEATURES
 
 
 def generate_synthetic_data(n_samples: int = 500) -> tuple:
@@ -143,7 +141,7 @@ def main():
     ww_home = os.environ.get("WW_HOME", os.path.expanduser("~/worldwave"))
     output_path = args.output or os.path.join(ww_home, "data", "subconscious", "model.json")
 
-    print(f"🌱 Seed weight pre-training")
+    print("🌱 Seed weight pre-training")
     print(f"   Number of trees: {args.trees}")
     print(f"   Number of samples: {args.samples}")
     print(f"   Maximum depth: {args.depth}")

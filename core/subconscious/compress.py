@@ -21,9 +21,7 @@ import logging
 import math
 import os
 import random
-import time
-from collections import defaultdict
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("ww.subconscious.compress")
 

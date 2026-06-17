@@ -20,7 +20,6 @@ import os
 import time
 from typing import Any, Dict, List, Optional
 
-from p2p.federation import CrashReport
 
 CHAIN_DIR = os.path.expanduser("~/worldwave/data/subconscious/chain")
 

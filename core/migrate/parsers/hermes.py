@@ -7,12 +7,10 @@ Parses Hermes configuration:
 """
 
 from __future__ import annotations
-import json
 import logging
 import os
 import sqlite3
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logger = logging.getLogger("ww.migrate.parsers.hermes")
 
@@ -50,7 +48,6 @@ class HermesParser:
 
         Uses a simple YAML subset parser to avoid yaml dependency.
         """
-        import configparser
         try:
             import yaml
             config_path = os.path.join(base, "config.yaml")

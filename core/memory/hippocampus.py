@@ -15,7 +15,7 @@ import os
 import sqlite3
 import threading
 import time
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional
 
 from .atom import MemoryAtom
 

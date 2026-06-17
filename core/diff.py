@@ -19,11 +19,10 @@ Usage:
 
 import difflib
 import hashlib
-import json
 import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 
 # ── ANSI color codes ────────────────────────────────────────────
@@ -191,7 +190,7 @@ class DiffEngine:
             lines.append(f"  {r.summary}")
             total_added += r.stats.get("added", 0)
             total_removed += r.stats.get("removed", 0)
-        lines.append(f"  ───────────────")
+        lines.append("  ───────────────")
         lines.append(f"  +{total_added} -{total_removed} total")
         return "\n".join(lines)
 

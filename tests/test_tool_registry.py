@@ -1,7 +1,7 @@
 """Tests: ToolRegistry — registration, permissions, guardrails, hooks, call()"""
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

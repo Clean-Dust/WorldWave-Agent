@@ -145,7 +145,7 @@ def main():
     import threading
 
     server = HTTPServer(("0.0.0.0", PORT), Handler)
-    print(f"🌍 WW Bootstrap Tracker")
+    print("🌍 WW Bootstrap Tracker")
     print(f"   Listen: http://0.0.0.0:{PORT}")
 
     def cleanup_loop():

@@ -5,8 +5,7 @@ manage all available Transport, provide provider discovery, inference, failover.
 """
 
 from __future__ import annotations
-import os
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from .base import ProviderTransport
 from .chat_completions import ChatCompletionsTransport

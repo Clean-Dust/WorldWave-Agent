@@ -13,14 +13,12 @@ grpc.server(ThreadPoolExecutor).
 from __future__ import annotations
 
 import logging
-import os
 import threading
 import time
 import uuid
-from typing import Dict, Optional
+from typing import Dict
 
 import grpc
-from google.protobuf.empty_pb2 import Empty
 
 from proto.wavegate.v1 import agent_pb2 as ag_pb2
 from proto.wavegate.v1 import agent_pb2_grpc as ag_grpc

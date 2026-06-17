@@ -20,8 +20,8 @@ import logging
 import math
 import os
 import random
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 # ── Import neural primitives from predictor (monorepo) ──
 import sys as _sys
@@ -29,7 +29,7 @@ _basedir = os.path.dirname(os.path.abspath(__file__))
 if _basedir not in _sys.path:
     _sys.path.insert(0, _basedir)
 
-from core.predictor import Linear, ReLU, Adam, ParameterGroup
+from core.predictor import Linear, Adam, ParameterGroup
 
 
 # ── Small helpers not in predictor ──

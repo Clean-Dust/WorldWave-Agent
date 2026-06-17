@@ -10,10 +10,8 @@ Verifies:
 
 import sys; sys.path.insert(0, ".")
 import os
-import json
-import tempfile
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 
 # ══════════════════════════════════════════════
@@ -35,7 +33,6 @@ def mock_env():
 @pytest.fixture
 def cli_module(mock_env):
     """Import the ww_cli module (must be after env setup)."""
-    import importlib
     if "ww_cli" in sys.modules:
         del sys.modules["ww_cli"]
     import ww_cli

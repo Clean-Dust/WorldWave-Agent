@@ -22,13 +22,11 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
-import time
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from dataclasses import dataclass
+from typing import List, Optional
 
 import nats
 from nats.aio.client import Client as NatsClient
@@ -39,7 +37,6 @@ from nats.js.api import (
     AckPolicy,
     StorageType,
     StreamConfig,
-    StreamSource,
 )
 from nats.js.errors import NotFoundError, BadRequestError
 from nats.js.kv import KeyValue

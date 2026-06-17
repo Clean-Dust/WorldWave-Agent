@@ -9,15 +9,12 @@ Security mechanism:
 4. **Record** — all modifications have an Audit Trail
 """
 import os
-import sys
 import json
 import ast
 import shutil
-import subprocess
 import time
-import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 SELF_HEAL_DIR = os.path.expanduser("~/.ww/self_heal")
 BACKUP_DIR = os.path.join(SELF_HEAL_DIR, "backups")

@@ -12,7 +12,6 @@ Tests cover:
 import sys; sys.path.insert(0, ".")
 import os
 import time
-import json
 import tempfile
 import pytest
 
@@ -223,7 +222,7 @@ class TestSleepConsolidation:
         # High salience links should be strengthened
         for lid in links_before:
             assert links_after.get(lid, 0) >= links_before[lid]
-        print(f"✅ Sleep: phase_strengthen OK (links preserved/strengthened)")
+        print("✅ Sleep: phase_strengthen OK (links preserved/strengthened)")
 
     def test_phase_prune(self, mock_hippocampus, mock_amygdala, sleep_engine):
         """Weak links should be pruned."""
@@ -447,7 +446,7 @@ class TestMemorySystem:
         assert "hippocampus" in status
         assert "emotional" in status
         assert "sleep_cycles" in status
-        print(f"✅ MemorySystem: overall status OK")
+        print("✅ MemorySystem: overall status OK")
 
     def test_buffer_status(self, memory_system):
         """Buffer status reporting."""
@@ -469,7 +468,7 @@ class TestMemorySystem:
         ms = memory_system
         result = ms.store_success("Database connection pool optimized")
         assert result["atom_type"] is not None
-        print(f"✅ MemorySystem: success stored")
+        print("✅ MemorySystem: success stored")
 
     def test_auto_sleep_not_needed(self, memory_system):
         """check_auto_sleep should return None when not scheduled."""

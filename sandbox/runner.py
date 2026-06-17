@@ -13,12 +13,10 @@ Can be upgraded to Docker sandbox later.
 from __future__ import annotations
 import ast
 import json
-import os
 import subprocess
 import sys
 import tempfile
-import traceback
-from typing import Optional, Dict, Any, List
+from typing import Dict, Any, List
 
 
 # Allowed built-in modules (blacklist vs whitelist — using whitelist here)

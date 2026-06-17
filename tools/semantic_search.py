@@ -5,7 +5,6 @@ Registers tools: index_codebase, semantic_search, search_similar_files
 
 from __future__ import annotations
 import os
-from typing import Optional
 
 from tools.registry import ToolRegistry, ToolDef
 from core.codebase_index import get_codebase_index

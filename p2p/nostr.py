@@ -14,11 +14,9 @@ WW subconscious uses kind=39393 to propagate model deltas.
 
 from __future__ import annotations
 import hashlib
-import hmac
 import json
 import logging
 import os
-import random
 import asyncio
 import time
 import threading
@@ -580,7 +578,6 @@ class NostrRelayClient:
 
     def _run_loop(self):
         """Background thread: maintain WebSocket connection + receive events."""
-        import websockets
 
         backoff = 1
 

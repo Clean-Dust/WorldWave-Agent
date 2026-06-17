@@ -15,11 +15,11 @@ Does not change any existing interface, only acts as a Subconscious plugin modul
 from __future__ import annotations
 import logging
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from core.features import FeatureExtractor
 from core.predictor import RandomForest  # noqa: F401 — legacy alias, actual class is DeepRiskNet
-from .signal_pipeline import SignalCollector, TrainingTriple, SignalSource
+from .signal_pipeline import SignalCollector
 from .contrastive import ContrastiveEngine
 
 logger = logging.getLogger("ww.subconscious.runtime")

@@ -22,8 +22,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, List, Optional
+from typing import List, Optional
 
 log = logging.getLogger("ww.eval.humaneval")
 
@@ -65,8 +64,8 @@ class HumanEvalReport:
         lines = [
             f"# HumanEval Results — {self.model}",
             "",
-            f"| Metric | Value |",
-            f"|--------|-------|",
+            "| Metric | Value |",
+            "|--------|-------|",
             f"| Instances | {self.total} |",
             f"| Passed | {self.passed} |",
             f"| pass@1 | {self.pass_at_1:.1%} |",
@@ -181,7 +180,7 @@ class HumanEvalHarness:
                 passed = self._run_tests(generated, inst.test, inst.entry_point)
                 duration = time.time() - t0
 
-            except Exception as e:
+            except Exception:
                 passed = False
                 generated = ""
                 duration = time.time() - t0

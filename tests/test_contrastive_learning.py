@@ -2,15 +2,11 @@
 test: Signal Pipeline + Contrastive Engine + Runtime Collector
 """
 import sys; sys.path.insert(0, ".")
-import json
-import os
 import tempfile
-import time
 
 from core.subconscious.signal_pipeline import (
-    SignalCollector, TrainingTriple, SignalSource,
+    SignalCollector,
 )
-from core.subconscious.contrastive import ContrastiveEngine
 from core.subconscious.runtime_collector import RuntimeCollector
 from core.features import FeatureExtractor, PADDED_FEATURES
 from core.predictor import DeepRiskNet

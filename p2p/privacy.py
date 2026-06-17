@@ -20,7 +20,7 @@ import copy
 import logging
 import math
 import random
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List
 
 logger = logging.getLogger("ww.subconscious.privacy")
 

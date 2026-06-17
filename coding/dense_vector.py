@@ -13,8 +13,8 @@ import json
 import math
 import os
 import re
-from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional, Tuple
+from collections import Counter
+from typing import Dict, List, Tuple
 
 
 class CooccurrenceEmbedding:

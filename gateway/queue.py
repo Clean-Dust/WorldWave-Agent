@@ -14,13 +14,12 @@ Backends:
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 log = logging.getLogger("gateway.queue")
 

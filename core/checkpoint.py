@@ -20,12 +20,11 @@ import json
 import os
 import sqlite3
 import threading
-import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
-from core.diff import DiffEngine, get_diff_engine
+from core.diff import get_diff_engine
 
 
 # ── Schema ──

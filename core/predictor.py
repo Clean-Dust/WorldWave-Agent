@@ -30,8 +30,7 @@ import json
 import logging
 import math
 import random
-import time
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("ww.subconscious.predictor")
 

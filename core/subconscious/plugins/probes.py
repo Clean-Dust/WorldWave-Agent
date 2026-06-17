@@ -9,7 +9,7 @@ Pure Python, zero external dependencies. Default-disabled.
 
 from __future__ import annotations
 import math
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence
 
 # ── Probe Signal ──
 

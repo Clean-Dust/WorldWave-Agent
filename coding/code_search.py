@@ -13,7 +13,7 @@ import ast
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional
 
 
 # ── AST Search ────────────────────────────────────────────────────────
@@ -256,7 +256,7 @@ class ASTSearchEngine:
             tree = ast.parse(content)
             self._cache[filepath] = tree
             return tree
-        except (SyntaxError, IOError) as e:
+        except (SyntaxError, IOError):
             return None
 
     def _find_files(self, root_dir: str, file_glob: str) -> List[str]:
@@ -646,7 +646,8 @@ def _ast_grep_search(pattern: str, root_dir: str = ".", lang: str = "",
     Falls back to built-in AST search if sg CLI is not installed.
     Ref: Gemini WW-PM blueprint — "sg -p pattern" syntax-aware structural search.
     """
-    import subprocess, json
+    import subprocess
+    import json
 
     if not _check_ast_grep():
         return {

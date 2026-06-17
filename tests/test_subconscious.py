@@ -1,9 +1,7 @@
 """ww/core/subconscious complete test suite"""
 import os
 import random
-import shutil
 import tempfile
-import pytest
 
 random.seed(42)
 

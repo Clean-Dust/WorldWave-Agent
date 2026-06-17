@@ -9,11 +9,10 @@ Disabled by default.
 """
 
 from __future__ import annotations
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from ..base import (
-    BackendPlugin, BackendNotReadyError, BackendUnsupportedError,
-    HiddenStateSlice, AttentionInfo, LogitInfo, TokenizerInfo,
+    BackendPlugin, BackendNotReadyError, HiddenStateSlice, AttentionInfo, LogitInfo, TokenizerInfo,
     PrefixPayload, register_backend,
 )
 
@@ -73,7 +72,7 @@ class TransformersBackend(BackendPlugin):
         try:
             import torch
             import transformers
-        except ImportError as e:
+        except ImportError:
             raise BackendNotReadyError(
                 "torch and transformers required for TransformersBackend. "
                 "Install with: pip install torch transformers"
@@ -160,7 +159,6 @@ class TransformersBackend(BackendPlugin):
                 "No cached hidden states. Run a forward pass first."
             )
 
-        import torch
 
         result: Dict[int, HiddenStateSlice] = {}
         for li in layers:
@@ -189,7 +187,6 @@ class TransformersBackend(BackendPlugin):
         if not self._ready:
             raise BackendNotReadyError("Model not loaded. Call load_model() first.")
 
-        import torch
 
         result: Dict[int, AttentionInfo] = {}
 

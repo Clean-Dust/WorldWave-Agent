@@ -22,12 +22,10 @@ import hashlib
 import json
 import logging
 import os
-import random
 import time
 import uuid
-from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from core.predictor import DeepRiskNet
 
@@ -38,8 +36,8 @@ from core.features import PADDED_FEATURES
 from p2p.pow import solve as pow_solve, verify as pow_verify, DifficultyAdjuster
 from core.subconscious.sandbox import SandboxValidator, ValidationSetManager
 from p2p.aggregation import (
-    trimmed_mean, median_aggregation, krum_aggregation, multi_krum_aggregation,
-    aggregate_forest, evaluate_model, balancer_protection, local_validation_check,
+    median_aggregation, multi_krum_aggregation,
+    aggregate_forest, balancer_protection, local_validation_check,
 )
 from p2p.reputation import ReputationTracker
 

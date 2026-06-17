@@ -10,18 +10,12 @@ Zero required dependencies for default (Edge TTS built-in).
 """
 
 from __future__ import annotations
-import io
-import json
 import logging
 import os
-import subprocess
-import sys
 import tempfile
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Optional
 
 logger = logging.getLogger("ww.voice")
 

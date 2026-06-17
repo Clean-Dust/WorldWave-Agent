@@ -18,11 +18,9 @@ import json
 import logging
 import os
 import threading
-import time
 import uuid
 from typing import Callable, Optional
 from urllib.request import Request, urlopen
-from urllib.parse import urlencode
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 from google.protobuf.timestamp_pb2 import Timestamp

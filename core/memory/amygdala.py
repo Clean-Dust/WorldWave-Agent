@@ -12,15 +12,13 @@ Five-factor weighted model:
 """
 
 from __future__ import annotations
-import json
 import logging
 import math
 import os
 import time
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Set
 
 from .atom import MemoryAtom
-from .hippocampus import Hippocampus
 
 logger = logging.getLogger("ww.memory.amygdala")
 

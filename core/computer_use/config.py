@@ -15,7 +15,7 @@ Tier 6 — Edge Cerebellum: + Local 2B-8B VLM (requires GPU)
 
 from __future__ import annotations
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 

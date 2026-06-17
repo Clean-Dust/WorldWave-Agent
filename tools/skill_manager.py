@@ -8,13 +8,10 @@ each skill contains: trigger condition, steps, notes, validation method.
 """
 
 from __future__ import annotations
-import json
 import os
 import re
-import time
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 
 SKILLS_DIR = os.path.expanduser("~/worldwave/skills")

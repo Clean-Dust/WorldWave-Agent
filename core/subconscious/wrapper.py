@@ -14,16 +14,14 @@ This also naturally defends against Prompt Injection: malicious users cannot hyp
 """
 
 from __future__ import annotations
-import json
 import logging
-import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from .rule_dict import RuleDictionary
 from core.predictor import TriageVector  # noqa: F401 — legacy alias, actual class is DeepRiskNet
-from core.features import FeatureExtractor, PADDED_FEATURES, pad_vector, FEATURE_NAMES
+from core.features import FeatureExtractor
 
 logger = logging.getLogger("ww.subconscious.wrapper")
 

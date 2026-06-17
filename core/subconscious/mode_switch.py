@@ -18,10 +18,9 @@ Integrates with PrefixGenerator to inject reasoning-style prefix embeddings.
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Dict
 
 
 @dataclass

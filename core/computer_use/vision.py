@@ -23,7 +23,6 @@ import json
 import os
 import time
 import urllib.request
-from typing import Optional
 
 from core.computer_use.config import get_config
 
@@ -235,7 +234,7 @@ def _call_main_llm_for_vision(
     ]
 
     try:
-        from core.llm import create_llm, LLMClient
+        from core.llm import create_llm
 
         # Build a config matching the current main LLM
         model = cfg.main_llm_model or os.environ.get("WW_MAIN_MODEL", "deepseek/deepseek-v4-flash")

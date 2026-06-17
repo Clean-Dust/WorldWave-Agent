@@ -8,11 +8,9 @@ Implements Gemini's WW-PM Subsystem 3.3:
 
 from __future__ import annotations
 import os
-import re
 import select
 import signal
 import subprocess
-import sys
 import threading
 import time
 import uuid
@@ -243,7 +241,6 @@ class SentinelShell:
 
     def _read_line(self, proc: subprocess.Popen, timeout: float = 1) -> Optional[str]:
         """Read a single line blocking with timeout via signal.alarm."""
-        import signal
 
         class _Timeout(Exception):
             pass

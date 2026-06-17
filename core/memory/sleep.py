@@ -14,13 +14,11 @@ Additionally contains dual trigger mechanism of DailyScheduler (daily fixed) and
 from __future__ import annotations
 import json
 import logging
-import math
 import os
-import random
 import threading
 import time
 from collections import defaultdict
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, List, Optional, Set, Tuple
 
 from .atom import FactStore, MemoryAtom
 from .amygdala import Amygdala

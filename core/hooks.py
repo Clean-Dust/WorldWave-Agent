@@ -18,14 +18,11 @@ import importlib
 import json
 import logging
 import os
-import subprocess
 import sys
 import time
-import traceback
 from dataclasses import dataclass, field
 from enum import Enum
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger("ww.hooks")
 
@@ -268,8 +265,6 @@ def get_hook_registry() -> HookRegistry:
 # Upgrades Claude Code's static 8-failure Stop Hook limit to
 # intelligent escalation with subagent debugging.
 
-import time
-from typing import Callable
 
 @dataclass
 class StopHookState:

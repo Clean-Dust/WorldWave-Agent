@@ -5,10 +5,9 @@ Allow WW to auto-recover to pre-crash state after crash.
 import json
 import os
 import time
-import shutil
 import threading
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any
+from typing import Optional, Dict
 
 PERSIST_DIR = os.path.expanduser("~/.ww_data")
 SESSION_FILE = os.path.join(PERSIST_DIR, "session.json")

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Callable, Dict, Optional
+from typing import Callable, Dict, Optional
 
 log = logging.getLogger("gateway.security")
 

@@ -6,9 +6,7 @@ No need to go through MQTT or Hermes bridge.
 
 from __future__ import annotations
 
-import json
 import os
-import time
 from typing import Any, Dict, Optional
 
 import requests

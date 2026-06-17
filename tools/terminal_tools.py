@@ -6,11 +6,8 @@ Purpose: execute shell commands, manage background processes
 
 from __future__ import annotations
 import os
-import shlex
 import signal
 import subprocess
-import sys
-import tempfile
 import threading
 import time
 from datetime import datetime
@@ -111,7 +108,7 @@ def register_tools(registry: ToolRegistry):
             threading.Thread(target=reader, args=(proc.stderr, "stderr_lines"), daemon=True).start()
 
             return {
-                "result": f"Background process started",
+                "result": "Background process started",
                 "session_id": session_id,
                 "pid": proc.pid,
             }

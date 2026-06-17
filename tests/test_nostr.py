@@ -15,7 +15,7 @@ print("=" * 50)
 print("\n=== 1. secp256k1 curve computation ===")
 from p2p.nostr import (
     _point_add, _point_mul, _xonly_point, _lift_x,
-    SECP256K1_G, SECP256K1_N,
+    SECP256K1_G,
 )
 
 # G + G = 2G

@@ -23,7 +23,6 @@ Usage:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -33,8 +32,7 @@ import urllib.request
 import urllib.error
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 log = logging.getLogger("ww.plugins.marketplace")
 

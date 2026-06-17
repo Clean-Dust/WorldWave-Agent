@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
 
 class AllureParser:
@@ -38,7 +38,7 @@ class AllureParser:
             try:
                 with open(f, "r", encoding="utf-8") as fh:
                     data = json.load(fh)
-            except (json.JSONDecodeError, IOError) as e:
+            except (json.JSONDecodeError, IOError):
                 continue
 
             name = data.get("name", f.stem)

@@ -18,7 +18,7 @@ import os
 import sqlite3
 import threading
 import time
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 
 from .permissions import (
     PermissionLevel,

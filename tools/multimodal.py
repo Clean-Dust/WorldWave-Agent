@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 from tools.registry import ToolRegistry, ToolDef
-from core.multimodal_coding import get_multimodal_coder, VisionAnalysis, MultimodalCodeResult
+from core.multimodal_coding import get_multimodal_coder
 
 
 def register_tools(registry: ToolRegistry):

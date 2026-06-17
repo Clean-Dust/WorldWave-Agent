@@ -22,7 +22,6 @@ Config via env:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -32,9 +31,7 @@ import tempfile
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional
 from dataclasses import dataclass, field
 
 log = logging.getLogger("ww.github.pr_bot")

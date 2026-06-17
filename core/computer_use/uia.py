@@ -25,7 +25,6 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-import tempfile
 
 
 _PS_PATH = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"

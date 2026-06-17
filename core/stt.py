@@ -17,9 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
-import tempfile
 import threading
-from pathlib import Path
 
 log = logging.getLogger("ww.stt")
 

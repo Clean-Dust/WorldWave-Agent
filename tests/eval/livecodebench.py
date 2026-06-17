@@ -18,8 +18,7 @@ import tempfile
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, List, Optional
+from typing import List, Optional
 
 log = logging.getLogger("ww.eval.livecodebench")
 
@@ -70,8 +69,8 @@ class LiveCodeReport:
         lines = [
             f"# LiveCodeBench Results — {self.model}",
             "",
-            f"| Metric | Value |",
-            f"|--------|-------|",
+            "| Metric | Value |",
+            "|--------|-------|",
             f"| Problems | {self.total} |",
             f"| Solved | {self.passed} |",
             f"| pass@1 | {self.pass_at_1:.1%} |",
@@ -205,7 +204,7 @@ class LiveCodeBenchHarness:
                 )
                 duration = time.time() - t0
 
-            except Exception as e:
+            except Exception:
                 all_passed = False
                 pub_passed = pub_total = priv_passed = priv_total = 0
                 generated = ""

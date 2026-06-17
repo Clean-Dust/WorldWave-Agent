@@ -14,11 +14,9 @@ import asyncio
 import json
 import logging
 import os
-import subprocess
 import sys
-import uuid
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("ww.mcp")
 

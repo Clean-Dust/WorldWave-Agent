@@ -156,7 +156,6 @@ class Subconscious:
         from p2p.network import GlobalP2PNetwork
         from p2p.gossip import GossipModule
         from p2p.federation import FederationAggregator
-        from p2p.nostr import RelayPool
 
         self.chain = Chain()
 
@@ -899,12 +898,12 @@ class Subconscious:
             if triage.mode_switch >= 0.3:
                 action = "mode_switch"
                 reason = f"Mode switch to {triage.mode_name} (mode_switch={triage.mode_switch:.2f})"
-                guideline = f"The subconscious recommends switching to a more focused thinking mode. Current mode may be causing repetitive patterns. Try to re-evaluate the approach and be more decisive."
+                guideline = "The subconscious recommends switching to a more focused thinking mode. Current mode may be causing repetitive patterns. Try to re-evaluate the approach and be more decisive."
 
             if triage.should_downgrade:
                 action = "tool_downgrade"
                 reason = f"Tool downgrade needed (tool_downgrade={triage.tool_downgrade:.2f})"
-                guideline = f"The subconscious detected potential tool over-use or anomalous patterns. Stay focused on the core goal and avoid unnecessary tool calls. Prefer reading/observation over destructive actions."
+                guideline = "The subconscious detected potential tool over-use or anomalous patterns. Stay focused on the core goal and avoid unnecessary tool calls. Prefer reading/observation over destructive actions."
 
             self._emit_event(action,
                              f"⚡ Subconscious intervention: {reason}",
@@ -930,7 +929,7 @@ class Subconscious:
                 "intervene": True,
                 "reason": f"Context compression suggested (compress_urgency={triage.compress_urgency:.2f})",
                 "action": "compress",
-                "guideline": f"The subconscious suggests that your current context may be getting too large or unfocused. Prioritize concise outputs and avoid expanding the conversation with verbose actions or exploratory detours.",
+                "guideline": "The subconscious suggests that your current context may be getting too large or unfocused. Prioritize concise outputs and avoid expanding the conversation with verbose actions or exploratory detours.",
                 "risk": round(crash_risk, 3),
                 "triage": triage.to_dict(),
                 "state_vector": vec,
@@ -1108,8 +1107,8 @@ class Subconscious:
         guardrails = []
         if "rewind" in reason.lower() or "loop" in reason.lower():
             guardrails.append(
-                f"Avoid getting stuck in a rewind loop. "
-                f"If the same approach fails twice, switch strategies entirely."
+                "Avoid getting stuck in a rewind loop. "
+                "If the same approach fails twice, switch strategies entirely."
             )
         if most_common:
             repeated = [f"'{t}' ({c}x)" for t, c in most_common if c >= 2]
@@ -1121,14 +1120,14 @@ class Subconscious:
                 )
         if "error" in reason.lower() or "exception" in reason.lower():
             guardrails.append(
-                f"Previous session crashed with an error. "
-                f"Verify preconditions before retrying."
+                "Previous session crashed with an error. "
+                "Verify preconditions before retrying."
             )
 
         if not guardrails:
             guardrails.append(
-                f"Avoid repeating the previous failure pattern. "
-                f"Try a fundamentally different approach."
+                "Avoid repeating the previous failure pattern. "
+                "Try a fundamentally different approach."
             )
         return " | ".join(guardrails)
 

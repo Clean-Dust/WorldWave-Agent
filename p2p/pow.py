@@ -14,7 +14,6 @@ Sybil attack requires sending 10,000 malicious updates → needs ~28 hours of CP
 from __future__ import annotations
 import hashlib
 import json
-import math
 import os
 import struct
 import time

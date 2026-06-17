@@ -12,10 +12,9 @@ import json
 import logging
 import os
 import socket
-import struct
 import threading
 import time
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger("ww.contacts.discovery")
 

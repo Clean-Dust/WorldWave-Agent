@@ -21,7 +21,7 @@ import json
 import math
 import os
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 # ── Random number generator for embeddings ──
 

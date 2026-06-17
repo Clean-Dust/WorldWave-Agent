@@ -1,17 +1,15 @@
 """Tests: Worldwave spiral cognitive loop — init, state machine, phases, reflex arc, checkpoint, HITL"""
 
 import json
-import os
 import sys
 import tempfile
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 sys.path.insert(0, ".")
 
 from core.loop import Worldwave, create_ww
-from core.state import Checkpoint, SpiralState, StateManager
+from core.state import SpiralState, StateManager
 from tools.registry import PERMISSION_SAFE, ToolDef, ToolRegistry
 
 

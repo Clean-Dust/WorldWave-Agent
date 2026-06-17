@@ -12,7 +12,6 @@ import ast
 import os
 import subprocess
 import sys
-import tempfile
 import textwrap
 from typing import Optional
 

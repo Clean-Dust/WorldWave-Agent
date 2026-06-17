@@ -191,7 +191,7 @@ def test_snapshot_rollback():
 
         # Should be close to original (exact match depends on training determinism)
         print(f"  restored={restored_pred:.3f}")
-        print(f"✅ Snapshot: rollback works")
+        print("✅ Snapshot: rollback works")
     except Exception as e:
         print(f"❌ Snapshot rollback: {e}")
         raise

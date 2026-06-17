@@ -13,13 +13,9 @@ Architecture:
 from __future__ import annotations
 import ast
 import os
-import re
 import subprocess
-import sys
 import tempfile
-import traceback
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 
 # ── Windowed File Viewer ──────────────────────────────────────────────
@@ -305,7 +301,8 @@ class DefensiveEditor:
 
     def _check_node_syntax(self, content: str) -> ValidationResult:
         """Check JS/JSX syntax using node --check."""
-        import subprocess, tempfile, os
+        import tempfile
+        import os
         try:
             fd, tmp = tempfile.mkstemp(suffix=".js")
             with os.fdopen(fd, "w") as f:
@@ -320,7 +317,8 @@ class DefensiveEditor:
 
     def _check_ts_syntax(self, content: str) -> ValidationResult:
         """TypeScript syntax check via tsc (if available)."""
-        import subprocess, tempfile, os
+        import tempfile
+        import os
         try:
             fd, tmp = tempfile.mkstemp(suffix=".ts")
             with os.fdopen(fd, "w") as f:

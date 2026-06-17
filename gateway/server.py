@@ -17,17 +17,13 @@ import asyncio
 import logging
 import os
 import signal
-import sys
 import time
 import uuid
 from concurrent import futures
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from dataclasses import dataclass
+from typing import List, Optional
 
 import grpc
-from google.protobuf import empty_pb2
-from google.protobuf.struct_pb2 import Struct
-from google.protobuf.timestamp_pb2 import Timestamp
 
 # ── Proto-generated code ──────────────────────────────────────
 from proto.wavegate.v1 import unified_message_pb2 as um_pb2
@@ -38,7 +34,7 @@ from proto.wavegate.v1 import agent_pb2_grpc as ag_grpc
 
 # ── Internal modules ──────────────────────────────────────────
 from gateway.adapters import AdapterRegistry
-from gateway.queue import QueueManager, QueueMode
+from gateway.queue import QueueManager
 from gateway.session import SessionManager
 from gateway.attention import BayesianAttentionGate
 

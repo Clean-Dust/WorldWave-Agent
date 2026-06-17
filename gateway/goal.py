@@ -14,7 +14,6 @@ Integrates with:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
 import time
@@ -22,7 +21,7 @@ import traceback
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Dict, List, Optional
 
 log = logging.getLogger("gateway.goal")
 
@@ -388,11 +387,11 @@ class GoalRunner:
     def _explorer_approach(self, run: GoalRun, index: int) -> str:
         """Determine the approach angle for each explorer based on its index."""
         approaches = [
-            f"Analyze the codebase structure and identify root causes. Plan a systematic fix.",
-            f"Focus on edge cases and error handling. Find brittle code paths and improve robustness.",
-            f"Focus on performance and code quality. Find optimizations and refactoring opportunities.",
-            f"Focus on test coverage. Identify untested code paths and missing tests.",
-            f"Focus on documentation and type safety. Improve types, docstrings, and contracts.",
+            "Analyze the codebase structure and identify root causes. Plan a systematic fix.",
+            "Focus on edge cases and error handling. Find brittle code paths and improve robustness.",
+            "Focus on performance and code quality. Find optimizations and refactoring opportunities.",
+            "Focus on test coverage. Identify untested code paths and missing tests.",
+            "Focus on documentation and type safety. Improve types, docstrings, and contracts.",
         ]
         return approaches[index % len(approaches)]
 

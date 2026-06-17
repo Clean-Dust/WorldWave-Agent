@@ -23,7 +23,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
 import os
 import struct
 import threading
@@ -851,7 +850,7 @@ class Blockchain:
         target = bits_to_target(block.header.bits)
         h = int(block.hash(), 16)
         if h >= target:
-            logger.warning(f"Block rejected: PoW invalid")
+            logger.warning("Block rejected: PoW invalid")
             return False
 
         # Timestamp
@@ -881,7 +880,7 @@ class Blockchain:
 
         # blocksize
         if block.byte_size() > MAX_BLOCK_BYTES:
-            logger.warning(f"Block rejected: too large")
+            logger.warning("Block rejected: too large")
             return False
 
         return True

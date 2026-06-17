@@ -13,7 +13,7 @@ import subprocess
 import threading
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
 
 # ── Crash Screenshot Capture ──────────────────────────────────────────
@@ -220,7 +220,6 @@ class MCPBridge:
 
     def _stdio_loop(self):
         """Read JSON-RPC requests from stdin and respond on stdout."""
-        import sys, json, threading, queue, os
         raw = ""
         while self._running:
             try:
@@ -254,7 +253,6 @@ class MCPBridge:
 
     def _handle_request(self, body: str):
         """Parse and dispatch a single MCP JSON-RPC request."""
-        import json, sys
         try:
             msg = json.loads(body)
         except json.JSONDecodeError:

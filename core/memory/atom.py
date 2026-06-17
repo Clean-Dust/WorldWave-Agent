@@ -9,12 +9,11 @@ FactStore: Fact-based query layer, supports entity detection, relational inferen
 from __future__ import annotations
 import json
 import logging
-import math
 import os
 import time
 import uuid
 from collections import defaultdict
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger("ww.memory.atom")
 

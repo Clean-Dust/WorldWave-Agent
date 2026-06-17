@@ -11,7 +11,6 @@ Dependencies:
 from __future__ import annotations
 import json
 import os
-import time
 from typing import Optional
 
 from tools.registry import ToolRegistry, ToolDef
@@ -154,7 +153,6 @@ def _mouse_position_handler(**kwargs) -> str:
 
 def _cu_analyze_handler(image_path: str = None, question: str = None, **kwargs) -> str:
     """Analyze screenshot content (requires vision model)."""
-    from core.llm import quick_ask
     
     path = image_path or "/tmp/computer_use_screen.png"
     if not os.path.exists(path):

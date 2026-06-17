@@ -12,11 +12,9 @@ usage:
     python tests/eval/test_tool_correctness.py
 """
 
-import json
 import os
 import sys
 import tempfile
-import time
 import unittest
 
 

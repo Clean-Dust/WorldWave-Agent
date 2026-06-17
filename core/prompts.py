@@ -9,14 +9,11 @@ Dynamically builds the system prompt based on:
 """
 
 from __future__ import annotations
-import json
 import os
 import platform
 import shutil
-from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict
 
-from core.guardrails import Guardrails
 
 # Lazy imports to avoid circular deps
 def _load_agents_md() -> str:
@@ -144,7 +141,7 @@ class PromptAssembler:
         hostname = platform.node()
         env.append(f"Host: {hostname}")
 
-        return f"Environment:\n" + "\n".join(f"  \u2022 {e}" for e in env)
+        return "Environment:\n" + "\n".join(f"  \u2022 {e}" for e in env)
 
     def _tools_info(self) -> str:
         """Tools description"""

@@ -12,13 +12,8 @@ embedding FastAPI server.
 """
 
 from __future__ import annotations
-import json
-import os
-import time
-from datetime import datetime
-from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 
 # ── Dashboard HTML ──

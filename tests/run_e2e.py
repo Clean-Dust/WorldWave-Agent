@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """WW E2E Test Runner — zero user involvement."""
-import subprocess, sys, os, json, time, signal
+import subprocess
+import sys
+import os
+import json
+import time
 from pathlib import Path
 
 WW_DIR = Path(__file__).resolve().parent.parent

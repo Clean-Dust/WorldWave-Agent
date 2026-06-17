@@ -1,7 +1,7 @@
 """Tests: LLM client module — provider resolution, chat, failover, phase prompts."""
 
 import sys
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,7 +16,7 @@ from core.llm import (
     WW_IDENTITY,
     create_llm,
 )
-from core.transports.base import NormalizedResponse, ProviderTransport
+from core.transports.base import NormalizedResponse
 
 
 # ── helpers ──

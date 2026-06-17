@@ -20,7 +20,7 @@ import os
 import sys
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 # ── setting ──
 
@@ -315,10 +315,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
 def run_server(host="0.0.0.0", port=PORT):
     server = HTTPServer((host, port), GatewayHandler)
     server.start_time = time.time()
-    print(f"🌍 WW Bootstrap Tracker + Blockchain Gateway")
+    print("🌍 WW Bootstrap Tracker + Blockchain Gateway")
     print(f"   Listen: http://0.0.0.0:{port}")
     print(f"   Blockchain file: {BLOCKCHAIN_FILE or '(none — peer-only mode)'}")
-    print(f"   CORS: enabled (all origins)")
+    print("   CORS: enabled (all origins)")
     print()
 
     import threading

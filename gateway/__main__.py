@@ -14,7 +14,6 @@ Environment variables:
 import argparse
 import asyncio
 import logging
-import sys
 
 from gateway.server import WavegateServer, WavegateConfig
 

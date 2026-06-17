@@ -19,7 +19,7 @@ import re
 import subprocess
 import tempfile
 import time
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
 
 CHROME_PATH = "google-chrome"

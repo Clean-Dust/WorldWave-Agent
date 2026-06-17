@@ -14,11 +14,10 @@ import hashlib
 import json
 import os
 import re
-import time
 import math
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set
 
 
 # ── AST-Bounded Code Chunking ─────────────────────────────────────────

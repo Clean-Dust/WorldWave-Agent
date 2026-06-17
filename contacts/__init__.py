@@ -303,7 +303,8 @@ class ContactManager:
             try:
                 from .handshake import encrypt_message
                 # Derive shared secret (simplified: use HMAC of our priv + their pub)
-                import hashlib, hmac
+                import hashlib
+                import hmac
                 secret = hmac.new(
                     self.identity.export_private_key(),
                     bytes.fromhex(contact.public_key_hex),
@@ -386,7 +387,8 @@ class ContactManager:
         # Try to decrypt
         if isinstance(msg.body, dict) and msg.body.get("encrypted"):
             if contact.public_key_hex:
-                import hashlib, hmac
+                import hashlib
+                import hmac
                 secret = hmac.new(
                     self.identity.export_private_key(),
                     bytes.fromhex(contact.public_key_hex),

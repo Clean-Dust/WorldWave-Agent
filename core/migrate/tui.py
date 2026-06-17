@@ -16,10 +16,8 @@ import json
 import logging
 import os
 import re
-import shutil
 import sqlite3
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("ww.migrate.tui")
@@ -64,12 +62,12 @@ class MigrationWizard:
         self._render_diff_tree(detected)
 
         # Confirmation
-        print(f"\n  Options:")
-        print(f"  [a] Migrate ALL")
+        print("\n  Options:")
+        print("  [a] Migrate ALL")
         for i, d in enumerate(detected, 1):
             print(f"  [{i}] Migrate {d['source']} only")
-        print(f"  [d] Dry-run preview (no changes)")
-        print(f"  [q] Quit")
+        print("  [d] Dry-run preview (no changes)")
+        print("  [q] Quit")
 
         choice = input("\n  Choice [a]: ").strip().lower() or "a"
 

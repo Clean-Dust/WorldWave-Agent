@@ -24,12 +24,9 @@ from __future__ import annotations
 import json
 import os
 import re
-import sys
-import time
 import subprocess
-import difflib
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List
 
 
 EVOLUTION_DIR = os.path.expanduser("~/.ww/evolution")
@@ -506,7 +503,7 @@ class EvolutionEngine:
                         category="auto-evolved",
                     )
                     created += 1
-                except Exception as e:
+                except Exception:
                     pass
         
         if created > 0:

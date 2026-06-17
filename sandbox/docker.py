@@ -27,7 +27,6 @@ import shutil
 import subprocess
 import tempfile
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 # Read defaults from config if available
@@ -243,7 +242,7 @@ import json, sys, os
             "--memory", self._memory,
             "--cpus", self._cpu,
             "--read-only",                   # Root filesystem read-only
-            f"--tmpfs=/tmp:rw,noexec,nosuid,size=128m",
+            "--tmpfs=/tmp:rw,noexec,nosuid,size=128m",
             "--security-opt=no-new-privileges",
             "--cap-drop=ALL",
             "--user", str(SANDBOX_UID),

@@ -25,12 +25,12 @@ from typing import Optional, Dict, Any, List
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.state import StateManager, SpiralState
-from core.llm import LLMClient, create_llm
+from core.llm import create_llm
 from tools.registry import ToolRegistry, default_registry
-from tools.skill_manager import SkillManager, default_skill_manager
-from core.config import ConfigManager, default_config
-from core.scheduler import Scheduler, default_scheduler
-from core.evolution import EvolutionEngine, MetricsCollector
+from tools.skill_manager import SkillManager
+from core.config import ConfigManager
+from core.scheduler import Scheduler
+from core.evolution import EvolutionEngine
 from core.logger import get_logger
 from core.subconscious import Subconscious
 from core.checkpoint import CheckpointDB, build_context_snapshot
@@ -394,13 +394,13 @@ class Worldwave:
             threshold = self.config.get("reflex_threshold", self.REFLEX_THRESHOLD)
             if complexity < threshold:
                 self._log(f"## ⚡ Reflex Arc — complexity {complexity:.2f} < {threshold}")
-                self._log(f"## Goal classified as trivial, taking fast path...")
+                self._log("## Goal classified as trivial, taking fast path...")
                 reflex_result = self._reflex_arc_execute(goal)
                 if reflex_result is not None:
                     self._log(f"## Reflex arc complete: {reflex_result['summary']}")
                     self.running = False
                     return reflex_result
-                self._log(f"## Reflex arc failed, falling through to full spiral...")
+                self._log("## Reflex arc failed, falling through to full spiral...")
 
         # Create context session
         session_key = self.state.session_id

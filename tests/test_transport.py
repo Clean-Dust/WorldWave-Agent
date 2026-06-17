@@ -1,7 +1,7 @@
 """Tests: LLM Transport module"""
 import sys; sys.path.insert(0, ".")
 
-from core.transports.base import ProviderTransport, NormalizedResponse, ToolDef
+from core.transports.base import NormalizedResponse, ToolDef
 
 # NormalizedResponse
 resp = NormalizedResponse(content="Hello")

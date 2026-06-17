@@ -44,10 +44,8 @@ from p2p.aggregation import (
     aggregate_forest,
     balancer_protection,
     balance_gradient_defense,
-    evaluate_model,
     flatten_weights,
     local_validation_check,
-    unflatten_weights,
 )
 
 # ════════════════════════════════════════════════════
@@ -1126,7 +1124,6 @@ class RelayHub:
 
         Expects a JSON handshake, responds with ack.
         """
-        import socket as _sock
         try:
             data = conn.recv(4096)
             handshake = json.loads(data.decode("utf-8"))
@@ -1206,7 +1203,6 @@ class RelayHub:
             if relay_url:
                 try:
                     import urllib.request as _urllib
-                    import urllib.error as _urlerr
                     req_body = json.dumps({
                         "node_id": self.node_id,
                         "target_id": peer_id,

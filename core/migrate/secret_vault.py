@@ -20,14 +20,12 @@ Security model:
 
 from __future__ import annotations
 import abc
-import json
 import logging
 import os
 import platform
 import subprocess
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger("ww.migrate.vault")
 

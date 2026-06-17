@@ -45,7 +45,6 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from core.loop import Worldwave
 from core.config import ConfigManager
 from core.scheduler import Scheduler, ScheduledTask
-from core.evolution import EvolutionEngine, default_evolution
 from core.memory import MemorySystem
 from tools.registry import default_registry
 from tools.skill_manager import SkillManager
@@ -186,7 +185,7 @@ class WorldwaveServer:
 
         # Telegram gateway (built-in Worldwave, not external patch)
         try:
-            from gateway import GatewayManager, TelegramGateway
+            from gateway import GatewayManager
             self.gateway = GatewayManager()
             self._init_gateway()
             print("[WW] Gateway init: OK", flush=True)
@@ -851,7 +850,6 @@ def gateway_send(req: GatewayMessage):
 @app.post("/ww/telegram/send")
 def telegram_send(req: TelegramMessage):
     """Send Text Message to Telegram (Direct Bot API)."""
-    from gateway import GatewayManager, TelegramGateway
     from tools.telegram import TelegramPublisher
     pub = TelegramPublisher()
     if not pub.is_configured():
@@ -863,7 +861,6 @@ def telegram_send(req: TelegramMessage):
 @app.post("/ww/telegram/photo")
 def telegram_photo(req: TelegramPhoto):
     """Send Image to Telegram."""
-    from gateway import GatewayManager, TelegramGateway
     from tools.telegram import TelegramPublisher
     pub = TelegramPublisher()
     if not pub.is_configured():
@@ -875,7 +872,6 @@ def telegram_photo(req: TelegramPhoto):
 @app.post("/ww/telegram/file")
 def telegram_file(req: TelegramFile):
     """Upload Local File to Telegram."""
-    from gateway import GatewayManager, TelegramGateway
     from tools.telegram import TelegramPublisher
     pub = TelegramPublisher()
     if not pub.is_configured():
@@ -887,7 +883,6 @@ def telegram_file(req: TelegramFile):
 @app.get("/ww/telegram/verify")
 def telegram_verify():
     """Verify Telegram Bot Connection Status."""
-    from gateway import GatewayManager, TelegramGateway
     from tools.telegram import TelegramPublisher
     pub = TelegramPublisher()
     if not pub.is_configured():
@@ -1193,7 +1188,7 @@ async def mascot_events(request: Request):
                         break
                     yield f"data: {json.dumps(data)}\n\n"
                 except asyncio.TimeoutError:
-                    yield f": keepalive\n\n"
+                    yield ": keepalive\n\n"
         except asyncio.CancelledError:
             pass
         finally:
@@ -1231,7 +1226,7 @@ def mascot_set_state(req: dict):
 def get_logs(level: str = "", source: str = "",
              session_id: str = "", limit: int = 50):
     """Query WW Structured Logs."""
-    from core.logger import get_logger, WWLogger
+    from core.logger import get_logger
     log = get_logger()
     # Reload File to Ensure Sync with Background Task
     try:
@@ -1246,7 +1241,7 @@ def get_logs(level: str = "", source: str = "",
 @app.get("/ww/logs/summary")
 def log_summary():
     """Log Quick Overview."""
-    from core.logger import get_logger, WWLogger
+    from core.logger import get_logger
     log = get_logger()
     try:
         log._load()
@@ -1420,7 +1415,7 @@ async def dashboard_sse(request: Request):
                     yield f"data: {json.dumps(new_state)}\n\n"
                     idle_cycles = 0
                 elif int(time.time()) % 30 == 0:
-                    yield f": keepalive\n\n"
+                    yield ": keepalive\n\n"
                     idle_cycles += 1
                 
                 # Safety guardrail: Exceed 600  times idle (~15Minute) No change → Disconnect
@@ -1721,7 +1716,6 @@ async def _single_event(data: dict):
 
 async def _run_and_stream(ww, goal: str, streamer):
     """Run a task and pipe output through the streamer."""
-    from core.streaming import BlockStreamer
     try:
         await streamer.emit_text(f"Processing: {goal}")
         result = ww.run(goal)

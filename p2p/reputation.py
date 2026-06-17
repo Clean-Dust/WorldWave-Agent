@@ -18,7 +18,7 @@ import logging
 import math
 import os
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("ww.subconscious.reputation")
 

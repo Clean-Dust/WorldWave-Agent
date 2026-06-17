@@ -23,7 +23,7 @@ import json
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, Optional
 
 # ── Intent types ──
 

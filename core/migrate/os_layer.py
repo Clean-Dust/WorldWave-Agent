@@ -14,13 +14,11 @@ import json
 import logging
 import os
 import shutil
-import signal
 import subprocess
 import tarfile
 import uuid
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 logger = logging.getLogger("ww.migrate.os_layer")
 

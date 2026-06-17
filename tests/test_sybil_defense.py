@@ -1,8 +1,6 @@
 """ww/core/subconscious — Sybil Defense v7 test"""
 
 import sys; sys.path.insert(0, ".")
-import time
-import json
 import os
 import random
 
@@ -113,7 +111,7 @@ assert good_acc >= 0.5
 bad_correct = sum(1 for vec, truth in val_set if abs(getattr(bad_model.predict(vec), 'crash_risk', bad_model.predict(vec)) - truth) <= 0.5)
 bad_acc = bad_correct / len(val_set)
 print(f"  Bad model: accuracy={bad_acc:.2f}")
-print(f"✅ Sandbox: accuracy comparison works")
+print("✅ Sandbox: accuracy comparison works")
 
 # ══ 3. Aggregation ══
 print("\n=== 3. Aggregation ===")
@@ -181,7 +179,7 @@ print("✅ Aggregation: aggregate_forest OK")
 
 # ══ 4. Reputation ══
 print("\n=== 4. Reputation ===")
-from p2p.reputation import ReputationTracker, ReputationEntry
+from p2p.reputation import ReputationTracker
 
 rt = ReputationTracker()
 
@@ -224,7 +222,7 @@ print("✅ Reputation: top peers correct")
 
 # ══ 5. Federation Integration ══
 print("\n=== 5. Federation Integration ===")
-from p2p.federation import FederationAggregator, CrashReport
+from p2p.federation import FederationAggregator
 
 agg = FederationAggregator()
 agg.enable_defense(aggregation_method="median")

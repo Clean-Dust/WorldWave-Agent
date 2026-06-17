@@ -24,12 +24,11 @@ Pure Python, zero external dependencies.
 
 from __future__ import annotations
 import json
-import math
 import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Optional
 
 
 # ── Prediction domains ──

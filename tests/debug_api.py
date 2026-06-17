@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Quick debug script"""
-import json, urllib.request, sys
+import json
+import urllib.request
 
 def api(method, path, data=None):
     url = f"http://localhost:9300{path}"

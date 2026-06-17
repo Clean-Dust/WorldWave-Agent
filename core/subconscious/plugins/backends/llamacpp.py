@@ -12,7 +12,7 @@ Disabled by default.
 
 from __future__ import annotations
 import math
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 from ..base import (
     BackendPlugin, BackendNotReadyError, BackendUnsupportedError,
@@ -69,7 +69,7 @@ class LlamaCppBackend(BackendPlugin):
         """Load the GGUF model via llama-cpp-python."""
         try:
             from llama_cpp import Llama
-        except ImportError as e:
+        except ImportError:
             raise BackendNotReadyError(
                 "llama-cpp-python required for LlamaCppBackend. "
                 "Install with: pip install llama-cpp-python"

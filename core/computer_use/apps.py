@@ -6,7 +6,7 @@ Manage Windows desktop application start, detection, focus switching.
 from __future__ import annotations
 from typing import Optional
 
-from core.computer_use import _ps, ComputerUseError
+from core.computer_use import _ps
 
 
 # Common application start command mapping table

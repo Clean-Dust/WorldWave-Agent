@@ -5,9 +5,7 @@ Use vision model for semantic localization (given text description → return co
 """
 
 from __future__ import annotations
-import base64
 import json
-import os
 import urllib.request
 
 from core.computer_use.config import get_config

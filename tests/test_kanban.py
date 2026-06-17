@@ -1,6 +1,7 @@
 """Tests: KanbanBoard module"""
 import sys; sys.path.insert(0, ".")
-import os, shutil
+import os
+import shutil
 from core.kanban import KanbanBoard, Task
 
 os.makedirs("/tmp/test_kanban", exist_ok=True)
@@ -58,7 +59,6 @@ assert kb.get(t2.task_id) is None
 assert kb.stats()["total"] == 2
 
 # Task creation from dict
-from core.kanban import Task
 task_obj = Task(title="Direct task", description="Created directly")
 task_dict = task_obj.to_dict()
 assert task_dict["title"] == "Direct task"

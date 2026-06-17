@@ -24,11 +24,10 @@ Pure Python, zero external dependencies.
 from __future__ import annotations
 import hashlib
 import json
-import re
 import time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 
 # ── Solidification levels ──

@@ -5,9 +5,7 @@ Auto-discovers peer IP from discovery module, falls back to relay.
 """
 
 from __future__ import annotations
-import json
 import logging
-from typing import Optional
 
 logger = logging.getLogger("ww.contacts.transport.http")
 

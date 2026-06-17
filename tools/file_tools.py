@@ -8,11 +8,10 @@ from __future__ import annotations
 import glob
 import os
 import re
-from pathlib import Path
 from typing import Optional
 
 from tools.registry import ToolRegistry, ToolDef
-from core.diff import DiffEngine, get_diff_engine
+from core.diff import get_diff_engine
 
 
 def register_tools(registry: ToolRegistry):

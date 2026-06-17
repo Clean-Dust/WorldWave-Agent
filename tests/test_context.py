@@ -1,6 +1,5 @@
 """Tests: Context module"""
 import sys; sys.path.insert(0, ".")
-import shutil
 from core.context import ContextWindow, ConversationManager, SpiralContextSummarizer, estimate_tokens
 
 # Token estimation

@@ -11,13 +11,11 @@ Memory system is now a first-class Python module in WW framework.
 """
 
 from __future__ import annotations
-import json
 import logging
-import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
-from core.context import ContextWindow, SpiralContextSummarizer, estimate_tokens
+from core.context import ContextWindow, SpiralContextSummarizer
 from .memory import MemorySystem
 
 logger = logging.getLogger("ww.memory")

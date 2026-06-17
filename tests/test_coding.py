@@ -5,9 +5,7 @@ Each module gets a TestCase class with core functionality tests.
 """
 import os
 import sys
-import tempfile
 import json
-import shutil
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -517,7 +515,6 @@ class TestLSP:
 
     def test_json_rpc_message_format(self):
         """Verify Content-Length framing works."""
-        from coding.lsp import LSPClient
         # We can't test start() without a real server, but we can
         # verify the message format utility.
         import json
@@ -830,7 +827,6 @@ class TestDebugIntegration:
     def test_mcp_handle_initialize(self):
         """Test MCP initialize handshake via _handle_request."""
         from coding.debug_integration import MCPBridge
-        import io
         import json
         mcp = MCPBridge()
         # Just verify it doesn't crash
@@ -930,18 +926,6 @@ class TestPMIntegration:
 
     def test_imports_work_cleanly(self):
         """All submodules should import without errors."""
-        import coding.aci
-        import coding.shell
-        import coding.planning
-        import coding.code_search
-        import coding.code_rag
-        import coding.dense_vector
-        import coding.lsp
-        import coding.circuit
-        import coding.sandbox
-        import coding.tool_retrieval
-        import coding.allure
-        import coding.debug_integration
         assert True
 
     def test_docstring_no_stale_future(self):

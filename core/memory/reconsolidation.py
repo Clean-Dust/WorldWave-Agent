@@ -9,15 +9,12 @@ Reconsolidation is the update process that occurs with each recall:
 """
 
 from __future__ import annotations
-import json
 import logging
-import math
 import os
 import time
-from typing import Dict, List, Optional, Set, Tuple
+from typing import List
 
 from .atom import FactStore, MemoryAtom
-from .hippocampus import Hippocampus
 
 logger = logging.getLogger("ww.memory.reconsolidation")
 

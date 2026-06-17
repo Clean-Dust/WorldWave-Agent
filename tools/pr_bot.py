@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 import os
-from typing import Optional
 
 from tools.registry import ToolRegistry, ToolDef
 
@@ -78,7 +77,6 @@ def register_tools(registry: ToolRegistry):
         if bot is None:
             return {"error": "No GitHub token configured."}
         from core.github_pr_bot import PRInfo
-        from datetime import datetime, timezone
 
         full_repo = f"{owner}/{repo}"
         # Fetch PR details

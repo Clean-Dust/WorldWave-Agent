@@ -26,7 +26,6 @@ where η = lr · confidence · (|win_count - lose_count| / max(win_count, lose_c
 from __future__ import annotations
 import copy
 import logging
-import math
 from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 

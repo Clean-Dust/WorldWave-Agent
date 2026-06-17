@@ -21,7 +21,6 @@ assert len(p3) > 50
 print(f"Autonomous prompt: {len(p3)} chars")
 
 # Custom config
-import os, platform
 config = {
     "role": "expert",
     "expert_mode": True,

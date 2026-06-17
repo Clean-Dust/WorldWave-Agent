@@ -12,8 +12,7 @@ LLMClient no longer directly calls API, but is via Transport proxy.
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
-import json
+from typing import Dict, List, Optional
 
 
 class ToolDef:

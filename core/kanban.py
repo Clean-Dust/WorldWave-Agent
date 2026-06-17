@@ -18,10 +18,9 @@ usage:
 from __future__ import annotations
 import json
 import os
-import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 DEFAULT_STATUSES = ["todo", "in_progress", "done"]
 STATUS_ICONS = {"todo": "📋", "in_progress": "🔄", "done": "✅", "blocked": "🔴"}

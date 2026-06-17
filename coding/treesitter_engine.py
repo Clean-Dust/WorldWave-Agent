@@ -17,10 +17,9 @@ This module gracefully degrades when tree-sitter is not available.
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set
 
 try:
     import tree_sitter

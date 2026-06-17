@@ -9,13 +9,11 @@ ACP is a simple JSON-based protocol over stdio:
 """
 
 from __future__ import annotations
-import asyncio
 import json
 import logging
-import os
 import sys
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Dict, Optional
 
 logger = logging.getLogger("ww.acp")
 

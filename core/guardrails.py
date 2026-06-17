@@ -17,7 +17,7 @@ import os
 import re
 import time
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Set, Tuple
 
 
 # ── Default deny mode ──
@@ -123,7 +123,7 @@ class Guardrails:
             if not allowed:
                 return GuardrailsResult(
                     False,
-                    f"path not in whitelist",
+                    "path not in whitelist",
                     f"path: {abs_path}\nwhitelist: {self.write_whitelist}",
                 )
 

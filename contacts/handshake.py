@@ -12,11 +12,10 @@ E2EE: During handshake, a shared secret is derived via ECDH
 
 from __future__ import annotations
 import hashlib
-import json
 import logging
 import os
 import time
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional
 
 from .identity import AgentIdentity, is_valid_did
 from .permissions import PermissionLevel, advertise_capabilities

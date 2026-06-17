@@ -15,15 +15,12 @@ import os
 import re
 import shutil
 import socket
-import string
-import struct
 import subprocess
 import sys
 import time
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger("ww.tools.registry")
 
@@ -1727,7 +1724,7 @@ def default_registry(guardrails=None) -> ToolRegistry:
     try:
         from tools.computer_use import register_tools as register_cu_tools
         register_cu_tools(r)
-    except Exception as e:
+    except Exception:
         pass  # Computer Use is not mandatory, load failure does not affect other features
 
     # ── WW-PM Programming Module (60 tools: AST, LSP, Sandbox, etc.) ──
@@ -1735,7 +1732,7 @@ def default_registry(guardrails=None) -> ToolRegistry:
         from coding import register_tools as register_coding_tools
         n = register_coding_tools(r)
         __builtins__["_coding_tools_count"] = n
-    except Exception as e:
+    except Exception:
         pass  # PM module is optional, load failure does not affect core functionality
 
     return r

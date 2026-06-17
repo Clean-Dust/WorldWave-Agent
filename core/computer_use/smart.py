@@ -11,9 +11,7 @@ Degradation chain:
 """
 
 from __future__ import annotations
-import os
 import re
-from typing import Optional
 
 
 # ── Task type detection ──────────────────────────────────
@@ -168,7 +166,7 @@ def _handle_app_launch(task: str, cu, result: dict) -> dict:
 
 def _handle_browser(task: str, cu, result: dict) -> dict:
     """Browser operation path — CDP first, then vision."""
-    from core.computer_use.browser import is_running, launch as cdp_launch, navigate, tab_screenshot, get_page_text
+    from core.computer_use.browser import is_running, launch as cdp_launch, navigate
 
     # Phase 1: Ensure Chrome + CDP runs
     try:

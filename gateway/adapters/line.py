@@ -6,11 +6,8 @@ Env vars: LINE_CHANNEL_ACCESS_TOKEN, LINE_CHANNEL_SECRET
 """
 
 from __future__ import annotations
-import asyncio
-import json
 import logging
 import os
-import time
 from typing import Callable, Dict, Optional
 
 logger = logging.getLogger("ww.gateway.line")

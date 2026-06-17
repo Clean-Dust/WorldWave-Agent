@@ -57,7 +57,7 @@ PENDING_TX_DIR = os.path.join(BLOCKCHAIN_DIR, "pending_txs")
 
 def main():
     logger.info("=" * 50)
-    logger.info(f"🌍 WW Blockchain Node")
+    logger.info("🌍 WW Blockchain Node")
     logger.info(f"   Miner: {MINER_ID}")
     logger.info(f"   Data:  {BLOCKCHAIN_DIR}")
     logger.info(f"   P2P:   :{P2P_PORT}")
@@ -120,7 +120,7 @@ def main():
 
     # ── startbackgroundmining ──
     bc.start_mining(MINER_ID)
-    logger.info(f"⛏️  Mining started")
+    logger.info("⛏️  Mining started")
 
     # ── Main loop: monitor + import pending txs ──
     logger.info("🔄 Monitoring... (Ctrl+C to stop)")

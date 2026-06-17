@@ -17,7 +17,7 @@ import re
 import threading
 import time
 from datetime import datetime, timezone, timedelta
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional
 
 
 SCHEDULER_DB = os.path.expanduser("~/.ww/scheduler.json")

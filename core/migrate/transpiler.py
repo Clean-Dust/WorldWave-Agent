@@ -23,12 +23,10 @@ debugging intervention (instead of the static 8-failure limit).
 """
 
 from __future__ import annotations
-import json
 import logging
 import os
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("ww.migrate.transpiler")
@@ -186,7 +184,7 @@ class SkillTranspiler:
         skill_name = self._derive_name(filepath, metadata, body)
 
         # Assemble WW-format skill
-        ww_content = f"---\n"
+        ww_content = "---\n"
         ww_content += f"name: {skill_name}\n"
         ww_content += f"source: {source}\n"
         ww_content += f"original_path: {filepath}\n"
@@ -204,7 +202,7 @@ class SkillTranspiler:
         if scope:
             ww_content += f"scope: {scope}\n"
 
-        ww_content += f"---\n\n"
+        ww_content += "---\n\n"
 
         # Body: preserve original content, add WW structure hints
         if body.strip():

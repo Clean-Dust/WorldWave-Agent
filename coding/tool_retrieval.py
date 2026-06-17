@@ -11,11 +11,10 @@ Architecture:
 """
 
 from __future__ import annotations
-import json
 import re
 import math
 from collections import Counter
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
 
 # ── Simple TF-IDF Tool Retriever ──────────────────────────────────────

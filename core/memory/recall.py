@@ -12,10 +12,8 @@ Supports max_tokens budget: auto compress summary if exceeded
 
 from __future__ import annotations
 import logging
-import math
-import time
 from collections import deque
-from typing import Callable, Dict, List, Optional, Set, Tuple
+from typing import Callable, List, Optional, Set, Tuple
 
 from .atom import MemoryAtom, FactStore
 from .amygdala import Amygdala

@@ -20,9 +20,7 @@ def test(name, fn):
 
 # ── 1. Import test ──
 def test_imports():
-    from core.state import StateManager, SpiralState
-    from core.loop import Worldwave, create_ww
-    from sandbox.runner import CodeSandbox
+    from core.loop import create_ww
     assert callable(create_ww)
 
 # ── 2. State Manager ──

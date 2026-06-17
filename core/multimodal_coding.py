@@ -23,11 +23,9 @@ Config:
 
 from __future__ import annotations
 
-import base64
-import json
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional
 
 log = logging.getLogger("ww.multimodal_coding")
 
@@ -48,7 +46,7 @@ class VisionAnalysis:
     def to_prompt(self) -> str:
         """Convert analysis to a code generation prompt."""
         parts = [
-            f"## Visual Analysis",
+            "## Visual Analysis",
             f"Description: {self.description}",
         ]
         if self.ui_components:

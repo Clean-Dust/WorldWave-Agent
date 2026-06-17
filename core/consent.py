@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 logger = logging.getLogger("ww.consent")
 
@@ -156,14 +156,14 @@ def print_consent_prompt(feature: str) -> str:
         return f"Unknown feature: {feature}"
     lines = [
         f"╔══ {item['label']} ═══",
-        f"║",
+        "║",
         f"║ {item['description']}",
-        f"║",
+        "║",
         f"║ Risk level: {item['risk']}",
     ]
     note = item.get("antivirus_note")
     if note:
         lines.append(f"║ Antivirus note: {note}")
-    lines.append(f"║")
-    lines.append(f"╚══  Allow? [y/N] ")
+    lines.append("║")
+    lines.append("╚══  Allow? [y/N] ")
     return "\n".join(lines)
