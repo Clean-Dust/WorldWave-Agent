@@ -74,11 +74,11 @@ class TestSingleCommand:
         assert callable(cli_module.cmd_run)
         print("✅ CLI: cmd_run exists (unified entry point)")
 
-    def test_no_run_chat_subcommands(self, cli_module):
-        """COMMANDS should NOT include 'run' or 'chat'."""
-        assert "run" not in cli_module.COMMANDS
+    def test_run_in_commands_chat_not(self, cli_module):
+        """'run' should be in COMMANDS (primary entry point), 'chat' should not."""
+        assert "run" in cli_module.COMMANDS, "'run' must be in COMMANDS — it is the primary user entry point"
         assert "chat" not in cli_module.COMMANDS
-        print("✅ CLI: no run/chat subcommands")
+        print("✅ CLI: run in commands, chat not")
 
     def test_cmd_run_calls_auto_start_server(self, cli_module):
         """cmd_run should call auto_start_server() first."""
