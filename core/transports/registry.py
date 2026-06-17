@@ -52,6 +52,13 @@ def default_transports() -> Dict[str, ProviderTransport]:
             models=["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
         ),
         "anthropic": AnthropicTransport(),
+        "custom": ChatCompletionsTransport(
+            name="custom",
+            api_key_env="CUSTOM_API_KEY",
+            base_url_env="CUSTOM_BASE_URL",
+            default_base_url="http://localhost:11434/v1",  # Ollama default
+            models=["custom/*"],  # Wildcard — accept any model name
+        ),
     }
 
 
@@ -67,6 +74,8 @@ def infer_provider(model: str) -> str:
             return "openai"
         if model_lower.startswith("anthropic/"):
             return "anthropic"
+        if model_lower.startswith("custom/"):
+            return "custom"
         return "openrouter"
     if model_lower in ("deepseek-chat", "deepseek-reasoner"):
         return "deepseek"
@@ -89,6 +98,10 @@ def resolve_api_model(model: str, provider: str) -> str:
             return "deepseek-reasoner"
         if "/" in model:
             return "deepseek-chat"
+    if provider == "custom":
+        # Strip custom/ prefix: custom/llama3.1-8b → llama3.1-8b
+        if model.startswith("custom/"):
+            return model[7:]
     return model
 
 

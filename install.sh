@@ -166,6 +166,10 @@ OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 OPENROUTER_API_KEY=
 
+# Custom / Self-hosted Provider (Ollama, vLLM, etc.)
+CUSTOM_API_KEY=
+CUSTOM_BASE_URL=http://localhost:11434/v1
+
 # Computer Use Vision (optional) 
 WW_VISION_API_KEY=
 WW_VISION_MODEL=qwen/qwen2.5-vl-72b-instruct

@@ -48,6 +48,7 @@ PROVIDER_ENV_MAP: Dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "openrouter": "OPENROUTER_API_KEY",
+    "custom": "CUSTOM_API_KEY",
 }
 
 ENV_PREFIX = "WW_"
