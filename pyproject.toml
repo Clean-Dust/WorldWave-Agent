@@ -34,6 +34,7 @@ dependencies = [
     "grpcio>=1.60.0",
     "protobuf>=4.25.0",
     "websockets>=12.0",
+    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
@@ -42,7 +43,7 @@ websockets = ["websockets>=12.0"]
 contacts = ["cryptography>=41.0.0"]
 nats = ["nats-py>=0.8.0"]
 stt = ["openai-whisper>=20231117"]
-dev = ["python-dotenv>=1.0.0"]
+dev = []
 test = ["pytest>=7.0.0", "cryptography>=41.0.0"]
 all = [
     "playwright>=1.30.0",

@@ -187,6 +187,9 @@ DISCORD_BOT_TOKEN=
 # Webhook Gateway (optional) 
 WW_WEBHOOK_SECRET=
 
+# API Authentication (auto-generated if not set)
+# WW_API_KEY=
+
 # Service Settings
 WW_PORT=9300
 WW_HOME=${HOME}/worldwave

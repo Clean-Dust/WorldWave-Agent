@@ -30,6 +30,7 @@ import cmd
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import time
@@ -153,6 +154,32 @@ def save_config(config: Dict):
         json.dump(config, f, indent=2, ensure_ascii=False)
 
 
+def load_or_create_api_key() -> str:
+    """Load API key from config dir, or generate and persist a new one.
+
+    Ensures CLI and server share the same key across multiple invocations.
+    """
+    key_file = os.path.join(WW_CONFIG, "api_key")
+    if os.path.exists(key_file):
+        try:
+            with open(key_file) as f:
+                key = f.read().strip()
+            if key:
+                os.environ["WW_API_KEY"] = key
+                return key
+        except Exception:
+            pass
+
+    import secrets
+    key = secrets.token_urlsafe(32)
+    os.makedirs(WW_CONFIG, exist_ok=True)
+    with open(key_file, "w") as f:
+        f.write(key)
+    os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
+    os.environ["WW_API_KEY"] = key
+    return key
+
+
 def ensure_server_running(timeout: float = 2.0) -> bool:
     import socket
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -168,6 +195,8 @@ def ensure_server_running(timeout: float = 2.0) -> bool:
 def auto_start_server() -> bool:
     """Start WW server in the background if not already running.
     Returns True once the server is reachable, False on timeout."""
+    load_or_create_api_key()
+
     if ensure_server_running():
         return True
 
@@ -188,7 +217,7 @@ def auto_start_server() -> bool:
                 print(f"{Colors.green('✓')} Server started (systemd)")
                 return True
 
-    # Fallback: direct Popen
+    # Fallback: direct Popen — inherits os.environ including WW_API_KEY
     subprocess.Popen(
         [sys.executable, server_script],
         stdout=subprocess.DEVNULL,
@@ -210,7 +239,12 @@ def api_get(endpoint: str) -> Optional[Dict]:
     import urllib.error
     try:
         url = f"http://127.0.0.1:9300{endpoint}"
-        with urllib.request.urlopen(url, timeout=10) as resp:
+        headers = {}
+        api_key = os.environ.get("WW_API_KEY", "")
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
     except Exception:
         return None
@@ -386,6 +420,9 @@ def cmd_run(args):
     if _UPDATE_AVAILABLE:
         print(f"{Colors.yellow(_UPDATE_AVAILABLE)}\n")
 
+    # Ensure API key is loaded (even if server is already running)
+    load_or_create_api_key()
+
     # Ensure server is running
     if not auto_start_server():
         print(f"{Colors.red('✗')} Cannot start WW server")
@@ -395,7 +432,7 @@ def cmd_run(args):
     if not goal:
         print(f"\n{Colors.cyan('═══ Worldwave ═══')}")
         print(f"Enter a goal, or type {Colors.yellow('/exit')} to exit\n")
-        max_spirals = args.spirals or 3
+        max_spirals = getattr(args, "spirals", None) or 3
         while True:
             try:
                 line = input(f"{Colors.green('➤ ')}")
@@ -433,7 +470,7 @@ def cmd_run(args):
         return
 
     # ── One-shot mode ──
-    max_spirals = args.spirals or 5
+    max_spirals = getattr(args, "spirals", None) or 5
     result = api_post("/ww/run", {"goal": goal, "max_spirals": max_spirals})
     if result:
         status = result.get("status", "?")
@@ -1264,6 +1301,7 @@ COMMANDS = {
     "memory": cmd_memory,
     "mascot": cmd_mascot,
     "migrate": cmd_migrate,
+    "run": cmd_run,
     "help": cmd_help,
 }
 
@@ -1402,6 +1440,13 @@ def main():
             args.action = goal_args[0] if goal_args else "scan"
             args.source = goal_args[1] if len(goal_args) > 1 else None
         COMMANDS[cmd](args)
+
+    elif cmd in ("tools",):
+        cmd_tools(args)
+
+    elif cmd in ("run",):
+        args.spirals = None
+        cmd_run(args)
 
     else:
         # Unrecognized command → treat everything as a task goal
