@@ -1,4 +1,4 @@
-// Worldwave AI — PWA Web Client v0.2
+// Worldwave AI — PWA Web Client v0.3
 // Connects to WW server API via same-origin + ?api_key= auth.
 
 const API_KEY = localStorage.getItem('ww_api_key') || '';
@@ -9,6 +9,57 @@ function auth(url) {
 }
 
 let tools = [];
+
+// ── API Key Prompt ──────────────────────────────────────────────
+
+function showKeyPrompt() {
+    // Remove any existing overlay
+    const old = document.getElementById('key-overlay');
+    if (old) old.remove();
+
+    const overlay = document.createElement('div');
+    overlay.id = 'key-overlay';
+    overlay.innerHTML = `
+        <div style="
+            position:fixed;inset:0;background:var(--bg);display:flex;
+            align-items:center;justify-content:center;z-index:9999;
+        ">
+            <div style="
+                background:var(--surface);padding:32px;border-radius:12px;
+                border:1px solid var(--border);max-width:400px;width:90%;
+                text-align:center;
+            ">
+                <h2 style="color:var(--primary);margin-bottom:8px;">⚡ Worldwave AI</h2>
+                <p style="color:var(--dim);margin-bottom:16px;">Enter your WW API key to get started</p>
+                <input id="key-input" type="password" placeholder="WW_API_KEY" style="
+                    width:100%;padding:10px;border-radius:6px;border:1px solid var(--border);
+                    background:var(--bg);color:var(--text);font:inherit;margin-bottom:12px;
+                ">
+                <button id="key-submit" style="
+                    width:100%;padding:10px;background:var(--primary);color:#fff;
+                    border:none;border-radius:6px;cursor:pointer;font-weight:600;
+                ">Connect</button>
+                <p style="color:var(--dim);font-size:11px;margin-top:12px;">
+                    Find your key with: <code style="background:var(--bg);padding:2px 6px;border-radius:3px;">ww status</code>
+                </p>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(overlay);
+    const input = document.getElementById('key-input');
+    const btn = document.getElementById('key-submit');
+    if (input) input.focus();
+    if (btn) btn.onclick = () => {
+        const val = (input && input.value) ? input.value.trim() : '';
+        if (val) {
+            localStorage.setItem('ww_api_key', val);
+            location.reload();
+        }
+    };
+    if (input) input.onkeydown = (e) => {
+        if (e.key === 'Enter') btn && btn.click();
+    };
+}
 
 // ── Init ────────────────────────────────────────────────────────
 
@@ -22,6 +73,7 @@ async function init() {
 async function loadTools() {
     try {
         const res = await fetch(auth('/ww/tools'));
+        if (res.status === 401) { showKeyPrompt(); return; }
         const data = await res.json();
         tools = data.tools || [];
         renderTools(tools);
@@ -35,6 +87,7 @@ async function loadTools() {
 async function checkStatus() {
     try {
         const res = await fetch(auth('/ww/status'));
+        if (res.status === 401) { showKeyPrompt(); return; }
         if (res.ok) setStatus('🟢 Connected', 'online');
     } catch (e) {
         setStatus('🔴 Disconnected', 'offline');
@@ -83,6 +136,7 @@ async function sendMessage() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ goal: text, max_spirals: MAX_SPIRALS }),
         });
+        if (res.status === 401) { showKeyPrompt(); showLoading(false); return; }
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             throw new Error(err.message || err.error || `HTTP ${res.status}`);
@@ -92,9 +146,8 @@ async function sendMessage() {
         let response = '';
         for (const r of results) {
             const ev = r.evaluation || {};
-            if (ev.reason) {
-                response = ev.reason;
-            }
+            // Same priority as CLI: user response > summary > meta reason
+            response = ev.response || ev.summary || ev.reason || '';
             const actions = r.actions || [];
             for (const a of actions) {
                 const output = a.result && a.result.output ? a.result.output : '';
@@ -141,5 +194,9 @@ function escAttr(s) {
 
 // ── Start ───────────────────────────────────────────────────────
 
-init();
-setInterval(checkStatus, 30000);
+if (!API_KEY) {
+    showKeyPrompt();
+} else {
+    init();
+    setInterval(checkStatus, 30000);
+}
