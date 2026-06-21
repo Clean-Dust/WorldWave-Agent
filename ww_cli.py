@@ -94,6 +94,7 @@ def _detect_ww_home() -> str:
 WW_HOME = _detect_ww_home()
 WW_CONFIG = os.environ.get("WW_CONFIG", os.path.expanduser("~/.ww"))
 WW_SERVICE = os.path.expanduser("~/.config/systemd/user/ww.service")
+WW_PORT = os.environ.get("WW_PORT", "9300")
 
 
 # ── Colors ──
@@ -196,7 +197,7 @@ def ensure_server_running(timeout: float = 2.0) -> bool:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         s.settimeout(timeout)
-        s.connect(("127.0.0.1", 9300))
+        s.connect(("127.0.0.1", int(WW_PORT)))
         s.close()
         return True
     except (ConnectionRefusedError, OSError):
@@ -238,7 +239,7 @@ def auto_start_server() -> bool:
     for _ in range(15):
         time.sleep(1)
         if ensure_server_running():
-            print(f"{Colors.green('✓')} Server started (port 9300)")
+            print(f"{Colors.green('✓')} Server started (port {WW_PORT})")
             return True
 
     print(f"{Colors.red('✗')} Server start timeout")
@@ -249,7 +250,7 @@ def api_get(endpoint: str) -> Optional[Dict]:
     import urllib.request
     import urllib.error
     try:
-        url = f"http://127.0.0.1:9300{endpoint}"
+        url = f"http://127.0.0.1:{WW_PORT}{endpoint}"
         headers = {}
         api_key = os.environ.get("WW_API_KEY", "")
         if api_key:
@@ -265,7 +266,7 @@ def api_post(endpoint: str, data: Dict) -> Optional[Dict]:
     import urllib.request
     import urllib.error
     try:
-        url = f"http://127.0.0.1:9300{endpoint}"
+        url = f"http://127.0.0.1:{WW_PORT}{endpoint}"
         body = json.dumps(data).encode()
         headers = {"Content-Type": "application/json"}
         api_key = os.environ.get("WW_API_KEY", "")
@@ -315,7 +316,7 @@ def cmd_init(args):
 
     # 2. Check if already running
     if ensure_server_running():
-        print(f"  {Colors.green('●')} WW server is already running on port {os.environ.get('WW_PORT', '9300')}")
+        print(f"  {Colors.green('●')} WW server is already running on port {WW_PORT}")
         print(f"  {Colors.dim('(init skipped — server already configured)')}\n")
         return
 
@@ -692,7 +693,7 @@ def cmd_status(args):
 
     # Server
     running = ensure_server_running()
-    print(f"  HTTP: {'● running' if running else '○ stopped'}  (port 9300)")
+    print(f"  HTTP: {'● running' if running else '○ stopped'}  (port {WW_PORT})")
 
     # Config
     sys.path.insert(0, WW_HOME)
@@ -783,7 +784,7 @@ def cmd_server(args):
             for _ in range(10):
                 time.sleep(1)
                 if ensure_server_running():
-                    print(f"  {Colors.green('✓')} Server started (port 9300)")
+                    print(f"  {Colors.green('✓')} Server started (port {WW_PORT})")
                     return
             print(f"  {Colors.red('✗')} Server start timeout")
 
@@ -821,7 +822,7 @@ def cmd_server(args):
 
     elif args.action == "status":
         if ensure_server_running():
-            print(f"  {Colors.green('●')} running (port 9300)")
+            print(f"  {Colors.green('●')} running (port {WW_PORT})")
         else:
             print(f"  {Colors.red('○')} stopped")
 
@@ -1124,7 +1125,7 @@ def cmd_mascot(args):
             ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print(f"{Colors.green('🐋')} Opened (browser)")
         else:
-            print("  Mascot URL: http://localhost:9300/ww/mascot")
+            print(f"  Mascot URL: http://localhost:{WW_PORT}/ww/mascot")
 
     elif action == 'tray':
         # System tray mode -- no browser needed
@@ -1151,7 +1152,7 @@ def cmd_mascot(args):
         # ww mascot state
         try:
             import requests
-            r = requests.get("http://localhost:9300/ww/mascot/state", timeout=3)
+            r = requests.get(f"http://localhost:{WW_PORT}/ww/mascot/state", timeout=3)
             data = r.json()
             print(f"  Mascot: {Colors.cyan(data['state'])} — {data['message']}")
         except Exception:
