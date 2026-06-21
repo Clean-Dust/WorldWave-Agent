@@ -447,9 +447,11 @@ def cmd_run(args):
     if not llm_provider:
         ww_home_env = os.environ.get("WW_HOME", os.path.expanduser("~/worldwave"))
         print(f"\n  {Colors.yellow('⚠')} No LLM API key detected")
-        print("  Edit your .env to add at least one provider:")
-        print(f"    {Colors.dim('nano ' + os.path.join(ww_home_env, '.env'))}")
-        print("  Supported: DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, CUSTOM_API_KEY")
+        print("  Set an API key via environment or .env file:")
+        print(f"    {Colors.dim('export DEEPSEEK_API_KEY=sk-...')}")
+        print(f"    {Colors.dim('  — OR edit .env: nano ' + os.path.join(ww_home_env, '.env'))}")
+        print(f"  Get a free key: {Colors.dim('platform.deepseek.com → API Keys')}")
+        print(f"  Supported: DEEPSEEK_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY, CUSTOM_API_KEY")
         print()
         return
 
