@@ -1058,7 +1058,7 @@ class TestSubconsciousInterventions:
         # Rewind interrupts the loop; status is "completed" because rewind
         # interruptions are filtered from the status check (internal mechanism)
         assert result["status"] == "completed"
-        assert result["spirals_completed"] == 1  # only 1 spiral out of 3 max
+        assert result["spirals_completed"] == 0  # rewind breaks before spiral completes
 
     def test_tool_downgrade_injects_into_context(self):
         ww = make_minimal_ww()
