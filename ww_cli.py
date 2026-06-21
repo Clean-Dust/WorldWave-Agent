@@ -246,6 +246,14 @@ def auto_start_server() -> bool:
     return False
 
 
+def check_llm_api_key() -> Optional[str]:
+    """Check all possible LLM API key env vars, return first provider found or None."""
+    for provider in ("DEEPSEEK", "OPENAI", "ANTHROPIC", "OPENROUTER", "CUSTOM"):
+        if os.environ.get(f"{provider}_API_KEY"):
+            return provider.lower()
+    return None
+
+
 def api_get(endpoint: str) -> Optional[Dict]:
     import urllib.request
     import urllib.error
@@ -433,6 +441,17 @@ def cmd_run(args):
     _notify_if_update()
     if _UPDATE_AVAILABLE:
         print(f"{Colors.yellow(_UPDATE_AVAILABLE)}\n")
+
+    # LLM API key pre-check — fail fast before starting server
+    llm_provider = check_llm_api_key()
+    if not llm_provider:
+        ww_home_env = os.environ.get("WW_HOME", os.path.expanduser("~/worldwave"))
+        print(f"\n  {Colors.yellow('⚠')} No LLM API key detected")
+        print("  Edit your .env to add at least one provider:")
+        print(f"    {Colors.dim('nano ' + os.path.join(ww_home_env, '.env'))}")
+        print("  Supported: DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, CUSTOM_API_KEY")
+        print()
+        return
 
     # Ensure API key is loaded (even if server is already running)
     load_or_create_api_key()
