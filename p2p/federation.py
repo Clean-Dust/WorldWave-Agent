@@ -829,3 +829,7 @@ class FederationAggregator:
             except Exception:
                 pass
         return None
+
+
+# Alias for external consumers
+FederationManager = ValidationSetManager

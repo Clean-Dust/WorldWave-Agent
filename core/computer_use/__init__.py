@@ -433,3 +433,7 @@ def check_available() -> bool:
         return _check_powershell()
     except Exception:
         return False
+
+
+# Alias for external consumers
+get_cu_tools = get

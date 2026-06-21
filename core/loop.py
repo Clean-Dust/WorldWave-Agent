@@ -1487,3 +1487,7 @@ def create_ww(
         model=model,
         persist_dir=persist_dir,
     )
+
+
+# Alias for external consumers  
+SpiralLoop = Worldwave

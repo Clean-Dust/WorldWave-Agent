@@ -66,7 +66,7 @@ gateway-server = "gateway.__main__:main"
 py-modules = ["ww_cli"]
 
 [tool.setuptools.packages.find]
-include = ["core*", "contacts*", "gateway*", "proto*", "memory*", "pm*", "sandbox*", "tools*"]
+include = ["core*", "contacts*", "gateway*", "proto*", "memory*", "pm*", "sandbox*", "tools*", "wavegate*"]
 namespaces = false
 
 [tool.setuptools.package-data]
