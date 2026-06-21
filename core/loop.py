@@ -808,7 +808,7 @@ class Worldwave:
             "status": "interrupted" if (self.state.get_last_checkpoint() and 
                        not (self.state.get_last_checkpoint().interrupt_reason or "").startswith("rewind:")) 
                        else "completed",
-            "spirals_completed": self.state.current_spiral,
+            "spirals_completed": len(results),
             "results": results,
             "session_id": self.state.session_id,
             "summary": self.state.summary(),
