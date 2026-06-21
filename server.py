@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse, Response
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -1488,6 +1488,24 @@ def webui_manifest():
         raise HTTPException(404, "Manifest not found")
     with open(manifest_path) as f:
         return json.loads(f.read())
+
+@app.get("/ww/webui/sw.js")
+def webui_sw():
+    """PWA Service Worker."""
+    sw_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui", "sw.js")
+    if not os.path.exists(sw_path):
+        raise HTTPException(404, "Service worker not found")
+    with open(sw_path) as f:
+        return Response(content=f.read(), media_type="application/javascript")
+
+@app.get("/ww/webui/src/app.js")
+def webui_app_js():
+    """WebUI client JavaScript."""
+    js_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui", "src", "app.js")
+    if not os.path.exists(js_path):
+        raise HTTPException(404, "app.js not found")
+    with open(js_path) as f:
+        return Response(content=f.read(), media_type="application/javascript")
 
 # ── MCP Endpoints ──
 
