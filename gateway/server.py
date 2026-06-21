@@ -38,6 +38,11 @@ from gateway.queue import QueueManager
 from gateway.session import SessionManager
 from gateway.attention import BayesianAttentionGate
 
+try:
+    from gateway.nats import NatsLayer
+except ImportError:
+    NatsLayer = None
+
 log = logging.getLogger("gateway")
 
 
@@ -259,7 +264,19 @@ class WavegateServer:
     def __init__(self, config: WavegateConfig = None):
         self.config = config or WavegateConfig.from_env()
         self.session_mgr = SessionManager()
-        self.queue_mgr = QueueManager()
+        # NATS JetStream (optional, for persistent queues)
+        self._nats = None
+        if NatsLayer is not None and os.environ.get("WW_NATS_ENABLED", "").lower() != "false":
+            try:
+                from gateway.nats import NatsConfig
+                nats_url = os.environ.get("WW_NATS_URL", "nats://localhost:4222")
+                nats_cfg = NatsConfig(url=nats_url)
+                self._nats = NatsLayer(config=nats_cfg)
+                log.info("NATS JetStream layer created: %s", nats_url)
+            except Exception as e:
+                log.debug("NATS init skipped: %s", e)
+                self._nats = None
+        self.queue_mgr = QueueManager(nats=self._nats)
         self.agent_client = AgentClient(address=self.config.agent_addr)
         self._server: Optional[grpc.aio.Server] = None
         self._running = False
@@ -270,6 +287,14 @@ class WavegateServer:
 
         # Connect to Agent Runtime
         await self.agent_client.connect()
+
+        # Connect NATS (if available)
+        if self._nats:
+            try:
+                await self._nats.connect()
+                log.info("NATS JetStream connected: %s", self._nats.config.url)
+            except Exception as e:
+                log.warning("NATS connect failed (non-fatal): %s", e)
 
         # Build gRPC server
         self._server = grpc.aio.server(
@@ -313,6 +338,14 @@ class WavegateServer:
 
         # Disconnect from Agent
         await self.agent_client.close()
+
+        # Disconnect NATS
+        if self._nats:
+            try:
+                await self._nats.close()
+                log.info("NATS disconnected")
+            except Exception as e:
+                log.debug("NATS close error: %s", e)
 
         log.info("Wavegate stopped")
 

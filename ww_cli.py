@@ -976,12 +976,84 @@ def cmd_delegate(args):
     if result:
         print(f"\n{Colors.bold('Sub-task results:')}")
         for r in result.get("results", []):
-            icon = Colors.green("✓") if r.get("status") == "done" else Colors.red("✗")
+            icon = Colors.green("\u2713") if r.get("status") == "done" else Colors.red("\u2717")
             print(f"  {icon} [{r.get('task_id', '?')}] {r.get('goal', '')[:60]}")
-        print(f"\n  Done: {result.get('done', 0)}/{result.get('sub_tasks', 0)}, "
-              f"{result.get('total_spirals', 0)} spirals")
+
+
+def cmd_goal(args):
+    """Goal Mode — autonomous background task execution.
+
+    Commands:
+        ww goal start <description>  — Start a new goal
+        ww goal status [id]          — Show goal status (or list all)
+        ww goal stop <id>            — Cancel a running goal
+        ww goal list                 — List all goals (active + completed)
+    """
+    action = getattr(args, "action", "list")
+    goal_id = getattr(args, "goal_id", "")
+
+    try:
+        from gateway.goal import GoalRunner
+        runner = GoalRunner()
+    except ImportError as e:
+        print(f"  Failed to load GoalRunner: {e}")
         return
-    print(f"{Colors.yellow(chr(9888))} Need a running WW server")
+
+    if action == "start":
+        goal_text = goal_id  # reused field — goal_id holds goal text for start
+        if not goal_text:
+            print(f"  {Colors.yellow(chr(9888))} Usage: ww goal start <description>")
+            return
+        task_id = runner.submit(goal_text)
+        print(f"  Goal started: {Colors.cyan(task_id)}")
+        print(f"  {Colors.dim(goal_text[:80])}")
+
+    elif action == "status":
+        if goal_id:
+            status = runner.get_status(goal_id)
+            if status:
+                print(f"\n{Colors.bold('Goal:')} {Colors.cyan(goal_id)}")
+                for k, v in status.items():
+                    print(f"  {k}: {v}")
+            else:
+                print(f"  {Colors.red(chr(0x2717))} Goal not found: {goal_id}")
+        else:
+            active = runner.list_active()
+            if active:
+                print(f"\n{Colors.bold('Active goals:')}\n")
+                for g in active:
+                    gid = g.get("task_id", "?")
+                    phase = g.get("phase", "?")
+                    goal_text = g.get("goal", "")[:60]
+                    print(f"  {Colors.cyan(gid)}  [{phase}] {goal_text}")
+            else:
+                print(f"  {Colors.dim('(no active goals)')}")
+
+    elif action == "stop":
+        if not goal_id:
+            print(f"  {Colors.yellow(chr(9888))} Usage: ww goal stop <id>")
+            return
+        if runner.cancel(goal_id):
+            print(f"  {Colors.green(chr(0x2713))} Goal cancelled: {goal_id}")
+        else:
+            print(f"  {Colors.red(chr(0x2717))} Goal not found or already finished: {goal_id}")
+
+    elif action == "list":
+        all_goals = runner.list_all()
+        if all_goals:
+            print(f"\n{Colors.bold('All goals:')}\n")
+            for g in all_goals:
+                gid = g.get("task_id", "?")
+                phase = g.get("phase", g.get("status", "?"))
+                goal_text = g.get("goal", "")[:60]
+                icon = Colors.green(chr(0x25CF)) if phase in ("completed", "done") else Colors.yellow(chr(0x25CB))
+                print(f"  {icon} {Colors.cyan(gid)}  [{phase}] {goal_text}")
+        else:
+            print(f"  {Colors.dim('(no goals)')}")
+
+    else:
+        print(f"  {Colors.yellow(chr(9888))} Unknown action: {action}")
+        print(f"  Usage: ww goal [start|status|stop|list] [args...]")
 
 
 def cmd_pairing(args):
@@ -1339,6 +1411,7 @@ COMMANDS = {
     "update": cmd_update,
     "logs": cmd_logs,
     "delegate": cmd_delegate,
+    "goal": cmd_goal,
     "gateway": cmd_gateway,
     "pairing": cmd_pairing,
     "memory": cmd_memory,
@@ -1455,6 +1528,15 @@ def main():
     elif cmd in ("delegate",):
         args.goal = extra
         args.parallel = 3
+        COMMANDS[cmd](args)
+
+    elif cmd in ("goal",):
+        goal_args = getattr(args, 'goal', []) or []
+        args.action = goal_args[0] if goal_args else "list"
+        if args.action == "start":
+            args.goal_id = " ".join(goal_args[1:]) if len(goal_args) > 1 else ""
+        else:
+            args.goal_id = goal_args[1] if len(goal_args) > 1 else ""
         COMMANDS[cmd](args)
 
     elif cmd in ("mascot",):
