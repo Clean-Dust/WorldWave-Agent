@@ -501,7 +501,7 @@ def cmd_run(args):
             print(f"\n{Colors.yellow('⚠')} Task {status} ({spirals} spirals)")
         for r in result.get("results", []):
             ev = r.get("evaluation", {})
-            resp = ev.get("summary", "") or ev.get("reason", "") or ev.get("response", "")
+            resp = ev.get("response", "") or ev.get("summary", "") or ev.get("reason", "")
             if resp:
                 print(f"\n{resp}")
                 break
