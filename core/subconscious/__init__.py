@@ -1002,7 +1002,7 @@ class Subconscious:
         if self._spiral_count > 0 and self._spiral_count % self.auto_train_interval == 0:
             self.train()
 
-    def train(self) -> Dict[str, Any]:
+    def train(self, epochs: int = 10) -> Dict[str, Any]:
         """
         Training random forest model.
 
@@ -1034,7 +1034,7 @@ class Subconscious:
         X_norm = [self.feature_extractor.normalize(x) for x in X_train]
 
         # training
-        self.predictor.fit(X_norm, y_train, dp=self.privacy)
+        self.predictor.fit(X_norm, y_train, dp=self.privacy, epochs=epochs)
         self._training_count += 1
 
         # Save model

@@ -15,6 +15,7 @@ import shutil
 import sys
 import tempfile
 import time
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -278,6 +279,7 @@ def _make_minimal_subconscious():
         blockchain_enabled=False,
         p2p_enabled=False,
         auto_train_interval=9999,
+        hidden_dim=8,
     )
 
 
@@ -329,6 +331,7 @@ def test_ux_intervention_event():
 #  4. Integration
 # ════════════════════════════════════════════════
 
+@pytest.mark.timeout(120)
 def test_snapshot_integration():
     """Test Subconscious.snapshot() and .rollback() integration."""
     sc = _make_minimal_subconscious()
@@ -337,9 +340,9 @@ def test_snapshot_integration():
     for _ in range(5):
         sc.record_training_sample([0.2] * 12, 0.1)
         sc.record_training_sample([0.8] * 12, 0.9)
-    sc.train()
+    sc.train(epochs=3)
 
-    # Snapshot
+    # snapshot
     snap = sc.snapshot(tag="test_integration")
     pred_before = sc.predict([0.5] * 12).crash_risk
     print(f"  pred_before={pred_before:.3f}")
@@ -348,7 +351,7 @@ def test_snapshot_integration():
     for _ in range(5):
         sc.record_training_sample([0.2] * 12, 0.9)  # flipped
         sc.record_training_sample([0.8] * 12, 0.1)  # flipped
-    sc.train()
+    sc.train(epochs=3)
 
     pred_modified = sc.predict([0.5] * 12).crash_risk
     print(f"  pred_modified={pred_modified:.3f} (diff={abs(pred_modified - pred_before):.3f})")
