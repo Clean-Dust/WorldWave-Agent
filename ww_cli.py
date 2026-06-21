@@ -77,7 +77,21 @@ except ImportError:
 
 # ── Paths ──
 
-WW_HOME = os.environ.get("WW_HOME", os.path.expanduser("~/worldwave"))
+def _detect_ww_home() -> str:
+    """Detect WW_HOME from env var, script location, or fallback."""
+    # 1. Env var override (highest priority)
+    if "WW_HOME" in os.environ:
+        return os.environ["WW_HOME"]
+
+    # 2. Use the directory containing ww_cli.py — works both when run
+    #    directly from a source checkout and when imported from site-packages
+    if __file__:
+        return os.path.dirname(os.path.abspath(__file__))
+
+    # 3. Fallback (no __file__, e.g. interactive/embedded)
+    return os.path.expanduser("~/worldwave")
+
+WW_HOME = _detect_ww_home()
 WW_CONFIG = os.environ.get("WW_CONFIG", os.path.expanduser("~/.ww"))
 WW_SERVICE = os.path.expanduser("~/.config/systemd/user/ww.service")
 
