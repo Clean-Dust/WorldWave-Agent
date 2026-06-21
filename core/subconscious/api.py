@@ -203,6 +203,28 @@ def register_routes(server, subconscious: "Subconscious"):
         blocks = p2p.get_blocks(from_height, count)
         return {"blocks": blocks, "from": from_height, "count": len(blocks)}
 
+    # ── DHT (Kademlia peer discovery) ──
+
+    @server.get("/ww/dht/status")
+    def dht_status():
+        """DHT node status (Kademlia routing table)."""
+        dht = getattr(subconscious, "dht", None)
+        if not dht:
+            return {"running": False}
+        return dht.stats()
+
+    @server.get("/ww/dht/peers")
+    def dht_peers():
+        """All peers discovered via DHT Kademlia routing table."""
+        dht = getattr(subconscious, "dht", None)
+        if not dht:
+            return {"peers": [], "count": 0}
+        peers = dht.get_all_peers()
+        return {
+            "peers": [{"node_id": pid, "address": addr} for pid, addr in peers],
+            "count": len(peers),
+        }
+
     # ── PoW blockchain ──
 
     @server.get("/ww/blockchain/status")

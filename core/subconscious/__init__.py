@@ -75,6 +75,9 @@ from .runtime_collector import RuntimeCollector
 from .snapshot import SnapshotManager
 from p2p.privacy import DifferentialPrivacy
 
+# ── DHT (Kademlia peer discovery) ──
+from p2p.dht import DHTNode
+
 # ── Resource Scheduling + PPO (v8) ──
 from .scheduler import ResourceScheduler, TaskBudgetTracker
 from .ppo import PPOAgent, PolicyValueNet
@@ -251,6 +254,9 @@ class Subconscious:
             except Exception as e:
                 logger.warning("Nostr relay pool init failed: %s", e)
                 self._nostr_pool = None
+
+        # ── DHT convenience reference (backed by P2P network's DHT node) ──
+        self.dht = self.p2p.dht if self.p2p else None
 
         # ── training buffer (must init before gossip, which calls _get_validation_set) ──
         self._training_buffer_x: List[List[float]] = []
