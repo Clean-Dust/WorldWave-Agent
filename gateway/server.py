@@ -84,6 +84,18 @@ class GatewayServiceImpl(gw_grpc.GatewayServicer):
         msg = request.message
         event_id = msg.event_id or str(uuid.uuid4())
 
+        # ── Auth: validate API key if present in metadata ──
+        if self.tenant_mgr and msg.HasField("metadata"):
+            api_key = dict(msg.metadata).get("api_key", "") or dict(msg.metadata).get("authorization", "")
+            if api_key and api_key.startswith("ww_"):
+                tenant_id = self.tenant_mgr.authenticate(api_key)
+                if tenant_id is None:
+                    await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid API key")
+                # Rate-limit check
+                if not self.tenant_mgr.check_rate_limit(tenant_id):
+                    await context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, "Rate limit exceeded")
+                self.tenant_mgr.record_request(tenant_id)
+
         # ── Thalamus: attention gate filtering ──
         content = ""
         if msg.content.text:
@@ -266,11 +278,11 @@ class WavegateServer:
 
     def __init__(self, config: WavegateConfig = None):
         self.config = config or WavegateConfig.from_env()
-        self.session_mgr = SessionManager()
         self.tenant_mgr = TenantManager()
+        self.session_mgr = SessionManager(tenant_mgr=self.tenant_mgr)
         # NATS JetStream (optional, for persistent queues)
         self._nats = None
-        if NatsLayer is not None and os.environ.get("WW_NATS_ENABLED", "").lower() != "false":
+        if NatsLayer is not None and os.environ.get("WW_NATS_ENABLED", "").lower() == "true":
             try:
                 from gateway.nats import NatsConfig
                 nats_url = os.environ.get("WW_NATS_URL", "nats://localhost:4222")

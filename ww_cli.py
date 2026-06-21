@@ -984,7 +984,7 @@ def cmd_goal(args):
     """Goal Mode — autonomous background task execution.
 
     Commands:
-        ww goal start <description>  — Start a new goal
+        ww goal start <description>  — Start a new goal (add --server for server-side execution)
         ww goal status [id]          — Show goal status (or list all)
         ww goal stop <id>            — Cancel a running goal
         ww goal list                 — List all goals (active + completed)
@@ -1002,8 +1002,32 @@ def cmd_goal(args):
     if action == "start":
         goal_text = goal_id  # reused field — goal_id holds goal text for start
         if not goal_text:
-            print(f"  {Colors.yellow(chr(9888))} Usage: ww goal start <description>")
+            print(f"  {Colors.yellow(chr(9888))} Usage: ww goal start <description> [--server]")
             return
+
+        use_server = getattr(args, "goal_use_server", False)
+
+        if use_server:
+            # POST to gateway HTTP API for server-side execution
+            if not ensure_server_running():
+                print(f"  {Colors.yellow(chr(9888))} WW server must be running for --server mode")
+                print(f"  Start it with: {Colors.cyan('ww server start')}")
+                return
+            result = api_post("/ww/run/background", {"goal": goal_text})
+            if result:
+                task_id = result.get("task_id", "?")
+                print(f"  {Colors.green(chr(0x2713))} Goal submitted to server: {Colors.cyan(task_id)}")
+                print(f"  {Colors.dim(goal_text[:80])}")
+                print(f"  Check status: {Colors.cyan('ww status')}")
+            else:
+                print(f"  {Colors.red(chr(0x2717))} Server failed to accept goal")
+            return
+
+        # Local GoalRunner (in-process)
+        print(f"  {Colors.yellow(chr(9888))} Local goal execution needs a running WW engine.")
+        print(f"  For autonomous background goals, use: {Colors.cyan('ww goal start --server <description>')}")
+        print(f"  Starting local runner anyway (best-effort)...")
+
         task_id = runner.submit(goal_text)
         print(f"  Goal started: {Colors.cyan(task_id)}")
         print(f"  {Colors.dim(goal_text[:80])}")
@@ -1627,11 +1651,15 @@ def main():
 
     elif cmd in ("goal",):
         goal_args = getattr(args, 'goal', []) or []
-        args.action = goal_args[0] if goal_args else "list"
+        # Filter out flags from goal args
+        flags = set(a for a in goal_args if a.startswith("--"))
+        positional = [a for a in goal_args if not a.startswith("--")]
+        args.action = positional[0] if positional else "list"
         if args.action == "start":
-            args.goal_id = " ".join(goal_args[1:]) if len(goal_args) > 1 else ""
+            args.goal_id = " ".join(positional[1:]) if len(positional) > 1 else ""
         else:
-            args.goal_id = goal_args[1] if len(goal_args) > 1 else ""
+            args.goal_id = positional[1] if len(positional) > 1 else ""
+        args.goal_use_server = "--server" in flags
         COMMANDS[cmd](args)
 
     elif cmd in ("mascot",):

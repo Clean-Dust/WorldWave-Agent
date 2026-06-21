@@ -12,6 +12,7 @@ Features:
 - Rate limiting per tenant
 - Tenant-aware session routing
 - Configurable via env or config file
+- JSON persistence (survives restarts)
 
 Usage:
     tm = TenantManager()
@@ -24,9 +25,12 @@ Usage:
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 import logging
 import os
 import secrets
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -79,17 +83,19 @@ class Tenant:
     # Runtime counters (not persisted)
     _sessions: set = field(default_factory=set, repr=False)
     _request_timestamps: list = field(default_factory=list, repr=False)
+    _rate_lock: object = field(default_factory=threading.Lock, repr=False)
 
     def check_rate_limit(self) -> bool:
         """Check if tenant is within rate limits. Returns True if allowed."""
-        now = time.time()
-        # Prune old timestamps (>60s)
-        cutoff = now - 60
-        self._request_timestamps = [t for t in self._request_timestamps if t > cutoff]
-        if len(self._request_timestamps) >= self.quota.max_rpm:
-            return False
-        self._request_timestamps.append(now)
-        return True
+        with self._rate_lock:
+            now = time.time()
+            # Prune old timestamps (>60s)
+            cutoff = now - 60
+            self._request_timestamps = [t for t in self._request_timestamps if t > cutoff]
+            if len(self._request_timestamps) >= self.quota.max_rpm:
+                return False
+            self._request_timestamps.append(now)
+            return True
 
     def add_session(self, session_key: str):
         self._sessions.add(session_key)
@@ -121,14 +127,64 @@ class TenantManager:
 
     def __init__(self, tenants_file: str = None):
         self._tenants: Dict[str, Tenant] = {}
-        self._lock = __import__("threading").Lock()
+        self._keys: Dict[str, str] = {}  # key_hash → tenant_id reverse index
+        self._lock = threading.Lock()
         self._tenants_file = tenants_file or os.path.join(
             os.environ.get("WW_HOME", os.path.expanduser("~/.ww")),
             "tenants.json",
         )
 
-        # Always create default tenant
+        # Restore from persisted file
+        self._load()
+
+        # Always create default tenant (won't overwrite if already loaded)
         self._ensure_default()
+        self._save()
+
+    # ── Persistence ──────────────────────────────────────────────
+
+    def _load(self):
+        """Restore tenants from JSON file."""
+        if not os.path.exists(self._tenants_file):
+            return
+        try:
+            with open(self._tenants_file) as f:
+                data = json.load(f)
+            for tid, td in data.items():
+                self._tenants[tid] = Tenant(
+                    tenant_id=td["tenant_id"],
+                    display_name=td.get("display_name", ""),
+                    api_key_hash=td.get("api_key_hash", ""),
+                    quota=TenantQuota.from_dict(td.get("quota", {})),
+                    enabled=td.get("enabled", True),
+                    created_at=td.get("created_at", time.time()),
+                    metadata=td.get("metadata", {}),
+                )
+                if td.get("api_key_hash"):
+                    self._keys[td["api_key_hash"]] = tid
+            log.info("Loaded %d tenants from %s", len(self._tenants), self._tenants_file)
+        except Exception as e:
+            log.warning("Failed to load tenants from %s: %s", self._tenants_file, e)
+
+    def _save(self):
+        """Persist tenants to JSON file."""
+        try:
+            os.makedirs(os.path.dirname(self._tenants_file), exist_ok=True)
+            data = {}
+            for tid, t in self._tenants.items():
+                data[tid] = {
+                    "tenant_id": t.tenant_id,
+                    "display_name": t.display_name,
+                    "api_key_hash": t.api_key_hash,
+                    "quota": t.quota.to_dict(),
+                    "enabled": t.enabled,
+                    "created_at": t.created_at,
+                    "metadata": t.metadata,
+                }
+            with open(self._tenants_file, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            log.warning("Failed to save tenants: %s", e)
 
     def _ensure_default(self):
         """Create default tenant if it doesn't exist."""
@@ -143,6 +199,8 @@ class TenantManager:
                 api_key_hash=key_hash,
                 quota=TenantQuota(max_sessions=200, max_rpm=120, max_concurrent_goals=10),
             )
+            if key_hash:
+                self._keys[key_hash] = DEFAULT_TENANT
 
     # ── CRUD ───────────────────────────────────────────────────
 
@@ -169,6 +227,8 @@ class TenantManager:
                 metadata=metadata or {},
             )
             self._tenants[tenant_id] = tenant
+            self._keys[key_hash] = tenant_id
+            self._save()
             log.info("Tenant created: %s", tenant_id)
 
             # Return with plaintext key (caller must store it)
@@ -176,65 +236,92 @@ class TenantManager:
             return tenant
 
     def get(self, tenant_id: str) -> Optional[Tenant]:
-        return self._tenants.get(tenant_id)
+        with self._lock:
+            return self._tenants.get(tenant_id)
 
     def list_all(self) -> List[dict]:
-        return [t.to_dict() for t in self._tenants.values()]
+        with self._lock:
+            return [t.to_dict() for t in self._tenants.values()]
 
     def delete(self, tenant_id: str) -> bool:
         if tenant_id == DEFAULT_TENANT:
             raise ValueError("Cannot delete default tenant")
         with self._lock:
             if tenant_id in self._tenants:
+                tenant = self._tenants[tenant_id]
+                if tenant.api_key_hash and tenant.api_key_hash in self._keys:
+                    del self._keys[tenant.api_key_hash]
                 del self._tenants[tenant_id]
+                self._save()
                 log.info("Tenant deleted: %s", tenant_id)
                 return True
         return False
 
     def enable(self, tenant_id: str) -> bool:
-        tenant = self._tenants.get(tenant_id)
-        if tenant:
-            tenant.enabled = True
-            return True
+        with self._lock:
+            tenant = self._tenants.get(tenant_id)
+            if tenant:
+                tenant.enabled = True
+                self._save()
+                return True
         return False
 
     def disable(self, tenant_id: str) -> bool:
         if tenant_id == DEFAULT_TENANT:
             raise ValueError("Cannot disable default tenant")
-        tenant = self._tenants.get(tenant_id)
-        if tenant:
-            tenant.enabled = False
-            return True
+        with self._lock:
+            tenant = self._tenants.get(tenant_id)
+            if tenant:
+                tenant.enabled = False
+                self._save()
+                return True
         return False
 
     # ── Auth ────────────────────────────────────────────────────
 
     def validate_api_key(self, tenant_id: str, api_key: str) -> bool:
         """Validate an API key against a tenant."""
-        tenant = self._tenants.get(tenant_id)
-        if not tenant or not tenant.enabled:
-            return False
-        if not tenant.api_key_hash:
-            return True  # No key set — open access
-        return tenant.api_key_hash == _hash_key(api_key)
+        with self._lock:
+            tenant = self._tenants.get(tenant_id)
+            if not tenant or not tenant.enabled:
+                return False
+            if not tenant.api_key_hash:
+                return True  # No key set — open access
+            return hmac.compare_digest(
+                tenant.api_key_hash.encode(), _hash_key(api_key).encode()
+            )
 
     def authenticate(self, api_key: str) -> Optional[str]:
         """Find which tenant (if any) an API key belongs to. Returns tenant_id."""
         key_hash = _hash_key(api_key)
-        for tid, tenant in self._tenants.items():
-            if tenant.enabled and tenant.api_key_hash == key_hash:
-                return tid
-        return None
+        with self._lock:
+            # O(1) reverse-index lookup
+            tid = self._keys.get(key_hash)
+            if tid:
+                tenant = self._tenants.get(tid)
+                if tenant and tenant.enabled and tenant.api_key_hash:
+                    # Constant-time comparison as defense-in-depth
+                    if hmac.compare_digest(
+                        tenant.api_key_hash.encode(), key_hash.encode()
+                    ):
+                        return tid
+            return None
 
     def rotate_key(self, tenant_id: str) -> Optional[str]:
         """Generate a new API key for a tenant."""
-        tenant = self._tenants.get(tenant_id)
-        if not tenant:
-            return None
-        new_key = _generate_api_key()
-        tenant.api_key_hash = _hash_key(new_key)
-        log.info("API key rotated for tenant: %s", tenant_id)
-        return new_key
+        with self._lock:
+            tenant = self._tenants.get(tenant_id)
+            if not tenant:
+                return None
+            # Remove old key from reverse index
+            if tenant.api_key_hash and tenant.api_key_hash in self._keys:
+                del self._keys[tenant.api_key_hash]
+            new_key = _generate_api_key()
+            tenant.api_key_hash = _hash_key(new_key)
+            self._keys[tenant.api_key_hash] = tenant_id
+            self._save()
+            log.info("API key rotated for tenant: %s", tenant_id)
+            return new_key
 
     # ── Session Keys ───────────────────────────────────────────
 
@@ -275,26 +362,29 @@ class TenantManager:
 
     def check_rate_limit(self, tenant_id: str) -> bool:
         """Check if tenant is within rate limits."""
-        tenant = self._tenants.get(tenant_id)
-        if not tenant or not tenant.enabled:
-            return False
-        return tenant.check_rate_limit()
+        with self._lock:
+            tenant = self._tenants.get(tenant_id)
+            if not tenant or not tenant.enabled:
+                return False
+            return tenant.check_rate_limit()
 
     def record_request(self, tenant_id: str):
         """Record a request for rate limiting."""
-        tenant = self._tenants.get(tenant_id)
-        if tenant:
-            tenant.check_rate_limit()  # Prunes + appends timestamp
+        with self._lock:
+            tenant = self._tenants.get(tenant_id)
+            if tenant:
+                tenant.check_rate_limit()  # Prunes + appends timestamp
 
     # ── Health ─────────────────────────────────────────────────
 
     def health(self) -> dict:
-        return {
-            "total_tenants": len(self._tenants),
-            "active_tenants": sum(1 for t in self._tenants.values() if t.enabled),
-            "total_sessions": sum(t.active_sessions for t in self._tenants.values()),
-            "default_api_key_set": bool(self._tenants[DEFAULT_TENANT].api_key_hash) if DEFAULT_TENANT in self._tenants else False,
-        }
+        with self._lock:
+            return {
+                "total_tenants": len(self._tenants),
+                "active_tenants": sum(1 for t in self._tenants.values() if t.enabled),
+                "total_sessions": sum(t.active_sessions for t in self._tenants.values()),
+                "default_api_key_set": bool(self._tenants[DEFAULT_TENANT].api_key_hash) if DEFAULT_TENANT in self._tenants else False,
+            }
 
 
 # ── Helpers ────────────────────────────────────────────────────
