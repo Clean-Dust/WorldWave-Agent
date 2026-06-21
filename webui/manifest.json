@@ -2,7 +2,7 @@
   "name": "Worldwave AI",
   "short_name": "WW",
   "description": "Worldwave AI Agent — next-gen autonomous AI coding agent",
-  "start_url": "/app/",
+  "start_url": "/ww/webui/",
   "display": "standalone",
   "background_color": "#1a1a2e",
   "theme_color": "#3D6B80",

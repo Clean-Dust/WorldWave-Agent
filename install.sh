@@ -236,24 +236,11 @@ header "CLI Setup"
 mkdir -p "$HOME/.local/bin"
 CLI_TARGET="$HOME/.local/bin/ww"
 
-# Prefer pip-installed ww command (over symlink)
-if [ -f "$INSTALL_DIR/ww_cli.py" ]; then
-    # Create wrapper script
-    cat > "$CLI_TARGET" << 'SCRIPT'
-#!/usr/bin/env bash
-# ww — Worldwave CLI wrapper
-WW_HOME="${WW_HOME:-$HOME/worldwave}"
-
-# Prefer venv python
-if [ -f "$WW_HOME/.venv/bin/python" ]; then
-    exec "$WW_HOME/.venv/bin/python" "$WW_HOME/ww_cli.py" "$@"
-elif command -v python3 &>/dev/null; then
-    exec python3 "$WW_HOME/ww_cli.py" "$@"
-else
-    exec python "$WW_HOME/ww_cli.py" "$@"
-fi
-SCRIPT
-    chmod +x "$CLI_TARGET"
+# Prefer pip-installed ww command from the venv
+if [ -f "$VENV_DIR/bin/ww" ]; then
+    # Create symlink to pip-installed entry point
+    ln -sf "$VENV_DIR/bin/ww" "$CLI_TARGET"
+    ok "ww command installed → $CLI_TARGET (→ venv entry point)"
 
     # PATH reminder
     if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
