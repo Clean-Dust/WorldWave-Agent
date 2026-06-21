@@ -1271,6 +1271,7 @@ def cmd_help(args):
 
   --home PATH            Specify WW path
   --no-color             Disable colors
+  --effort LEVEL         Reasoning effort: low/medium/high/xhigh
   -h, --help             Show help
 """)
 
