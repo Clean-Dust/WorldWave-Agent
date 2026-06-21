@@ -21,9 +21,9 @@ from typing import Dict
 
 import grpc
 
+from proto.wavegate.v1 import unified_message_pb2 as um_pb2
 from proto.wavegate.v1 import agent_pb2 as ag_pb2
 from proto.wavegate.v1 import agent_pb2_grpc as ag_grpc
-from proto.wavegate.v1 import unified_message_pb2 as um_pb2
 
 log = logging.getLogger("ww.agent")
 

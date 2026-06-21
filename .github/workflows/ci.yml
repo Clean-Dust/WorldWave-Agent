@@ -28,7 +28,7 @@ jobs:
 
     - name: Install deps
       run: |
-        pip install fastapi uvicorn pydantic httpx requests pytest cryptography
+        pip install fastapi uvicorn pydantic httpx requests pytest cryptography grpcio protobuf
 
     - name: Test
       run: |

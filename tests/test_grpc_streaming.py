@@ -5,9 +5,12 @@ from __future__ import annotations
 import pytest
 from unittest.mock import MagicMock
 
-from core.agent_grpc import AgentServiceImpl
-from proto.wavegate.v1 import agent_pb2 as ag_pb2
+pytest.importorskip("grpc", reason="grpcio not installed")
+pytest.importorskip("google.protobuf", reason="protobuf not installed")
+
 from proto.wavegate.v1 import unified_message_pb2 as um_pb2
+from proto.wavegate.v1 import agent_pb2 as ag_pb2
+from core.agent_grpc import AgentServiceImpl
 
 
 def _make_request(goal="test goal", session_key="sess:1", max_spirals=1):
@@ -78,9 +81,7 @@ class TestRunTaskStreaming:
     def test_error_handling_yields_error_response(self):
         svc = AgentServiceImpl()
         svc._ww = MagicMock()
-        def failing_run(**kwargs):
-            raise RuntimeError("simulated crash")
-        svc._ww.run = failing_run
+        svc._ww.run = MagicMock(side_effect=RuntimeError("simulated crash"))
         responses = list(svc.RunTask(_make_request(), None))
         assert len(responses) == 1
         assert responses[0].is_final is True
@@ -121,13 +122,13 @@ class TestProgressCallback:
     def test_callback_fires_at_phases(self):
         from core.loop import Worldwave
         ww = Worldwave()
-        ww._llm_perceive = lambda g, pf=None: {"observations": ["ok"], "key_signals": [], "environment_summary": "test", "uncertainties": []}
-        ww._llm_recall = lambda p, g: {"query": g, "entities": [], "memories": [], "llm_insight": ""}
-        ww._llm_plan = lambda p, r, g: {"strategy": "test", "steps": []}
-        ww._llm_act = lambda p, g: []
-        ww._llm_evaluate = lambda p, a, g: {"success": True, "reason": "test", "goal_remaining": False}
-        ww._llm_learn = lambda s, g: {"stored": False}
-        ww._goal_achieved = lambda s: True
+        ww._llm_perceive = lambda goal, prev_failure=None: {"observations": ["ok"], "key_signals": [], "environment_summary": "test", "uncertainties": []}
+        ww._llm_recall = lambda perception, goal: {"query": goal, "entities": [], "memories": [], "llm_insight": ""}
+        ww._llm_plan = lambda perception, recall, goal: {"strategy": "test", "steps": []}
+        ww._llm_act = lambda plan, goal="": []
+        ww._llm_evaluate = lambda plan, actions, goal: {"success": True, "reason": "test", "goal_remaining": False}
+        ww._llm_learn = lambda spiral, goal: {"stored": False}
+        ww._goal_achieved = lambda spiral: True
         calls = []
         result = ww.run("test", max_spirals=1,
                         on_spiral_progress=lambda p, m, pct: calls.append((p, pct)))
@@ -142,12 +143,12 @@ class TestProgressCallback:
     def test_no_callback_does_not_crash(self):
         from core.loop import Worldwave
         ww = Worldwave()
-        ww._llm_perceive = lambda g, pf=None: {"observations": ["ok"], "key_signals": [], "environment_summary": "test", "uncertainties": []}
-        ww._llm_recall = lambda p, g: {"query": g, "entities": [], "memories": [], "llm_insight": ""}
-        ww._llm_plan = lambda p, r, g: {"strategy": "test", "steps": []}
-        ww._llm_act = lambda p, g: []
-        ww._llm_evaluate = lambda p, a, g: {"success": True, "reason": "test", "goal_remaining": False}
-        ww._llm_learn = lambda s, g: {"stored": False}
-        ww._goal_achieved = lambda s: True
+        ww._llm_perceive = lambda goal, prev_failure=None: {"observations": ["ok"], "key_signals": [], "environment_summary": "test", "uncertainties": []}
+        ww._llm_recall = lambda perception, goal: {"query": goal, "entities": [], "memories": [], "llm_insight": ""}
+        ww._llm_plan = lambda perception, recall, goal: {"strategy": "test", "steps": []}
+        ww._llm_act = lambda plan, goal="": []
+        ww._llm_evaluate = lambda plan, actions, goal: {"success": True, "reason": "test", "goal_remaining": False}
+        ww._llm_learn = lambda spiral, goal: {"stored": False}
+        ww._goal_achieved = lambda spiral: True
         result = ww.run("test", max_spirals=1)
         assert result["status"] == "completed"
