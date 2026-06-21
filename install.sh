@@ -202,6 +202,12 @@ WW_MEMORY_SLEEP_HOUR=3
 WW_HIPPOCAMPUS_CAP=100
 EOF
     ok ".env template created → fill in your API keys"
+    
+    # Auto-fill from environment if available
+    if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+        sed -i "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}|" "$ENV_FILE"
+        ok "DEEPSEEK_API_KEY auto-detected from environment"
+    fi
 else
     warn ".env already exists, skipping"
 fi
@@ -240,14 +246,13 @@ CLI_TARGET="$HOME/.local/bin/ww"
 if [ -f "$VENV_DIR/bin/ww" ]; then
     # Create symlink to pip-installed entry point
     ln -sf "$VENV_DIR/bin/ww" "$CLI_TARGET"
-    ok "ww command installed → $CLI_TARGET (→ venv entry point)"
+    ok "ww command installed → $CLI_TARGET"
 
     # PATH reminder
     if [[ ":$PATH:" != *":$HOME/.local/bin:"* ]]; then
         warn "\$HOME/.local/bin is not in PATH"
         echo "  Run:  echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.bashrc"
     fi
-    ok "ww command installed → $CLI_TARGET"
 fi
 
 # ── Systemd Service (Linux, optional) ──
@@ -293,8 +298,9 @@ echo -e "  ${BOLD}Config:${NC}   $WW_CONFIG"
 echo -e "  ${BOLD}CLI:${NC}      $CLI_TARGET"
 echo ""
 echo -e "  ${BOLD}Next Steps:${NC}"
-echo "    1. Edit .env and fill in API keys"
-echo "       ${DIM}nano $INSTALL_DIR/.env${NC}"
+echo "    1. Set your LLM API key (pick one):"
+echo "       ${DIM}export DEEPSEEK_API_KEY=sk-...${NC}"
+echo "       ${DIM}  — OR edit .env: nano $INSTALL_DIR/.env${NC}"
 echo "       Get a key: ${DIM}platform.deepseek.com → API Keys${NC}"
 echo ""
 echo "    2. Run your first task (auto-starts server)"
