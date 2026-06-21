@@ -23,11 +23,18 @@ def mock_env():
     """Set up mock WW environment variables."""
     old_home = os.environ.get("WW_HOME", "")
     os.environ["WW_HOME"] = os.path.expanduser("~/worldwave")
+    # Ensure a dummy API key is set so pre-flight check passes
+    old_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    os.environ["DEEPSEEK_API_KEY"] = "test-key-ci"
     yield
     if old_home:
         os.environ["WW_HOME"] = old_home
     else:
         del os.environ["WW_HOME"]
+    if old_key:
+        os.environ["DEEPSEEK_API_KEY"] = old_key
+    else:
+        del os.environ["DEEPSEEK_API_KEY"]
 
 
 @pytest.fixture
@@ -138,11 +145,28 @@ class TestSingleCommand:
                 cli_module.cmd_run(args)
         print("✅ CLI: handles API failure gracefully")
 
+    def test_cmd_run_no_api_key_early_exit(self, cli_module):
+        """cmd_run should exit early without API key, never calling auto_start_server."""
+        with patch.object(cli_module, "check_llm_api_key", return_value=None):
+            with patch.object(cli_module, "auto_start_server", return_value=True) as mock_start:
+                with patch.object(cli_module, "api_post", return_value={}) as mock_api:
+                    args = type("Args", (), {"goal": ["test"], "spirals": None})()
+                    cli_module.cmd_run(args)
+                    mock_start.assert_not_called()
+                    mock_api.assert_not_called()
+        print("✅ CLI: exits early when no LLM API key")
+
     def test_auto_start_server_exists(self, cli_module):
         """auto_start_server() helper exists."""
         assert hasattr(cli_module, "auto_start_server")
         assert callable(cli_module.auto_start_server)
         print("✅ CLI: auto_start_server exists")
+
+    def test_check_llm_api_key_exists(self, cli_module):
+        """check_llm_api_key() helper exists."""
+        assert hasattr(cli_module, "check_llm_api_key")
+        assert callable(cli_module.check_llm_api_key)
+        print("✅ CLI: check_llm_api_key exists")
 
 
 # ══════════════════════════════════════════════

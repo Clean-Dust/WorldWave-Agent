@@ -9,6 +9,7 @@ on:
 env:
   WW_HOME: ${{ github.workspace }}
   WW_DATA_DIR: ${{ github.workspace }}/data/subconscious
+  DEEPSEEK_API_KEY: test-key-ci
 
 jobs:
   test:
