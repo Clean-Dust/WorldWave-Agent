@@ -92,14 +92,19 @@ async function sendMessage() {
         let response = '';
         for (const r of results) {
             const ev = r.evaluation || {};
-            if (ev.response) {
-                response = ev.response;
-                break;
+            if (ev.reason) {
+                response = ev.reason;
+            }
+            const actions = r.actions || [];
+            for (const a of actions) {
+                const output = a.result && a.result.output ? a.result.output : '';
+                if (output) {
+                    response += '\n[' + a.tool + '] ' + output;
+                }
             }
         }
         if (!response) {
-            const summary = data.summary || {};
-            response = `Status: ${data.status || '?'} (${data.spirals_completed || 0} spirals)`;
+            response = 'Status: ' + (data.status || '?') + ' (' + (data.spirals_completed || 0) + ' spirals)';
         }
         appendMessage('assistant', response);
     } catch (e) {

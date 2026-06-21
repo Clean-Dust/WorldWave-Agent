@@ -498,7 +498,7 @@ else:
     logger.warning("    Authenticate via Authorization: Bearer <key> or ?api_key=<key>")
     logger.warning("=" * 50)
 
-_API_BYPASS_PATHS = {"/ww/health", "/docs", "/openapi.json", "/redoc", "/ww/webui"}
+_API_BYPASS_PATHS = {"/ww/health", "/docs", "/openapi.json", "/redoc", "/ww/webui", "/ww/webui/"}
 
 @app.middleware("http")
 async def api_auth_middleware(request: Request, call_next):
@@ -1489,14 +1489,6 @@ def webui_manifest():
     with open(manifest_path) as f:
         return json.loads(f.read())
 
-@app.get("/ww/webui/sw.js")
-def webui_sw():
-    """PWA Service Worker."""
-    sw_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "webui", "sw.js")
-    if not os.path.exists(sw_path):
-        raise HTTPException(404, "Service worker not found")
-    with open(sw_path) as f:
-        return Response(content=f.read(), media_type="application/javascript")
 
 @app.get("/ww/webui/src/app.js")
 def webui_app_js():
