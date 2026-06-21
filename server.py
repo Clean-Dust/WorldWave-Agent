@@ -275,7 +275,7 @@ class WorldwaveServer:
         # Webhook gateway (deprecated — use gateway/adapters/ instead)
         try:
             from gateway.adapters.webhook import WebhookAdapter
-            wh = WebhookAdapter(task_handler=self._gateway_task_handler)
+            wh = WebhookAdapter(on_message=self._gateway_task_handler)
             self.gateway.register(wh)
             logger.info("Webhook gateway registered")
         except ImportError:
