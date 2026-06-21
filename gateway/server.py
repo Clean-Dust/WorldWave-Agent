@@ -37,6 +37,7 @@ from gateway.adapters import AdapterRegistry
 from gateway.queue import QueueManager
 from gateway.session import SessionManager
 from gateway.attention import BayesianAttentionGate
+from gateway.tenant import TenantManager, DEFAULT_TENANT
 
 try:
     from gateway.nats import NatsLayer
@@ -61,9 +62,11 @@ class GatewayServiceImpl(gw_grpc.GatewayServicer):
         session_mgr: SessionManager,
         queue_mgr: QueueManager,
         agent_stub: ag_grpc.AgentStub,
+        tenant_mgr=None,
     ):
         self.session_mgr = session_mgr
         self.queue_mgr = queue_mgr
+        self.tenant_mgr = tenant_mgr
         self.agent_stub = agent_stub
         self._started_at = time.time()
 
@@ -264,6 +267,7 @@ class WavegateServer:
     def __init__(self, config: WavegateConfig = None):
         self.config = config or WavegateConfig.from_env()
         self.session_mgr = SessionManager()
+        self.tenant_mgr = TenantManager()
         # NATS JetStream (optional, for persistent queues)
         self._nats = None
         if NatsLayer is not None and os.environ.get("WW_NATS_ENABLED", "").lower() != "false":
@@ -304,6 +308,7 @@ class WavegateServer:
             session_mgr=self.session_mgr,
             queue_mgr=self.queue_mgr,
             agent_stub=self.agent_client.stub,
+            tenant_mgr=self.tenant_mgr,
         )
         gw_grpc.add_GatewayServicer_to_server(gw_service, self._server)
 

@@ -1056,6 +1056,100 @@ def cmd_goal(args):
         print(f"  Usage: ww goal [start|status|stop|list] [args...]")
 
 
+def cmd_tenant(args):
+    """Multi-tenant management — create/list/delete tenants.
+
+    Commands:
+        ww tenant list                  — List all tenants
+        ww tenant create <id> [name]    — Create a new tenant
+        ww tenant delete <id>           — Delete a tenant
+        ww tenant rotate-key <id>       — Generate new API key
+        ww tenant disable <id>          — Disable a tenant
+        ww tenant enable <id>           — Re-enable a tenant
+    """
+    action = getattr(args, "action", "list")
+    tenant_id = getattr(args, "tenant_id", "")
+
+    try:
+        from gateway.tenant import TenantManager
+        tm = TenantManager()
+    except ImportError as e:
+        print(f"  Failed to load TenantManager: {e}")
+        return
+
+    if action == "list":
+        tenants = tm.list_all()
+        if tenants:
+            print(f"\n{Colors.bold('Tenants:')}\n")
+            for t in tenants:
+                status = Colors.green(chr(0x25CF)) if t.get("enabled") else Colors.red(chr(0x25CB))
+                print(f"  {status} {Colors.cyan(t['tenant_id']):20s}  {t['display_name']}  "
+                      f"sessions={t['active_sessions']}  "
+                      f"rpm={t['quota']['max_rpm']}")
+        else:
+            print(f"  {Colors.dim('(no tenants)')}")
+
+    elif action == "create":
+        if not tenant_id:
+            print(f"  {Colors.yellow(chr(9888))} Usage: ww tenant create <id> [display_name]")
+            return
+        name = getattr(args, "display_name", tenant_id) or tenant_id
+        try:
+            tenant = tm.create(tenant_id, display_name=name)
+            key = getattr(tenant, "_plaintext_key", "")
+            print(f"  {Colors.green(chr(0x2713))} Tenant created: {Colors.cyan(tenant_id)}")
+            print(f"  Display name: {name}")
+            if key:
+                print(f"  API key: {Colors.bold(key)}")
+                print(f"  {Colors.yellow(chr(9888))} Store this key — it won't be shown again.")
+        except ValueError as e:
+            print(f"  {Colors.red(chr(0x2717))} {e}")
+
+    elif action == "delete":
+        if not tenant_id:
+            print(f"  {Colors.yellow(chr(9888))} Usage: ww tenant delete <id>")
+            return
+        try:
+            if tm.delete(tenant_id):
+                print(f"  {Colors.green(chr(0x2713))} Tenant deleted: {tenant_id}")
+            else:
+                print(f"  {Colors.red(chr(0x2717))} Tenant not found: {tenant_id}")
+        except ValueError as e:
+            print(f"  {Colors.red(chr(0x2717))} {e}")
+
+    elif action == "rotate-key":
+        if not tenant_id:
+            print(f"  {Colors.yellow(chr(9888))} Usage: ww tenant rotate-key <id>")
+            return
+        new_key = tm.rotate_key(tenant_id)
+        if new_key:
+            print(f"  {Colors.green(chr(0x2713))} Key rotated for: {Colors.cyan(tenant_id)}")
+            print(f"  New API key: {Colors.bold(new_key)}")
+            print(f"  {Colors.yellow(chr(9888))} Store this key — old key is now invalid.")
+        else:
+            print(f"  {Colors.red(chr(0x2717))} Tenant not found: {tenant_id}")
+
+    elif action in ("disable", "enable"):
+        if not tenant_id:
+            print(f"  {Colors.yellow(chr(9888))} Usage: ww tenant {action} <id>")
+            return
+        try:
+            if action == "disable":
+                ok = tm.disable(tenant_id)
+            else:
+                ok = tm.enable(tenant_id)
+            if ok:
+                print(f"  {Colors.green(chr(0x2713))} Tenant {action}d: {tenant_id}")
+            else:
+                print(f"  {Colors.red(chr(0x2717))} Tenant not found: {tenant_id}")
+        except ValueError as e:
+            print(f"  {Colors.red(chr(0x2717))} {e}")
+
+    else:
+        print(f"  {Colors.yellow(chr(9888))} Unknown action: {action}")
+        print(f"  Usage: ww tenant [list|create|delete|rotate-key|disable|enable] [args...]")
+
+
 def cmd_pairing(args):
     """DM pairing management — approve/reject/list pairing codes"""
     action = getattr(args, "action", "list")
@@ -1419,6 +1513,7 @@ COMMANDS = {
     "migrate": cmd_migrate,
     "run": cmd_run,
     "help": cmd_help,
+    "tenant": cmd_tenant,
 }
 
 
@@ -1568,6 +1663,16 @@ def main():
 
     elif cmd in ("tools",):
         cmd_tools(args)
+
+    elif cmd in ("tenant",):
+        goal_args = getattr(args, 'goal', []) or []
+        args.action = goal_args[0] if goal_args else "list"
+        if args.action == "create":
+            args.tenant_id = goal_args[1] if len(goal_args) > 1 else ""
+            args.display_name = goal_args[2] if len(goal_args) > 2 else ""
+        else:
+            args.tenant_id = goal_args[1] if len(goal_args) > 1 else ""
+        cmd_tenant(args)
 
     elif cmd in ("run",):
         args.spirals = None

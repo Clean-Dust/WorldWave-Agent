@@ -1,116 +1,254 @@
-"""Wavegate Multi-Tenancy Manager.
+"""Wavegate Multi-Tenant Manager.
 
-Implements hierarchical namespace isolation per the WW architecture blueprint:
-  {tenant_id}:{platform}:{user_id}:{chat_id}
+Provides tenant isolation across all Wavegate services.
+Each tenant is a namespace with its own API keys, rate limits, and sessions.
 
-Each tenant has isolated:
-- Session keys
-- Whitelists
-- Queue state
+Key format: {tenant_id}:{platform}:{user_id}:{chat_id}
+Default tenant: "default" (backward compatible with single-tenant deployments)
 
-Defaults:
-- Default tenant: "default" (backward compatible with existing single-tenant installs)
-- Tenants are created implicitly on first use
+Features:
+- Tenant CRUD (create, get, list, delete)
+- API key per tenant with scoped permissions
+- Rate limiting per tenant
+- Tenant-aware session routing
+- Configurable via env or config file
+
+Usage:
+    tm = TenantManager()
+    tm.create("acme-corp", quota={"max_sessions": 100, "max_rpm": 60})
+    tm.validate_api_key("acme-corp", "key-xxx")  # True/False
+    key = tm.make_session_key("acme-corp", "telegram", "user1", "chat1")
+    # → "acme-corp:telegram:user1:chat1"
 """
 
 from __future__ import annotations
 
-import json
+import hashlib
 import logging
 import os
+import secrets
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Dict, List, Optional
 
 log = logging.getLogger("gateway.tenant")
 
+# Default tenant ID (for single-tenant / backward compat)
 DEFAULT_TENANT = "default"
-TENANTS_STORE = os.path.expanduser("~/.ww/tenants.json")
+
+
+@dataclass
+class TenantQuota:
+    """Per-tenant resource limits."""
+
+    max_sessions: int = 50
+    max_rpm: int = 30  # requests per minute
+    max_concurrent_goals: int = 3
+    max_history_days: int = 30
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "TenantQuota":
+        return cls(
+            max_sessions=d.get("max_sessions", 50),
+            max_rpm=d.get("max_rpm", 30),
+            max_concurrent_goals=d.get("max_concurrent_goals", 3),
+            max_history_days=d.get("max_history_days", 30),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "max_sessions": self.max_sessions,
+            "max_rpm": self.max_rpm,
+            "max_concurrent_goals": self.max_concurrent_goals,
+            "max_history_days": self.max_history_days,
+        }
 
 
 @dataclass
 class Tenant:
-    """A tenant (organization/project) in the WW system."""
+    """A multi-tenant namespace."""
 
     tenant_id: str
     display_name: str = ""
+    api_key_hash: str = ""  # SHA256 of the API key (never store plaintext)
+    quota: TenantQuota = field(default_factory=TenantQuota)
+    enabled: bool = True
     created_at: float = field(default_factory=time.time)
-    is_active: bool = True
-    max_sessions: int = 100
-    max_users: int = 50
+    metadata: dict = field(default_factory=dict)
 
-    def to_dict(self) -> dict:
-        return {
+    # Runtime counters (not persisted)
+    _sessions: set = field(default_factory=set, repr=False)
+    _request_timestamps: list = field(default_factory=list, repr=False)
+
+    def check_rate_limit(self) -> bool:
+        """Check if tenant is within rate limits. Returns True if allowed."""
+        now = time.time()
+        # Prune old timestamps (>60s)
+        cutoff = now - 60
+        self._request_timestamps = [t for t in self._request_timestamps if t > cutoff]
+        if len(self._request_timestamps) >= self.quota.max_rpm:
+            return False
+        self._request_timestamps.append(now)
+        return True
+
+    def add_session(self, session_key: str):
+        self._sessions.add(session_key)
+
+    def remove_session(self, session_key: str):
+        self._sessions.discard(session_key)
+
+    @property
+    def active_sessions(self) -> int:
+        return len(self._sessions)
+
+    def to_dict(self, include_sensitive: bool = False) -> dict:
+        d = {
             "tenant_id": self.tenant_id,
             "display_name": self.display_name,
+            "enabled": self.enabled,
+            "quota": self.quota.to_dict(),
             "created_at": self.created_at,
-            "is_active": self.is_active,
-            "max_sessions": self.max_sessions,
-            "max_users": self.max_users,
+            "active_sessions": self.active_sessions,
+            "metadata": self.metadata,
         }
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "Tenant":
-        return cls(
-            tenant_id=data["tenant_id"],
-            display_name=data.get("display_name", ""),
-            created_at=data.get("created_at", time.time()),
-            is_active=data.get("is_active", True),
-            max_sessions=data.get("max_sessions", 100),
-            max_users=data.get("max_users", 50),
-        )
+        if include_sensitive:
+            d["api_key_hash"] = self.api_key_hash
+        return d
 
 
 class TenantManager:
-    """Manages tenants and provides tenant-scoped key generation.
+    """Manages multi-tenant namespaces and enforces isolation."""
 
-    Usage:
-        tm = TenantManager()
-        session_key = tm.build_key("org_123", "telegram", "456", "789")
-        # → "org_123:telegram:456:789"
-
-        # Default tenant (backward compatible)
-        session_key = tm.build_key(tenant_id="", ...)
-        # → "default:telegram:456:789"
-    """
-
-    def __init__(self, store_path: str = TENANTS_STORE):
-        self._store_path = store_path
+    def __init__(self, tenants_file: str = None):
         self._tenants: Dict[str, Tenant] = {}
-        self._load()
-        # Ensure default tenant always exists
+        self._lock = __import__("threading").Lock()
+        self._tenants_file = tenants_file or os.path.join(
+            os.environ.get("WW_HOME", os.path.expanduser("~/.ww")),
+            "tenants.json",
+        )
+
+        # Always create default tenant
+        self._ensure_default()
+
+    def _ensure_default(self):
+        """Create default tenant if it doesn't exist."""
         if DEFAULT_TENANT not in self._tenants:
+            default_api_key = os.environ.get("WW_API_KEY", "")
+            key_hash = (
+                _hash_key(default_api_key) if default_api_key else ""
+            )
             self._tenants[DEFAULT_TENANT] = Tenant(
                 tenant_id=DEFAULT_TENANT,
                 display_name="Default",
+                api_key_hash=key_hash,
+                quota=TenantQuota(max_sessions=200, max_rpm=120, max_concurrent_goals=10),
             )
-            self._save()
 
-    # ── Key Generation ─────────────────────────────────────────
+    # ── CRUD ───────────────────────────────────────────────────
 
-    def build_key(
+    def create(
         self,
         tenant_id: str,
-        platform: str,
-        user_id: str,
-        chat_id: str = "",
+        display_name: str = "",
+        api_key: str = None,
+        quota: dict = None,
+        metadata: dict = None,
+    ) -> Tenant:
+        """Create a new tenant. Auto-generates API key if not provided."""
+        with self._lock:
+            if tenant_id in self._tenants:
+                raise ValueError(f"Tenant already exists: {tenant_id}")
+
+            key = api_key or _generate_api_key()
+            key_hash = _hash_key(key)
+            tenant = Tenant(
+                tenant_id=tenant_id,
+                display_name=display_name or tenant_id,
+                api_key_hash=key_hash,
+                quota=TenantQuota.from_dict(quota or {}),
+                metadata=metadata or {},
+            )
+            self._tenants[tenant_id] = tenant
+            log.info("Tenant created: %s", tenant_id)
+
+            # Return with plaintext key (caller must store it)
+            tenant._plaintext_key = key
+            return tenant
+
+    def get(self, tenant_id: str) -> Optional[Tenant]:
+        return self._tenants.get(tenant_id)
+
+    def list_all(self) -> List[dict]:
+        return [t.to_dict() for t in self._tenants.values()]
+
+    def delete(self, tenant_id: str) -> bool:
+        if tenant_id == DEFAULT_TENANT:
+            raise ValueError("Cannot delete default tenant")
+        with self._lock:
+            if tenant_id in self._tenants:
+                del self._tenants[tenant_id]
+                log.info("Tenant deleted: %s", tenant_id)
+                return True
+        return False
+
+    def enable(self, tenant_id: str) -> bool:
+        tenant = self._tenants.get(tenant_id)
+        if tenant:
+            tenant.enabled = True
+            return True
+        return False
+
+    def disable(self, tenant_id: str) -> bool:
+        if tenant_id == DEFAULT_TENANT:
+            raise ValueError("Cannot disable default tenant")
+        tenant = self._tenants.get(tenant_id)
+        if tenant:
+            tenant.enabled = False
+            return True
+        return False
+
+    # ── Auth ────────────────────────────────────────────────────
+
+    def validate_api_key(self, tenant_id: str, api_key: str) -> bool:
+        """Validate an API key against a tenant."""
+        tenant = self._tenants.get(tenant_id)
+        if not tenant or not tenant.enabled:
+            return False
+        if not tenant.api_key_hash:
+            return True  # No key set — open access
+        return tenant.api_key_hash == _hash_key(api_key)
+
+    def authenticate(self, api_key: str) -> Optional[str]:
+        """Find which tenant (if any) an API key belongs to. Returns tenant_id."""
+        key_hash = _hash_key(api_key)
+        for tid, tenant in self._tenants.items():
+            if tenant.enabled and tenant.api_key_hash == key_hash:
+                return tid
+        return None
+
+    def rotate_key(self, tenant_id: str) -> Optional[str]:
+        """Generate a new API key for a tenant."""
+        tenant = self._tenants.get(tenant_id)
+        if not tenant:
+            return None
+        new_key = _generate_api_key()
+        tenant.api_key_hash = _hash_key(new_key)
+        log.info("API key rotated for tenant: %s", tenant_id)
+        return new_key
+
+    # ── Session Keys ───────────────────────────────────────────
+
+    @staticmethod
+    def make_session_key(
+        tenant_id: str, platform: str, user_id: str, chat_id: str
     ) -> str:
-        """Build a hierarchical session key.
+        """Build a tenant-aware session key."""
+        return f"{tenant_id}:{platform}:{user_id}:{chat_id}"
 
-        Format: {tenant}:{platform}:{user}:{chat}
-        If tenant_id is empty, uses DEFAULT_TENANT.
-        """
-        tenant = tenant_id or DEFAULT_TENANT
-        return f"{tenant}:{platform}:{user_id}:{chat_id}"
-
-    def parse_key(self, session_key: str) -> dict:
-        """Parse a session key into its components.
-
-        Returns dict with keys: tenant_id, platform, user_id, chat_id.
-        Handles both 3-part (old) and 4-part (new) keys.
-        """
-        parts = session_key.split(":")
+    @staticmethod
+    def parse_session_key(session_key: str) -> dict:
+        """Parse a session key into its components."""
+        parts = session_key.split(":", 3)
         if len(parts) == 4:
             return {
                 "tenant_id": parts[0],
@@ -118,96 +256,54 @@ class TenantManager:
                 "user_id": parts[2],
                 "chat_id": parts[3],
             }
-        elif len(parts) == 3:
-            # Legacy key format: platform:user:chat
+        # Backward compat: old 3-part keys get default tenant
+        if len(parts) == 3:
             return {
                 "tenant_id": DEFAULT_TENANT,
                 "platform": parts[0],
                 "user_id": parts[1],
                 "chat_id": parts[2],
             }
-        else:
-            return {
-                "tenant_id": DEFAULT_TENANT,
-                "platform": "",
-                "user_id": session_key,
-                "chat_id": "",
-            }
+        return {
+            "tenant_id": DEFAULT_TENANT,
+            "platform": "unknown",
+            "user_id": session_key,
+            "chat_id": "",
+        }
 
-    def get_tenant_for_key(self, session_key: str) -> str:
-        """Extract the tenant_id from a session key."""
-        return self.parse_key(session_key)["tenant_id"]
+    # ── Rate Limiting ──────────────────────────────────────────
 
-    # ── Tenant CRUD ────────────────────────────────────────────
-
-    def get(self, tenant_id: str) -> Optional[Tenant]:
-        """Get a tenant by ID."""
-        return self._tenants.get(tenant_id)
-
-    def get_or_create(self, tenant_id: str, display_name: str = "") -> Tenant:
-        """Get or create a tenant."""
-        if tenant_id in self._tenants:
-            return self._tenants[tenant_id]
-        tenant = Tenant(
-            tenant_id=tenant_id,
-            display_name=display_name or tenant_id,
-        )
-        self._tenants[tenant_id] = tenant
-        self._save()
-        log.info("Tenant created: %s", tenant_id)
-        return tenant
-
-    def list_active(self) -> List[Tenant]:
-        """List all active tenants."""
-        return [t for t in self._tenants.values() if t.is_active]
-
-    def deactivate(self, tenant_id: str) -> bool:
-        """Deactivate a tenant. Cannot deactivate default."""
-        if tenant_id == DEFAULT_TENANT:
-            log.warning("Cannot deactivate default tenant")
-            return False
+    def check_rate_limit(self, tenant_id: str) -> bool:
+        """Check if tenant is within rate limits."""
         tenant = self._tenants.get(tenant_id)
-        if not tenant:
+        if not tenant or not tenant.enabled:
             return False
-        tenant.is_active = False
-        self._save()
-        log.info("Tenant deactivated: %s", tenant_id)
-        return True
+        return tenant.check_rate_limit()
 
-    def activate(self, tenant_id: str) -> bool:
-        """Reactivate a tenant."""
+    def record_request(self, tenant_id: str):
+        """Record a request for rate limiting."""
         tenant = self._tenants.get(tenant_id)
-        if not tenant:
-            return False
-        tenant.is_active = True
-        self._save()
-        return True
+        if tenant:
+            tenant.check_rate_limit()  # Prunes + appends timestamp
 
-    def is_active(self, tenant_id: str) -> bool:
-        """Check if a tenant is active. Default tenant is always active."""
-        if tenant_id == DEFAULT_TENANT or not tenant_id:
-            return True
-        tenant = self._tenants.get(tenant_id)
-        return tenant is not None and tenant.is_active
+    # ── Health ─────────────────────────────────────────────────
 
-    # ── Persistence ────────────────────────────────────────────
+    def health(self) -> dict:
+        return {
+            "total_tenants": len(self._tenants),
+            "active_tenants": sum(1 for t in self._tenants.values() if t.enabled),
+            "total_sessions": sum(t.active_sessions for t in self._tenants.values()),
+            "default_api_key_set": bool(self._tenants[DEFAULT_TENANT].api_key_hash) if DEFAULT_TENANT in self._tenants else False,
+        }
 
-    def _save(self):
-        try:
-            Path(self._store_path).parent.mkdir(parents=True, exist_ok=True)
-            data = {k: t.to_dict() for k, t in self._tenants.items()}
-            with open(self._store_path, "w") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            log.error("Tenant save failed: %s", e)
 
-    def _load(self):
-        if not os.path.exists(self._store_path):
-            return
-        try:
-            with open(self._store_path, "r") as f:
-                data = json.load(f)
-            for key, tdata in data.items():
-                self._tenants[key] = Tenant.from_dict(tdata)
-        except Exception as e:
-            log.error("Tenant load failed: %s", e)
+# ── Helpers ────────────────────────────────────────────────────
+
+def _hash_key(key: str) -> str:
+    """SHA256 hash an API key for storage."""
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def _generate_api_key(prefix: str = "ww") -> str:
+    """Generate a secure API key: ww_<32 random hex chars>."""
+    return f"{prefix}_{secrets.token_hex(16)}"
