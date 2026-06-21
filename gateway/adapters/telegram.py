@@ -517,7 +517,7 @@ class TelegramAdapter(BaseAdapter):
         result = self._api_call("getUpdates", {
             "offset": self._offset,
             "timeout": 10,
-            "allowed_updates": json.dumps(["message", "callback_query", "voice"]),
+            "allowed_updates": json.dumps(["message", "callback_query", "voice", "audio"]),
         })
         if not result.get("ok"):
             return []
@@ -576,9 +576,11 @@ class TelegramAdapter(BaseAdapter):
         if not data:
             return ""
 
-        # Save to temp file (keep original extension for ffmpeg)
+        # Save to persistent voice cache dir
+        voice_dir = "/tmp/ww-voice"
+        os.makedirs(voice_dir, exist_ok=True)
         ext = os.path.splitext(file_path)[1] or ".ogg"
-        fd, local_path = tempfile.mkstemp(suffix=ext, prefix="ww_voice_")
+        fd, local_path = tempfile.mkstemp(suffix=ext, prefix="ww_voice_", dir=voice_dir)
         with os.fdopen(fd, "wb") as f:
             f.write(data)
 
@@ -677,6 +679,9 @@ class TelegramAdapter(BaseAdapter):
         if not local_path:
             return ""
 
+        # Convert ogg→wav if ffmpeg is available (more reliable for Whisper)
+        audio_path = self._convert_to_wav(local_path)
+
         try:
             # Run STT
             from core.stt import transcribe_sync, is_available
@@ -685,7 +690,7 @@ class TelegramAdapter(BaseAdapter):
                 log.warning("STT not available — openai-whisper not installed")
                 return ""
 
-            text = transcribe_sync(local_path)
+            text = transcribe_sync(audio_path or local_path)
             if text:
                 log.info("STT transcription: %d chars", len(text))
                 # Inject transcription into the message
@@ -696,11 +701,35 @@ class TelegramAdapter(BaseAdapter):
                 log.warning("STT returned empty transcription")
                 return ""
         finally:
-            # Clean up temp file
-            try:
-                os.unlink(local_path)
-            except OSError:
-                pass
+            # Clean up temp files
+            for p in (local_path, audio_path):
+                if p:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+
+    def _convert_to_wav(self, path: str) -> str:
+        """Convert an audio file to WAV via ffmpeg subprocess.
+
+        Returns path to WAV file, or empty string if conversion fails/not needed.
+        """
+        if path.endswith(".wav"):
+            return ""
+        try:
+            import subprocess, tempfile
+            fd, wav_path = tempfile.mkstemp(suffix=".wav", prefix="ww_voice_", dir="/tmp/ww-voice")
+            os.close(fd)
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", path, "-ar", "16000", "-ac", "1", wav_path],
+                capture_output=True, timeout=30,
+            )
+            if os.path.isfile(wav_path) and os.path.getsize(wav_path) > 0:
+                log.info("Converted %s → %s", os.path.basename(path), os.path.basename(wav_path))
+                return wav_path
+        except Exception:
+            log.warning("ffmpeg conversion failed for %s, will pass original to Whisper", path)
+        return ""
 
     def _extract_command(self, message: dict) -> tuple[str, str]:
         """Extract command prefix and clean text from a message."""

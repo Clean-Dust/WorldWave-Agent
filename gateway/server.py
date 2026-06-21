@@ -208,7 +208,7 @@ class AgentClient:
         return self._stub
 
     async def run_task(self, msg: um_pb2.UnifiedMessage, max_spirals: int = 10):
-        """Submit a task and collect the response stream."""
+        """Submit a task and stream AgentResponse chunks as they arrive."""
         request = ag_pb2.RunTaskRequest(
             session_key=msg.session_key,
             goal=msg.content.text.body if msg.content.HasField("text") else "",
@@ -216,10 +216,8 @@ class AgentClient:
             max_spirals=max_spirals,
             platform=msg.platform,
         )
-        responses = []
         async for resp in self._stub.RunTask(request):
-            responses.append(resp)
-        return responses
+            yield resp
 
     async def run_goal(
         self, msg: um_pb2.UnifiedMessage, max_iterations: int = 20
@@ -419,23 +417,25 @@ class WavegateServer:
             asyncio.create_task(self._process_queue(unified_msg.session_key))
 
     async def _process_queue(self, session_key: str):
-        """Process queued messages for a session."""
+        """Process queued messages for a session, forwarding stream chunks in real-time."""
         msg = self.queue_mgr.dequeue(session_key)
         if msg is None:
             return
 
         try:
-            responses = await self.agent_client.run_task(msg)
-            for resp in responses:
+            async for resp in self.agent_client.run_task(msg):
                 self.queue_mgr.enqueue_response(session_key, resp)
-                if resp.is_final and resp.payload.HasField("text"):
+                if resp.payload.HasField("stream_chunk"):
+                    AdapterRegistry.send_stream_chunk(
+                        msg.platform, session_key, resp.payload.stream_chunk,
+                    )
+                elif resp.is_final and resp.payload.HasField("text"):
                     AdapterRegistry.send_response(
                         msg.platform, session_key, resp.payload.text,
                     )
-                elif resp.payload.HasField("stream_chunk"):
-                    # Streaming: adapter handles incremental updates
-                    AdapterRegistry.send_stream_chunk(
-                        msg.platform, session_key, resp.payload.stream_chunk,
+                elif resp.payload.HasField("error"):
+                    AdapterRegistry.send_response(
+                        msg.platform, session_key, f"Error: {resp.payload.error.message}",
                     )
         except grpc.RpcError as e:
             log.error("Agent RPC error for session %s: %s", session_key, e)

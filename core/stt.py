@@ -29,8 +29,12 @@ _model_size: str = ""
 
 
 def _get_model_size() -> str:
-    """Resolve model size from env var WW_STT_MODEL, default 'base'."""
-    return os.environ.get("WW_STT_MODEL", "base").strip()
+    """Resolve model size from env var, default 'tiny' (~75MB).
+
+    Checks WW_WHISPER_MODEL first, then WW_STT_MODEL as fallback.
+    """
+    return os.environ.get("WW_WHISPER_MODEL",
+           os.environ.get("WW_STT_MODEL", "tiny")).strip()
 
 
 def _load_model():

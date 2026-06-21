@@ -1,5 +1,6 @@
 """
 ww/sandbox — code execution sandbox
 
-- runner.py: Code-as-action execute 
+- runner.py: CodeSandbox (subprocess) + SandboxRunner (Docker-first unified runner)
+- docker.py: DockerSandbox (container isolation) + SecurityProfile
 """

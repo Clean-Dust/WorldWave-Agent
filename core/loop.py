@@ -20,7 +20,7 @@ import json
 import re
 import time
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Callable, Optional, Dict, Any, List
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -359,15 +359,18 @@ class Worldwave:
             "reflex": True,
         }
 
-    def run(self, goal: str, max_spirals: int = 3, image_path: str = "", reasoning_effort: str = "") -> Dict[str, Any]:
+    def run(self, goal: str, max_spirals: int = 3, image_path: str = "", reasoning_effort: str = "",
+            on_spiral_progress: Optional[Callable[[str, str, int], None]] = None) -> Dict[str, Any]:
         """
-        Execute a goal-driven spiral cycle sequence. 
+        Execute a goal-driven spiral cycle sequence.
 
         Args:
-            goal: Goal to be completed (Human language description) 
+            goal: Goal to be completed (Human language description)
             max_spirals: Maximum number of spirals to execute
             image_path: Optional path to image file to attach to the goal
             reasoning_effort: DeepSeek reasoning effort level (low/medium/high/xhigh)
+            on_spiral_progress: Optional callback for streaming progress.
+                Called with (phase, message, progress_pct) at each phase transition.
         Returns:
             {status, spirals_completed, results, session_id, summary}
         """
@@ -436,6 +439,8 @@ class Worldwave:
                 self._log("#### [Perception] Analyzing environment...")
                 spiral.perception = self._llm_perceive(goal, prev_failure=prev_failure)
                 self.state.set_phase("perceive")
+                if on_spiral_progress:
+                    on_spiral_progress("PERCEIVE", "Analyzing goal and environment", 15)
                 obs = spiral.perception.get("observations", [])
                 for o in obs[:3]:
                     self._log("  - " + str(o)[:80])
@@ -473,6 +478,8 @@ class Worldwave:
                 self._log("#### [Recall] Recalling relevant memories...")
                 spiral.recall = self._llm_recall(spiral.perception, goal)
                 self.state.set_phase("recall")
+                if on_spiral_progress:
+                    on_spiral_progress("RECALL", "Recalling relevant memories", 30)
                 mem_count = len(spiral.recall.get("memories", []))
                 self._log("  -> " + str(mem_count) + " memories recalled")
 
@@ -493,6 +500,8 @@ class Worldwave:
                 self._log("#### [Plan] Planning actions...")
                 spiral.plan = self._llm_plan(spiral.perception, spiral.recall, goal)
                 self.state.set_phase("plan")
+                if on_spiral_progress:
+                    on_spiral_progress("PLAN", "Planning action steps", 45)
                 steps = spiral.plan.get("steps", [])
                 self._log("  -> " + str(len(steps)) + " steps")
                 for i, s in enumerate(steps[:5]):
@@ -519,6 +528,8 @@ class Worldwave:
                 self._log("#### [Action] Executing...")
                 spiral.actions = self._llm_act(spiral.plan, goal)
                 self.state.set_phase("act")
+                if on_spiral_progress:
+                    on_spiral_progress("ACT", "Executing actions", 60)
                 self._log("  -> " + str(len(spiral.actions)) + " actions executed")
 
                 # Subconscious observation: Record each action
@@ -589,6 +600,8 @@ class Worldwave:
                 self._log("#### [Evaluate] Evaluating results...")
                 spiral.evaluation = self._llm_evaluate(spiral.plan, spiral.actions, goal)
                 self.state.set_phase("evaluate")
+                if on_spiral_progress:
+                    on_spiral_progress("EVALUATE", "Evaluating results against goal", 80)
                 ev = spiral.evaluation
                 self._log("  -> success=" + str(ev.get("success", "?")) + ", " + ev.get("reason", "")[:80])
 
@@ -673,6 +686,8 @@ class Worldwave:
                 self._log("#### [Learn] Codifying experience...")
                 spiral.learning = self._llm_learn(spiral, goal)
                 self.state.set_phase("learn")
+                if on_spiral_progress:
+                    on_spiral_progress("LEARN", "Codifying lessons learned", 100)
                 stored = spiral.learning.get("stored", False)
                 self._log("  -> " + ("stored" if stored else "skipped"))
 

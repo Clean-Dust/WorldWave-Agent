@@ -43,6 +43,7 @@ websockets = ["websockets>=12.0"]
 contacts = ["cryptography>=41.0.0"]
 nats = ["nats-py>=0.8.0"]
 stt = ["openai-whisper>=20231117"]
+docker = []
 dev = []
 test = ["pytest>=7.0.0", "cryptography>=41.0.0"]
 all = [

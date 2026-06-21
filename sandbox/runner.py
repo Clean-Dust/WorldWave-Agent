@@ -13,10 +13,13 @@ Can be upgraded to Docker sandbox later.
 from __future__ import annotations
 import ast
 import json
+import logging
 import subprocess
 import sys
 import tempfile
 from typing import Dict, Any, List
+
+log = logging.getLogger("ww.sandbox.runner")
 
 
 # Allowed built-in modules (blacklist vs whitelist — using whitelist here)
@@ -251,3 +254,45 @@ if '_result' in dir():
             return self.run_code(code)
         except Exception as e:
             return SandboxResult(success=False, error=str(e))
+
+
+class SandboxRunner:
+    """Unified sandbox runner: Docker first, subprocess fallback.
+
+    Usage:
+        runner = SandboxRunner()
+        print(runner.sandbox_mode)  # "docker" or "subprocess"
+        result = runner.run("print(1+1)")
+    """
+
+    def __init__(self, timeout: int = 30):
+        self._timeout = timeout
+        self._docker_sandbox = None
+        self._subprocess_sandbox = CodeSandbox(timeout=timeout)
+        self._mode = None
+        self._init_mode()
+
+    def _init_mode(self):
+        try:
+            from sandbox.docker import DockerSandbox
+            ds = DockerSandbox(timeout=self._timeout)
+            if ds.is_available():
+                self._docker_sandbox = ds
+                self._mode = "docker"
+                log.info("SandboxRunner: Docker sandbox active")
+            else:
+                self._mode = "subprocess"
+                log.info("SandboxRunner: Docker unavailable, using subprocess sandbox")
+        except Exception as e:
+            self._mode = "subprocess"
+            log.info("SandboxRunner: Docker import failed (%s), using subprocess sandbox", e)
+
+    @property
+    def sandbox_mode(self) -> str:
+        return self._mode
+
+    def run(self, code: str, language: str = "python", timeout: int = 30, context: Dict = None):
+        if self._mode == "docker" and self._docker_sandbox:
+            return self._docker_sandbox.run(code, language=language, timeout=timeout, context=context)
+        else:
+            return self._subprocess_sandbox.run_code(code, context)

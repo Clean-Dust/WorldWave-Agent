@@ -13,6 +13,7 @@ grpc.server(ThreadPoolExecutor).
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 import time
 import uuid
@@ -54,29 +55,68 @@ class AgentServiceImpl(ag_grpc.AgentServicer):
     # ── RunTask ───────────────────────────────────────────────
 
     def RunTask(self, request, context):
-        """Execute a single task synchronously, yielding results."""
+        """Execute a single task with server-side streaming progress updates.
+
+        Spawns the spiral loop in a background thread and yields
+        AgentResponse chunks as each cognitive phase completes.
+        """
         log.info("RunTask: session=%s goal=%s", request.session_key, request.goal[:80])
 
-        try:
-            result = self.ww.run(request.goal, max_spirals=request.max_spirals)
+        q = queue.Queue()
+        stream_seq = [0]
 
-            yield um_pb2.AgentResponse(
+        def on_progress(phase: str, message: str, progress_pct: int):
+            chunk = um_pb2.StreamChunk(
+                delta=f"[{phase}] {message}",
+                seq=stream_seq[0],
+                stream_type="thinking",
+            )
+            q.put(um_pb2.AgentResponse(
                 correlation_id=str(uuid.uuid4()),
                 session_key=request.session_key,
-                payload=um_pb2.ResponsePayload(text=str(result)),
-                is_final=True,
-                stream_seq=0,
-            )
-        except Exception as e:
-            log.error("RunTask error: %s", e)
-            yield um_pb2.AgentResponse(
-                correlation_id=str(uuid.uuid4()),
-                session_key=request.session_key,
-                payload=um_pb2.ResponsePayload(
-                    error=um_pb2.ErrorInfo(code="TASK_ERROR", message=str(e)),
-                ),
-                is_final=True,
-            )
+                payload=um_pb2.ResponsePayload(stream_chunk=chunk),
+                is_final=False,
+                stream_seq=stream_seq[0],
+            ))
+            stream_seq[0] += 1
+
+        def runner():
+            try:
+                result = self.ww.run(
+                    request.goal,
+                    max_spirals=request.max_spirals,
+                    on_spiral_progress=on_progress,
+                )
+                q.put(result)
+            except Exception as e:
+                q.put(e)
+
+        t = threading.Thread(target=runner, daemon=True)
+        t.start()
+
+        while True:
+            item = q.get()
+            if isinstance(item, Exception):
+                log.error("RunTask error: %s", item)
+                yield um_pb2.AgentResponse(
+                    correlation_id=str(uuid.uuid4()),
+                    session_key=request.session_key,
+                    payload=um_pb2.ResponsePayload(
+                        error=um_pb2.ErrorInfo(code="TASK_ERROR", message=str(item)),
+                    ),
+                    is_final=True,
+                )
+                return
+            if isinstance(item, dict):
+                yield um_pb2.AgentResponse(
+                    correlation_id=str(uuid.uuid4()),
+                    session_key=request.session_key,
+                    payload=um_pb2.ResponsePayload(text=str(item)),
+                    is_final=True,
+                    stream_seq=stream_seq[0],
+                )
+                return
+            yield item
 
     # ── RunGoal ───────────────────────────────────────────────
 

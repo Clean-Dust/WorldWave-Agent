@@ -34,12 +34,12 @@ try:
     from core.config import default_config
     _cfg = default_config()
     DEFAULT_MEMORY = _cfg.get("sandbox_memory", "256m")
-    DEFAULT_CPU = _cfg.get("sandbox_cpu", "1.0")
+    DEFAULT_CPU = _cfg.get("sandbox_cpu", "0.5")
     DEFAULT_TIMEOUT = int(_cfg.get("sandbox_timeout", 30))
     DEFAULT_NETWORK = _cfg.get("sandbox_network", "none")
 except Exception:
     DEFAULT_MEMORY = "256m"
-    DEFAULT_CPU = "1.0"
+    DEFAULT_CPU = "0.5"
     DEFAULT_TIMEOUT = 30
     DEFAULT_NETWORK = "none"
 
@@ -48,7 +48,7 @@ log = logging.getLogger("ww.sandbox.docker")
 
 # ── Docker image ─────────────────────────────────────────────────
 
-DOCKER_IMAGE = "python:3.12-slim"
+DOCKER_IMAGE = "python:3.11-slim"
 SANDBOX_USER = "sandbox"
 SANDBOX_UID = 1000
 
@@ -104,11 +104,22 @@ class DockerSandbox:
 
     # ── Public API ──────────────────────────────────────────────
 
-    def run(self, code: str, context: Optional[Dict] = None) -> "SandboxResult":
+    def is_available(self) -> bool:
+        """Check if Docker is running and accessible."""
+        return self._check_docker()
+
+    def run(self, code: str, language: str = "python", timeout: int = 30, context: Optional[Dict] = None) -> "SandboxResult":
         """Execute code in a Docker container (or fallback).
 
         Returns SandboxResult with output, errors, and timing.
         """
+        if language != "python":
+            return SandboxResult(
+                success=False,
+                error=f"Unsupported language: {language}. Only python is supported.",
+                sandbox_type="docker",
+            )
+
         if not self._check_docker():
             log.debug("Docker not available, falling back to subprocess sandbox")
             subprocess_result = self._fallback.run_code(code, context)
@@ -123,20 +134,19 @@ class DockerSandbox:
 
         start = time.time()
         script_path = None
-        container_id = None
 
         try:
             # Write code to temp file
             script_path = self._write_script(code, context or {})
 
             # Build docker run command
-            cmd = self._build_command(script_path)
+            cmd = self._build_command(script_path, timeout)
 
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=self._timeout + 10,  # Extra time for container start
+                timeout=timeout + 10,  # Extra time for container start
             )
 
             duration = time.time() - start
@@ -160,7 +170,7 @@ class DockerSandbox:
         except subprocess.TimeoutExpired:
             return SandboxResult(
                 success=False,
-                error=f"Timeout ({self._timeout}s)",
+                error=f"Timeout ({timeout}s)",
                 duration=time.time() - start,
                 sandbox_type="docker",
             )
@@ -207,9 +217,12 @@ class DockerSandbox:
         return self._docker_ok
 
     def _write_script(self, code: str, context: Dict) -> str:
-        """Write code + context to a temp directory."""
-        tmpdir = tempfile.mkdtemp(prefix="ww_docker_")
-        script = os.path.join(tmpdir, "user_code.py")
+        """Write code + context under /tmp/ww-sandbox/ workspace."""
+        workspace = "/tmp/ww-sandbox"
+        os.makedirs(workspace, exist_ok=True)
+        tmpdir = tempfile.mkdtemp(prefix="run_", dir=workspace)
+        ext = ".py"
+        script = os.path.join(tmpdir, f"user_code{ext}")
 
         # Prepare the script wrapper
         context_lines = "\n".join(
@@ -231,25 +244,25 @@ import json, sys, os
 
         return script
 
-    def _build_command(self, script_path: str) -> List[str]:
+    def _build_command(self, script_path: str, timeout: int = 30) -> List[str]:
         """Build the docker run command with security options."""
-        tmpdir = os.path.dirname(script_path)
+        workspace_host = os.path.dirname(script_path)
 
         cmd = [
             "docker", "run",
             "--rm",                          # Auto-remove after execution
-            "--network", "none" if not self._network else "bridge",
+            "--stop-timeout", str(timeout),  # Force kill after timeout
+            "--network", "none",             # No network access
             "--memory", self._memory,
             "--cpus", self._cpu,
             "--read-only",                   # Root filesystem read-only
-            "--tmpfs=/tmp:rw,noexec,nosuid,size=128m",
             "--security-opt=no-new-privileges",
             "--cap-drop=ALL",
             "--user", str(SANDBOX_UID),
-            "-v", f"{tmpdir}:/code:ro",      # Mount code as read-only
-            "-w", "/tmp",
+            "-v", f"{workspace_host}:/workspace:rw",  # Read-write workspace
+            "-w", "/workspace",
             self._image,
-            "python", "-u", "/code/user_code.py",
+            "python", "-u", f"/workspace/{os.path.basename(script_path)}",
         ]
 
         return cmd
