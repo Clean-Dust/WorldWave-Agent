@@ -42,22 +42,15 @@ jobs:
 
       - name: Download SWE-bench Lite dataset
         run: |
-          pip install swebench
+          pip install swebench datasets
           python -c "
-          import json, os
+          from datasets import load_dataset
+          import os
           os.makedirs('/tmp/swe_bench_data', exist_ok=True)
-          # Download from HuggingFace
-          from huggingface_hub import hf_hub_download
-          path = hf_hub_download(
-              repo_id='princeton-nlp/SWE-bench_Lite',
-              filename='swe-bench-lite.json',
-              repo_type='dataset',
-              cache_dir='/tmp/swe_bench_data',
-          )
-          import shutil
-          shutil.copy(path, '/tmp/swe_bench_data/swe-bench-lite.json')
-          print(f'Dataset downloaded to {path}')
-          " || echo "SKIP: dataset already downloaded or unavailable"
+          ds = load_dataset('princeton-nlp/SWE-bench_Lite', split='test')
+          ds.to_json('/tmp/swe_bench_data/swe-bench-lite.json')
+          print(f'Downloaded {len(ds)} instances')
+          " || echo "SKIP: dataset download failed, will use any cached copy"
 
       - name: Run SWE-bench evaluation
         env:

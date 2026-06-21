@@ -396,7 +396,18 @@ def run_swe_bench(
 
 
 if __name__ == "__main__":
-    import sys
-    instances = int(sys.argv[1]) if len(sys.argv) > 1 else 10
-    report = run_swe_bench(instances=instances)
+    import argparse
+    p = argparse.ArgumentParser(description="SWE-bench evaluation")
+    p.add_argument("--instances", type=int, default=10, help="Number of instances to evaluate")
+    p.add_argument("--model", default="deepseek-v4-pro", help="Model to use")
+    p.add_argument("--output", default="", help="Output JSON path")
+    args = p.parse_args()
+
+    report = run_swe_bench(instances=args.instances)
     print(report.to_markdown())
+
+    if args.output:
+        import json, os
+        os.makedirs(os.path.dirname(args.output) or ".", exist_ok=True)
+        with open(args.output, "w") as f:
+            json.dump(report.to_json(), f, indent=2)
