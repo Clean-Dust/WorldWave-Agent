@@ -403,7 +403,12 @@ if __name__ == "__main__":
     p.add_argument("--output", default="", help="Output JSON path")
     args = p.parse_args()
 
-    report = run_swe_bench(instances=args.instances)
+    report = run_swe_bench(
+        instances=args.instances,
+        model=args.model,
+        output_path=args.output,
+        data_dir=os.environ.get("SWE_BENCH_DATA_DIR", ""),
+    )
     print(report.to_markdown())
 
     if args.output:

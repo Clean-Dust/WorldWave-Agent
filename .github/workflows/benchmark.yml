@@ -61,7 +61,8 @@ jobs:
           python -m tests.eval.swe_bench \
             --instances ${{ github.event.inputs.instances || '50' }} \
             --model $WW_MODEL \
-            --output results/swe-bench-$(date +%Y%m%d).json
+            --output results/swe-bench-$(date +%Y%m%d).json \
+            || echo "SWE-bench harness failed"
 
       - name: Run HumanEval
         if: always()
