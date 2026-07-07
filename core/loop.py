@@ -40,6 +40,7 @@ from core.circadian import CircadianRhythm, collect_system_metrics
 from core.subconscious.basal_ganglia import BasalGanglia
 from core.computer_use.predictive_model import PredictiveModel
 from core.computer_use.skill_solidification import SkillSolidifier
+from core.self_model import init_self_model
 
 
 class Worldwave:
@@ -133,6 +134,14 @@ class Worldwave:
         if os.path.exists(ss_path):
             self.skill_solidifier._load(ss_path)
 
+        # SelfModel: introspect real architecture for identity
+        self.self_model = init_self_model(
+            tools=self.tools,
+            memory=self.memory,
+            evolution=self.evolution,
+            subconscious=self.subconscious,
+        )
+
 
     def _store_memory(self, content: str, source: str = "ww_loop",
                       entities: List[str] = None) -> Optional[str]:
@@ -166,6 +175,69 @@ class Worldwave:
     REFLEX_MAX_TOKENS = 2048     # Max tokens for reflex LLM call
     REFLEX_SAFETY_THRESHOLD = 0.6  # Basal Ganglia N-score above this → block
 
+    # ── Self-question detection ──────────────────────────────────
+    SELF_QUESTION_KEYWORDS = [
+        # Chinese
+        "你是谁", "你是什么", "你的模型", "你能做", "你会做", "你可以做",
+        "你能改变", "你会改变", "你可以改变", "你能否改变", "你是什么模型",
+        "你用的什么模型", "你用什么模型", "你是什么版本", "你的版本",
+        "你的能力", "你有多少工具", "你支持什么", "你连了哪些",
+        "改变自己的模型", "换个模型", "切换模型", "换成",
+        # English
+        "what model", "which model", "change your model", "your model",
+        "what are you", "who are you", "your version", "your capabilities",
+        "can you change", "can you modify", "what llm",
+    ]
+
+    def _is_self_question(self, goal: str) -> bool:
+        goal_lower = goal.lower()
+        for kw in self.SELF_QUESTION_KEYWORDS:
+            if kw in goal_lower:
+                return True
+        return False
+
+    def _direct_self_answer(self, goal: str) -> Dict[str, Any]:
+        self_desc = getattr(self, 'self_model', None)
+        identity_block = ""
+        if self_desc:
+            identity_block = self_desc.describe() + "\n\n"
+        prompt = (
+            identity_block +
+            f"Question: {goal}\n\n"
+            "Answer in ONE sentence. Be direct and human. "
+            "Do NOT describe yourself — just answer the question."
+        )
+        try:
+            response = self.llm.chat(
+                messages=[
+                    {"role": "system", "content": "Answer naturally in one sentence. No preamble."},
+                    {"role": "user", "content": prompt},
+                ],
+                json_mode=False,
+                max_tokens=200,
+            )
+            return {
+                "status": "completed",
+                "spirals_completed": 0,
+                "results": [{
+                    "spiral": 0,
+                    "goal": goal,
+                    "steps": [],
+                    "actions": [],
+                    "evaluation": {
+                        "success": True,
+                        "response": response,
+                    },
+                    "success": True,
+                }],
+                "session_id": self.state.session_id,
+                "summary": "Self-question — direct answer",
+                "direct": True,
+            }
+        except Exception:
+            return None  # Fall through to normal flow
+
+
     def _estimate_complexity(self, goal: str) -> float:
         """Estimate task complexity from the goal string alone.
 
@@ -176,6 +248,10 @@ class Worldwave:
 
         # ── Factor 1: Token count ──
         words = goal.split()
+        # CJK-aware: if mostly Chinese, count characters not whitespace-split words
+        cjk_chars = sum(1 for c in goal if '\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf')
+        if cjk_chars >= len(goal) * 0.3:  # >30% CJK → use char-based count
+            words = [c for c in goal if c.strip()]
         if len(words) <= 5:
             token_score = 0.0
         elif len(words) <= 15:
@@ -191,6 +267,7 @@ class Worldwave:
             "read", "show", "list", "find", "search", "check", "run", "execute",
             "set", "update", "modify", "rename", "move", "copy", "open",
             "write", "edit", "改", "刪除", "替換", "修改", "查看", "顯示",
+            "查", "看", "问", "問", "能否", "可以", "会", "會", "能",
         }
         multi_step_markers = {
             "plan", "design", "build", "implement", "refactor", "migrate",
@@ -227,7 +304,7 @@ class Worldwave:
         if 'http' in goal_lower:
             structural_score = max(structural_score, 0.3)
         # Question marks → simple Q&A
-        if goal.strip().endswith('?') and len(words) <= 15:
+        if (goal.strip().endswith('?') or goal.strip().endswith('？')) and len(words) <= 15:
             structural_score = min(structural_score, 0.1)
 
         # ── Factor 4: Line-number patterns (ultra-specific edits) ──
@@ -251,10 +328,14 @@ class Worldwave:
         tool_descriptions = self.tools.prompt_block()[:3000] if hasattr(self.tools, 'prompt_block') else ""
 
         system_prompt = (
-            "You are an autonomous coding agent. Execute the user's task directly "
-            "using a single tool call if possible. Be precise and minimal.\n\n"
+            "Execute the user's task directly and concisely.\n\n"
             "Available tools:\n" + tool_descriptions
         )
+        
+        # Inject self-model for identity/self-knowledge questions
+        self_desc = getattr(self, 'self_model', None)
+        if self_desc:
+            system_prompt = self_desc.describe() + "\n\n" + system_prompt
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -392,6 +473,14 @@ class Worldwave:
         self._log("## Worldwave v0.2 LLM Driven version")
         self._log("## Goal: " + goal)
         self.running = True
+
+        # ── Self-question: direct answer, skip all tools ──
+        if self._is_self_question(goal):
+            self._log("## Self-question detected — direct answer")
+            result = self._direct_self_answer(goal)
+            if result is not None:
+                self.running = False
+                return result
 
         # ── Reflex Arc: fast path for trivially simple tasks ──
         # Skip reflex arc for image/photo tasks — they need vision tools
@@ -1158,17 +1247,23 @@ class Worldwave:
                 
                 try:
                     if tool_data:
-                        # Tool outputs exist — enforce strict transcription
+                        # Tool outputs exist — inject self-model + concise constraint
+                        self_desc = getattr(self, 'self_model', None)
+                        identity_block = ""
+                        if self_desc:
+                            identity_block = self_desc.describe() + "\n\n"
                         full_prompt = (
+                            identity_block +
                             f"Original goal: {goal}\n\n"
                             f"Tool outputs:\n{tool_data}\n\n"
-                            f"Answer using ONLY the data above. Quote facts verbatim. "
-                            f"If data is insufficient, say what you found and what's missing. "
-                            f"NEVER add details not in the tool outputs."
+                            f"Synthesize a concise answer from the data above. "
+                            f"For questions about yourself, prefer the identity block. "
+                            f"Be brief — one to three sentences unless asked for detail. "
+                            f"Never dump system diagnostics."
                         )
                         response_text = self.llm.chat(
                             messages=[
-                                {"role": "system", "content": "You are a strict transcriber. You may rephrase for clarity but must NOT add any fact, variable name, command, or mechanism not explicitly present in the tool outputs above."},
+                                {"role": "system", "content": "You are Worldwave. Answer like a human, not a spec sheet. Use your identity block for self-questions — NOT raw tool outputs. Stay concise."},
                                 {"role": "user", "content": full_prompt},
                             ],
                             json_mode=False,
@@ -1176,9 +1271,19 @@ class Worldwave:
                         )
                     else:
                         # No tool outputs — simple conversational respond
-                        full_prompt = f"Original goal: {goal}\n\nResponse instruction: {prompt}"
+                        self_desc = getattr(self, 'self_model', None)
+                        identity_block = ""
+                        if self_desc:
+                            identity_block = self_desc.describe() + "\n\n"
+                        full_prompt = (
+                            identity_block +
+                            f"Original goal: {goal}\n\nResponse instruction: {prompt}"
+                        )
                         response_text = self.llm.chat(
-                            [{"role": "user", "content": full_prompt}],
+                            messages=[
+                                {"role": "system", "content": "Answer concisely. One sentence for simple questions. Be human, not a bot."},
+                                {"role": "user", "content": full_prompt},
+                            ],
                             json_mode=False,
                             max_tokens=1024,
                         )
