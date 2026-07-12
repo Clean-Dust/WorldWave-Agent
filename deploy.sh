@@ -15,6 +15,32 @@
 # ============================================================
 set -euo pipefail
 
+# ── Subcommands ──
+CMD="${1:-start}"
+if [ "$CMD" = "update" ]; then
+    INSTALL_DIR="${WW_HOME:-$HOME/worldwave}"
+    cd "$INSTALL_DIR"
+    echo "🌊 Worldwave — Updating..."
+    git fetch origin main 2>/dev/null
+    git reset --hard origin/main 2>/dev/null
+    echo "   ✓ Updated to $(git log -1 --format='%h %s')"
+    VENV_DIR="$INSTALL_DIR/.venv"
+    if [ ! -f "$VENV_DIR/bin/pip" ]; then
+        python3 -m venv "$VENV_DIR"
+    fi
+    "$VENV_DIR/bin/pip" install --quiet -r requirements.txt 2>/dev/null || true
+    echo "   ✓ Dependencies ready"
+    # Restart: kill old server, start new
+    pkill -f "python.*server.py" 2>/dev/null || true
+    sleep 1
+    ENV_FILE="$INSTALL_DIR/.env"
+    ENV=""
+    [ -f "$ENV_FILE" ] && ENV="$(grep -v '^#' "$ENV_FILE" | tr '\n' ' ')"
+    ENV="$ENV WW_PORT=${WW_PORT:-9300}"
+    echo "   ✓ Restarting..."
+    exec env $ENV "$VENV_DIR/bin/python" server.py
+fi
+
 # ── Config (override via env vars) ──
 REPO="${WW_REPO:-https://github.com/Clean-Dust/worldwave.git}"
 BRANCH="${WW_BRANCH:-main}"
@@ -331,7 +357,7 @@ fi
 # Install ww shortcut if not already present
 if ! grep -q "alias ww=" "$HOME/.bashrc" 2>/dev/null; then
     echo "alias ww='cd $INSTALL_DIR && bash deploy.sh'" >> "$HOME/.bashrc"
-    ok "Shortcut added — next time just type: ww"
+    ok "Shortcut added — next time just type: ww   (or: ww update)"
 fi
 
 cd "$INSTALL_DIR"
