@@ -96,6 +96,13 @@ if ! $HAVE_PY; then
     esac
 fi
 
+# Check venv module separately — python3-venv package may be missing even with Python 3 installed
+if $HAVE_PY && ! python3 -m venv --help >/dev/null 2>&1; then
+    case "$OS" in
+        linux) MISSING_PKGS="$MISSING_PKGS python3-venv" ;;
+    esac
+fi
+
 # Install missing packages
 if [ -n "$MISSING_PKGS" ]; then
     step "0/6  Installing System Dependencies"
