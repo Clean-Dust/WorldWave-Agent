@@ -170,28 +170,48 @@ def decompress_weights(compressed: dict, template: dict) -> dict:
 DELTA_MAGIC = "_delta"
 
 
-def _nested_subtract(a: list, b: list) -> list:
+def _nested_subtract(a, b):
     """
-    Recursively subtract two nested lists: a - b.
-    Used to compute weight delta for Delta Sum compression.
+    Recursively subtract two nested structures: a - b.
+    Handles lists, dicts, and scalars. Used for Delta Sum compression.
     """
-    if isinstance(a, list):
-        if a and isinstance(a[0], list):
-            return [_nested_subtract(ra, rb) for ra, rb in zip(a, b)]
-        return [x - y for x, y in zip(a, b)]
-    return a - b
+    if isinstance(a, dict) and isinstance(b, dict):
+        result = {}
+        for key in a:
+            if key in b:
+                result[key] = _nested_subtract(a[key], b[key])
+            else:
+                result[key] = a[key]
+        return result
+    elif isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
+            return a
+        return [_nested_subtract(x, y) for x, y in zip(a, b)]
+    elif isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return a - b
+    return a  # type mismatch, return original
 
 
-def _nested_add(a: list, b: list) -> list:
+def _nested_add(a, b):
     """
-    Recursively add two nested lists: a + b.
-    Used to reconstruct weights from delta.
+    Recursively add two nested structures: a + b.
+    Handles lists, dicts, and scalars. Used to reconstruct weights from delta.
     """
-    if isinstance(a, list):
-        if a and isinstance(a[0], list):
-            return [_nested_add(ra, rb) for ra, rb in zip(a, b)]
-        return [x + y for x, y in zip(a, b)]
-    return a + b
+    if isinstance(a, dict) and isinstance(b, dict):
+        result = {}
+        for key in a:
+            if key in b:
+                result[key] = _nested_add(a[key], b[key])
+            else:
+                result[key] = a[key]
+        return result
+    elif isinstance(a, list) and isinstance(b, list):
+        if len(a) != len(b):
+            return a
+        return [_nested_add(x, y) for x, y in zip(a, b)]
+    elif isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return a + b
+    return a  # type mismatch, return original
 
 
 def compute_weight_delta(current: dict, baseline: dict) -> dict:
