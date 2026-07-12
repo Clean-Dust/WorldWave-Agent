@@ -328,5 +328,11 @@ if [ -z "${DEEPSEEK_API_KEY:-}" ] && [ ! -f "$ENV_FILE" ]; then
     echo ""
 fi
 
+# Install ww shortcut if not already present
+if ! grep -q "alias ww=" "$HOME/.bashrc" 2>/dev/null; then
+    echo "alias ww='cd $INSTALL_DIR && bash deploy.sh'" >> "$HOME/.bashrc"
+    ok "Shortcut added — next time just type: ww"
+fi
+
 cd "$INSTALL_DIR"
 exec env $ENV "$VENV_DIR/bin/python" server.py
