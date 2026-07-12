@@ -1278,6 +1278,17 @@ def _config_set_handler(key: str, value: str) -> Dict:
         return {"success": False, "error": str(e)}
 
 
+def _switch_model_handler(model: str) -> Dict:
+    """Switch the active LLM model on the fly."""
+    # Use the running WW instance
+    from core.loop import _active_ww_instance
+    ww = _active_ww_instance
+    if not ww:
+        return {"success": False, "error": "WW not initialized"}
+    result = ww.switch_model(model)
+    return {"success": True, "output": f"Switched from {result['from']} to {result['to']}", "data": result}
+
+
 def _config_list_handler() -> Dict:
     """List all configuration."""
     config_path = os.path.expanduser("~/.ww_config.json")
@@ -1672,6 +1683,12 @@ def default_registry(guardrails=None) -> ToolRegistry:
                         category="skill")
 
     # ── 12. CONFIG ──
+    r.register_from_def("switch_model", "Switch the LLM model on the fly. Use when user asks to change models (e.g. 'switch to flash', 'use pro model'). Short names: flash → deepseek-v4-flash, pro → deepseek-v4-pro.",
+                        _switch_model_handler,
+                        parameters={"model": {"type": "string", "description": "Model name (e.g. flash, pro, deepseek-v4-flash, deepseek-v4-pro)"}},
+                        examples=['switch_model(model="flash")', 'switch_model(model="deepseek-v4-pro")'],
+                        category="config")
+
     r.register_from_def("config_get", "read WW configuration. ",
                         _config_get_handler,
                         parameters={"key": {"type": "string", "description": "configurationKey name"}},
