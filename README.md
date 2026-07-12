@@ -25,9 +25,9 @@
 
 <h2 id="english">Worldwave</h2>
 
-A **persistent cognitive entity** framework. One agent, one timeline — regardless of which platform you use to talk to it.
+A **persistent cognitive entity** framework — an AI agent that actually remembers you.
 
-Worldwave gives your agent a **persistent memory** that survives sessions, a **cross-platform identity** (continue on Telegram what you started in the terminal), and a **cognitive entity** that remembers your projects, preferences, and decisions across days and weeks.
+Worldwave gives your agent **persistent memory** that lasts across sessions, a **cross-platform identity** so you can continue on Telegram what you started in the terminal, and a **cognitive entity** that remembers your projects, preferences, and decisions — across days, across weeks.
 
 Close the terminal, open Telegram — same agent, same context. No re-explaining.
 
@@ -134,7 +134,7 @@ User: What was that project I mentioned earlier?
   You mentioned it about 8 minutes ago in the terminal. Need help with anything specific?
 ```
 
-The agent knew because `remember()` stored the facts in entity state, and entity state is loaded regardless of which platform the next message comes from.
+The agent remembered because `remember()` stored the facts in entity state, and entity state is loaded regardless of which platform the next message comes from.
 
 ### Feature Overview
 
@@ -151,9 +151,9 @@ The agent knew because `remember()` stored the facts in entity state, and entity
 | **Coding Engine** | `coding/` (12+ modules) | Defensive code editing with backup/rollback, AST-aware search (ast-grep), progressive loading for large repos, capability mutex for concurrent edits |
 | **Computer Use** | `core/computer_use/` (12 modules) | 7-tier progressive screen capture, UI Automation tree, set-of-mark visual grounding, browser stealth control, vision loop |
 | **Biomimetic** | `core/` (45 modules) | Global workspace (7-item capacity), basal ganglia (Go/NoGo gate), circadian rhythm, cascade bus, predictive model, skill solidification, self-model introspection |
-| **Multi-Agent Orchestration** ✨ | `core/delegation.py` | Auto-decompose complex tasks into parallel subtasks with result merging. Triggers in PLAN phase at complexity > 0.6 |
-| **Skill Evolution** ✨ | `core/skill_evolution.py` | Autonomous skill extraction: observes successful task patterns, crystallizes into reusable skills after 3+ successes |
-| **Autonomous Scheduling** ✨ | `core/autonomous_scheduler.py` | NL cron scheduling (`"every 2h"`, `"daily at 9am"`), heartbeat daemon, idle-triggered proactive maintenance |
+| **Multi-Agent Orchestration** ✨ | `core/delegation.py` | Breaks complex tasks into parallel subtasks and merges results. Kicks in automatically when things get complicated |
+| **Skill Evolution** ✨ | `core/skill_evolution.py` | Watches how you use it, learns from successful patterns — after doing something 3+ times, turns it into a reusable skill |
+| **Autonomous Scheduling** ✨ | `core/autonomous_scheduler.py` | Schedule tasks in plain English ("every 2h", "daily at 9am"). Runs a heartbeat to keep things on track, and can suggest maintenance tasks when idle |
 | **Approval Gating** ✨ | `core/enterprise.py` | Per-action approval system: auto/ask/deny/sandbox modes with rate limiting, layered on RBAC |
 | **Observability** ✨ | `core/tracing.py` | Per-phase spiral tracing with p50/p95 latency, bottleneck analysis, error correlation, JSONL export |
 | **User Modeling** ✨ | `core/user_model.py` | Dynamic inference of communication style, domain expertise, implicit goals — no external ML |
@@ -181,9 +181,9 @@ The agent knew because `remember()` stored the facts in entity state, and entity
 
 ### Working alongside Claude Code & Codex
 
-**Claude Code and Codex** are powerful tools with established workflows. But they're session-based: close the window, lose the context. Start a new session, re-explain your project from scratch.
+**Claude Code and Codex** are great at what they do. But every session starts from zero — close the window, lose everything. Open a new chat, explain your project all over again.
 
-Worldwave works **alongside** them — you don't have to choose. Keep your existing workflow. Add Worldwave as the persistent layer that remembers everything, coordinates across tools, and keeps your workflow continuous.
+Worldwave works **alongside** them — you don't have to choose. Keep your existing workflow. Just add Worldwave as the layer that remembers everything, coordinates across tools, and keeps the thread going.
 
 ### Contributing
 
@@ -344,8 +344,8 @@ $ ww run "是个管理 Docker 容器的 CLI 工具"
 | **编程引擎** | `coding/`（12+ 个模块） | 带备份/回滚的防御性代码编辑、AST 感知搜索（ast-grep）、大仓库渐进式加载、并发编辑能力互斥锁 |
 | **桌面操作** | `core/computer_use/`（12 个模块） | 7 层级渐进式屏幕捕获、UI Automation 树提取、标记式视觉定位、浏览器隐身控制、视觉闭环 |
 | **仿生模块** | `core/`（45 个模块） | 全局工作区（7 项容量）、基底核（Go/NoGo 动作门控）、昼夜节律、级联总线、预测模型、技能固化、自我模型内省 |
-| **多智能体协作** ✨ | `core/delegation.py` | 自动分解复杂任务为并行子任务并合并结果。PLAN 阶段复杂度 > 0.6 自动触发 |
-| **技能演化** ✨ | `core/skill_evolution.py` | 观察成功任务模式→积累 3 次后→自动萃取为可复用技能，持续迭代改进 |
+| **多智能体协作** ✨ | `core/delegation.py` | 把复杂任务拆成并行子任务然后合并结果，任务复杂时自动触发 |
+| **技能演化** ✨ | `core/skill_evolution.py` | 看你怎么用它，从成功模式里学——同一件事做了 3 次以上，自动变成可复用的技能 |
 | **自主排程** ✨ | `core/autonomous_scheduler.py` | 自然语言定时（"每 2 小时"、"每天早上 9 点"），心跳守护进程，空闲时自动生成维护任务 |
 | **审批门控** ✨ | `core/enterprise.py` | 分级审批系统：auto/ask/deny/sandbox 四模式 + 速率限制，叠加在 RBAC 之上 |
 | **可观测性** ✨ | `core/tracing.py` | 每阶段计时 + p50/p95 延迟 + 瓶颈分析 + 错误关联 + JSONL 导出 |
@@ -374,9 +374,9 @@ $ ww run "是个管理 Docker 容器的 CLI 工具"
 
 ### 与 Claude Code 和 Codex 协同工作
 
-**Claude Code 和 Codex** 是强大的工具，拥有成熟的用户工作流。但它们基于会话：关闭窗口，上下文消失。开启新会话，你得从头解释一遍项目。
+**Claude Code 和 Codex** 本身很厉害。但它们的本质是会话——关窗口就没了，开新会话又得从头讲你的项目。
 
-Worldwave 与它们**并肩工作**——你不需要二选一。保持你现有的工作流，把 Worldwave 加进去作为持久层：记住一切、协调工具、保持工作流连续。
+Worldwave 与它们**并肩工作**——你不用二选一。保持你现有的工作流，把 Worldwave 加进来作为那个"记住一切"的层：协调工具、守住上下文、让对话不断线。
 
 ### 参与贡献
 
