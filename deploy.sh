@@ -142,10 +142,9 @@ if [ ! -f "$CONSENT_FILE" ]; then
 {
     "version": 1,
     "consent": {
-        "p2p": true,
-        "gossip": true,
-        "dht": true,
-        "nostr": true
+        "p2p_network": true,
+        "model_broadcast": true,
+        "auto_update": true
     }
 }
 CONSENT_EOF
