@@ -747,6 +747,29 @@ def root():
             "GET  /ww/evolution/summary",
             "GET  /ww/evolution/self-review",
             "GET  /ww/evolution/goals",
+            # Tracing & Observability (v0.9)
+            "GET  /ww/trace/metrics",
+            "GET  /ww/trace/recent",
+            "GET  /ww/trace/current",
+            # Autonomous Scheduler (v0.9)
+            "GET  /ww/autonomous/status",
+            "POST /ww/autonomous/add",
+            "POST /ww/autonomous/remove",
+            "POST /ww/autonomous/toggle",
+            # User Model (v0.9)
+            "GET  /ww/user-model/{entity_id}",
+            "GET  /ww/user-model/stats",
+            # Approval Gating (v0.9)
+            "GET  /ww/approval/policies",
+            "GET  /ww/approval/pending",
+            "POST /ww/approval/approve",
+            "POST /ww/approval/deny",
+            # Skill Evolution (v0.9)
+            "GET  /ww/skill-evolution/stats",
+            "POST /ww/skill-evolution/extract",
+            "GET  /ww/skill-evolution/auto-skills",
+            # Orchestration (v0.9)
+            "GET  /ww/orchestration/status",
         ],
     }
 
@@ -1241,6 +1264,194 @@ def evolution_goals():
     if not server.ww:
         return {"goals": []}
     return {"goals": server.ww.evolution.generate_improvement_goals()}
+
+
+# ── Observability & Tracing (v0.9) ──
+
+@app.get("/ww/trace/metrics")
+def trace_metrics():
+    """Get spiral tracing performance metrics (p50/p95, bottlenecks, error summary)."""
+    if not server.ww:
+        return {"error": "WW not initialized"}
+    return server.ww.tracer.metrics()
+
+
+@app.get("/ww/trace/recent")
+def trace_recent(limit: int = 20):
+    """Get recent spiral traces."""
+    if not server.ww:
+        return {"traces": []}
+    return {"traces": server.ww.tracer.get_recent(limit)}
+
+
+@app.get("/ww/trace/current")
+def trace_current():
+    """Get currently active spiral trace."""
+    if not server.ww:
+        return {"trace": None}
+    return {"trace": server.ww.tracer.get_current()}
+
+
+# ── Autonomous Scheduler (v0.9) ──
+
+@app.get("/ww/autonomous/status")
+def autonomous_status():
+    """Get autonomous scheduler heartbeat stats and task list."""
+    if not server.ww:
+        return {"error": "WW not initialized"}
+    return {
+        "stats": server.ww.autonomous_scheduler.stats(),
+        "tasks": server.ww.autonomous_scheduler.list_tasks(),
+    }
+
+
+@app.post("/ww/autonomous/start")
+def autonomous_start():
+    """Start the autonomous heartbeat loop."""
+    if not server.ww:
+        raise HTTPException(400, "WW not initialized")
+    server.ww.autonomous_scheduler.enabled = True
+    server.ww.autonomous_scheduler.start()
+    server._autonomous_running = True
+    return {"status": "started", "interval": server.ww.autonomous_scheduler.heartbeat_interval}
+
+
+@app.post("/ww/autonomous/stop")
+def autonomous_stop():
+    """Stop the autonomous heartbeat loop."""
+    if not server.ww:
+        raise HTTPException(400, "WW not initialized")
+    server.ww.autonomous_scheduler.stop()
+    server._autonomous_running = False
+    return {"status": "stopped"}
+
+
+@app.post("/ww/autonomous/add")
+def autonomous_add(name: str, goal: str, schedule: str = "1h", priority: int = 5):
+    """Add a scheduled task with natural-language schedule."""
+    if not server.ww:
+        raise HTTPException(400, "WW not initialized")
+    task_id = server.ww.autonomous_scheduler.add_task(
+        name=name, goal=goal, schedule=schedule, priority=priority
+    )
+    return {"task_id": task_id, "schedule": schedule}
+
+
+@app.post("/ww/autonomous/remove")
+def autonomous_remove(task_id: str):
+    """Remove a scheduled task."""
+    if not server.ww:
+        raise HTTPException(400, "WW not initialized")
+    ok = server.ww.autonomous_scheduler.remove_task(task_id)
+    return {"removed": ok}
+
+
+@app.post("/ww/autonomous/toggle")
+def autonomous_toggle(task_id: str, enabled: bool = None):
+    """Enable/disable a scheduled task."""
+    if not server.ww:
+        raise HTTPException(400, "WW not initialized")
+    ok = server.ww.autonomous_scheduler.toggle_task(task_id, enabled)
+    return {"toggled": ok}
+
+
+# ── User Model (v0.9) ──
+
+@app.get("/ww/user-model/{entity_id}")
+def user_model_get(entity_id: str):
+    """Get dynamic user model for an entity."""
+    if not server.ww:
+        return {"error": "WW not initialized"}
+    model = server.ww.user_models.get(entity_id)
+    return {
+        "entity_id": entity_id,
+        "style": model.style.to_dict(),
+        "implicit_goals": [g.to_dict() for g in model.get_active_goals()],
+        "expertise": {k: v.to_dict() for k, v in model.expertise.items()},
+        "active_hours": model.get_active_hours(),
+        "likely_available": model.is_likely_available(),
+    }
+
+
+@app.get("/ww/user-model/stats")
+def user_model_stats():
+    """Get user model manager statistics."""
+    if not server.ww:
+        return {"error": "WW not initialized"}
+    return server.ww.user_models.stats()
+
+
+# ── Approval Gating (v0.9) ──
+
+@app.get("/ww/approval/policies")
+def approval_policies():
+    """List all active approval policies."""
+    if not server.ww:
+        return {"policies": []}
+    return {"policies": server.ww.approval_gating.list_policies()}
+
+
+@app.get("/ww/approval/pending")
+def approval_pending():
+    """List pending approval requests."""
+    if not server.ww:
+        return {"pending": []}
+    return {"pending": server.ww.approval_gating.get_pending()}
+
+
+@app.post("/ww/approval/approve")
+def approval_approve(approval_id: str):
+    """Approve a pending action."""
+    if not server.ww:
+        raise HTTPException(400, "WW not initialized")
+    ok = server.ww.approval_gating.approve(approval_id)
+    return {"approved": ok}
+
+
+@app.post("/ww/approval/deny")
+def approval_deny(approval_id: str):
+    """Deny a pending action."""
+    if not server.ww:
+        raise HTTPException(400, "WW not initialized")
+    ok = server.ww.approval_gating.deny(approval_id)
+    return {"denied": ok}
+
+
+# ── Skill Evolution (v0.9) ──
+
+@app.get("/ww/skill-evolution/stats")
+def skill_evolution_stats():
+    """Get skill evolution engine statistics."""
+    if not server.ww:
+        return {"error": "WW not initialized"}
+    return server.ww.skill_evolution.stats()
+
+
+@app.post("/ww/skill-evolution/extract")
+def skill_evolution_extract(goal: str):
+    """Force skill extraction for a goal (debug/testing)."""
+    if not server.ww:
+        raise HTTPException(400, "WW not initialized")
+    result = server.ww.skill_evolution.force_extract(goal)
+    return {"skill": result}
+
+
+@app.get("/ww/skill-evolution/auto-skills")
+def skill_evolution_auto_skills():
+    """List auto-generated skill names."""
+    if not server.ww:
+        return {"skills": []}
+    return {"skills": server.ww.skill_evolution.list_auto_skills()}
+
+
+# ── Orchestration (v0.9) ──
+
+@app.get("/ww/orchestration/status")
+def orchestration_status():
+    """Get delegation/orchestration statistics."""
+    if not server.ww:
+        return {"error": "WW not initialized"}
+    return {"delegator": server.ww.delegator.stats()}
 
 
 # ── Mascot Endpoint ──
