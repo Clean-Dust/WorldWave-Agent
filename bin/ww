@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# ww — Worldwave CLI shortcut
+# Installed by deploy.sh to ~/.local/bin/ww
+INSTALL_DIR="${WW_HOME:-$HOME/worldwave}"
+cd "$INSTALL_DIR" 2>/dev/null || { echo "⚠️  Worldwave not installed. Run: bash <(curl -fsSL https://raw.githubusercontent.com/Clean-Dust/worldwave/main/deploy.sh)"; exit 1; }
+exec bash deploy.sh "$@"

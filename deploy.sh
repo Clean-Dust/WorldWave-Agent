@@ -30,6 +30,11 @@ if [ "$CMD" = "update" ]; then
     fi
     "$VENV_DIR/bin/pip" install --quiet -r requirements.txt 2>/dev/null || true
     echo "   ✓ Dependencies ready"
+    # Re-install ww binary (in case bin/ww changed)
+    LOCAL_BIN="$HOME/.local/bin"
+    mkdir -p "$LOCAL_BIN"
+    cp "$INSTALL_DIR/bin/ww" "$LOCAL_BIN/ww" 2>/dev/null || true
+    chmod +x "$LOCAL_BIN/ww" 2>/dev/null || true
     # Restart: kill old server, start new
     pkill -f "python.*server.py" 2>/dev/null || true
     sleep 1
@@ -419,11 +424,19 @@ if [ -z "${DEEPSEEK_API_KEY:-}" ] && [ ! -f "$ENV_FILE" ]; then
     echo ""
 fi
 
-# Install ww shortcut if not already present
-if ! grep -q "alias ww=" "$HOME/.bashrc" 2>/dev/null; then
-    echo "alias ww='cd $INSTALL_DIR && bash deploy.sh'" >> "$HOME/.bashrc"
-    ok "Shortcut ready — use: ww update, ww key set, ww key test"
+# Install ww CLI to PATH
+LOCAL_BIN="$HOME/.local/bin"
+mkdir -p "$LOCAL_BIN"
+cp "$INSTALL_DIR/bin/ww" "$LOCAL_BIN/ww"
+chmod +x "$LOCAL_BIN/ww"
+# Ensure ~/.local/bin is in PATH
+if ! echo "$PATH" | grep -q "$LOCAL_BIN"; then
+    if ! grep -q "$LOCAL_BIN" "$HOME/.bashrc" 2>/dev/null; then
+        echo "export PATH=\"$LOCAL_BIN:\$PATH\"" >> "$HOME/.bashrc"
+    fi
+    export PATH="$LOCAL_BIN:$PATH"
 fi
+ok "ww command ready — use: ww update, ww key set, ww key test"
 
 cd "$INSTALL_DIR"
 exec env $ENV "$VENV_DIR/bin/python" server.py
