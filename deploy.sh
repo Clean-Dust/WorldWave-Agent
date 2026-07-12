@@ -41,6 +41,87 @@ if [ "$CMD" = "update" ]; then
     exec env $ENV "$VENV_DIR/bin/python" server.py
 fi
 
+if [ "$CMD" = "key" ]; then
+    INSTALL_DIR="${WW_HOME:-$HOME/worldwave}"
+    ENV_FILE="$INSTALL_DIR/.env"
+    KEY_ACTION="${2:-show}"
+    NEW_KEY="${3:-}"
+
+    case "$KEY_ACTION" in
+        set)
+            if [ -z "$NEW_KEY" ]; then
+                echo "⚠️  Usage: ww key set sk-xxx"
+                echo "   Get a free key: https://platform.deepseek.com"
+                exit 1
+            fi
+            # Validate key format
+            if ! echo "$NEW_KEY" | grep -q "^sk-"; then
+                echo "⚠️  Invalid key format. DeepSeek keys start with 'sk-'"
+                exit 1
+            fi
+            mkdir -p "$(dirname "$ENV_FILE")"
+            # Write/update DEEPSEEK_API_KEY in .env
+            if [ -f "$ENV_FILE" ] && grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
+                # Update existing key
+                if [ "$(uname -s)" = "Darwin" ]; then
+                    sed -i '' "s/^DEEPSEEK_API_KEY=.*/DEEPSEEK_API_KEY=$NEW_KEY/" "$ENV_FILE"
+                else
+                    sed -i "s/^DEEPSEEK_API_KEY=.*/DEEPSEEK_API_KEY=$NEW_KEY/" "$ENV_FILE"
+                fi
+                echo "✓ Key updated in $ENV_FILE"
+            else
+                echo "DEEPSEEK_API_KEY=$NEW_KEY" >> "$ENV_FILE"
+                echo "✓ Key saved to $ENV_FILE"
+            fi
+            echo "  Run 'ww update' to apply."
+            exit 0
+            ;;
+        show)
+            if [ -f "$ENV_FILE" ] && grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
+                KEY_LINE=$(grep "^DEEPSEEK_API_KEY=" "$ENV_FILE" | head -1)
+                KEY_VAL=$(echo "$KEY_LINE" | cut -d= -f2-)
+                MASKED="$(echo "$KEY_VAL" | head -c 8)...$(echo "$KEY_VAL" | tail -c 5)"
+                echo "🔑 Current key: $MASKED"
+            else
+                echo "⚠️  No key configured."
+                echo "   Set one: ww key set sk-xxx"
+                echo "   Get a free key: https://platform.deepseek.com"
+            fi
+            exit 0
+            ;;
+        test)
+            if [ ! -f "$ENV_FILE" ] || ! grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
+                echo "⚠️  No key configured. Set one first: ww key set sk-xxx"
+                exit 1
+            fi
+            KEY_VAL=$(grep "^DEEPSEEK_API_KEY=" "$ENV_FILE" | head -1 | cut -d= -f2-)
+            echo "🔍 Testing DeepSeek API..."
+            RESP=$(curl -s --connect-timeout 10 \
+                -H "Authorization: Bearer $KEY_VAL" \
+                "https://api.deepseek.com/v1/models" 2>&1 || echo "NETWORK_ERROR")
+            if echo "$RESP" | grep -q '"id"'; then
+                echo "✅ Key is valid — API reachable"
+            elif [ "$RESP" = "NETWORK_ERROR" ]; then
+                echo "❌ Network error — check internet connection"
+            else
+                echo "❌ Key invalid or API error:"
+                echo "$RESP" | head -3
+            fi
+            exit 0
+            ;;
+        *)
+            echo "🌊 ww key — manage DeepSeek API key"
+            echo ""
+            echo "  ww key set sk-xxx   Save/update API key"
+            echo "  ww key show         Show current key (masked)"
+            echo "  ww key test         Test key against DeepSeek API"
+            echo ""
+            echo "  Get a free key: https://platform.deepseek.com"
+            exit 0
+            ;;
+    esac
+fi
+
 # ── Config (override via env vars) ──
 REPO="${WW_REPO:-https://github.com/Clean-Dust/worldwave.git}"
 BRANCH="${WW_BRANCH:-main}"
@@ -301,8 +382,8 @@ if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
     ok "DEEPSEEK_API_KEY detected from environment"
 else
     # Check if .env already has it
-    if [ -f "$ENV_FILE" ] && grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
-        KEY_VAL=$(grep "^DEEPSEEK_API_KEY=" "$ENV_FILE" | head -1)
+    if [ -f "$ENV_FILE" ] && grep -q "^DEEPSEEK_API_KEY=sk-" "$ENV_FILE" 2>/dev/null; then
+        KEY_VAL=$(grep "^DEEPSEEK_API_KEY=sk-" "$ENV_FILE" | head -1)
         ENV="$ENV $KEY_VAL"
         ok "DEEPSEEK_API_KEY loaded from $ENV_FILE"
     fi
