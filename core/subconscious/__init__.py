@@ -359,7 +359,8 @@ class Subconscious:
                         hidden_dim, learning_rate)
 
         # Warmup: seed with synthetic data so gossip has weights to exchange
-        if not self.predictor._has_trained:
+        # Only warm up when P2P is enabled (gossip is the consumer)
+        if p2p_enabled and not self.predictor._has_trained:
             self._warmup()
 
     def _handle_nostr_model_update(self, model_data: dict) -> None:
