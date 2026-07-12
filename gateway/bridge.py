@@ -118,13 +118,17 @@ class GatewayManager:
         log.info("Gateway registered: %s", type(adapter).__name__)
 
     def list_gateways(self) -> list:
-        return [
-            {
-                "type": type(a).__name__,
-                "running": a.is_running() if hasattr(a, 'is_running') else False,
-            }
-            for a in self._adapters
-        ]
+        gateways = []
+        for a in self._adapters:
+            adapter_type = type(a).__name__
+            running = a.is_running() if hasattr(a, 'is_running') else False
+            configured = bool(a._token) if hasattr(a, '_token') else True
+            gateways.append({
+                "platform": adapter_type,
+                "running": running,
+                "configured": configured,
+            })
+        return gateways
 
     def stop_all(self):
         for a in self._adapters:

@@ -1243,8 +1243,87 @@ def cmd_pairing(args):
 
 
 def cmd_gateway(args):
-    """Gateway management"""
-    if args.action == "list":
+    """Gateway management — connect to Telegram, Discord, etc."""
+    action = args.action
+
+    # ── Setup mode: interactive gateway configuration ──
+    if action == "setup" or not action:
+        if not ensure_server_running():
+            print(f"{Colors.red('✗')} Cannot start WW server")
+            return
+
+        # Check existing gateways
+        status = api_get("/ww/gateway/list") or {}
+        gateways = status.get("gateways", {})
+        configured = {k: v for k, v in gateways.items() if v.get("configured")}
+        running = {k: v for k, v in gateways.items() if v.get("running")}
+
+        if configured and not action:
+            # Already configured — show status
+            print(f"\n{Colors.bold('🌐 Gateways:')}\n")
+            for name, info in gateways.items():
+                r = info.get("running", False)
+                c = info.get("configured", False)
+                icon = Colors.green("●") if r else Colors.yellow("○") if c else Colors.red("○")
+                plat = info.get("platform", name)
+                print(f"  {icon} {Colors.cyan(plat)}")
+                if not c:
+                    print(f"      {Colors.dim('not configured')}")
+            if running:
+                print(f"\n{Colors.green('✓')} Gateway active — chat via your configured platforms")
+            else:
+                print(f"\n{Colors.yellow('○')} Gateway configured but not running — run 'ww gateway start'")
+            return
+
+        # Nothing configured → interactive setup
+        print(f"\n{Colors.bold('🌐 Gateway Setup')}\n")
+        print(f"  Connect WW to a messaging platform so you can chat from anywhere.\n")
+        print(f"  Available: {Colors.cyan('Telegram')} | {Colors.dim('Discord (soon)')} | {Colors.dim('Signal (soon)')}\n")
+
+        platform = args.platform
+        if not platform:
+            platform = input(f"  {Colors.green('Platform?')} [telegram]: ").strip().lower() or "telegram"
+
+        if platform == "telegram":
+            print(f"\n  {Colors.bold('Telegram Bot Setup')}")
+            print(f"  {Colors.dim('1. Open Telegram → search @BotFather')}")
+            print(f"  {Colors.dim('2. Send /newbot → follow prompts')}")
+            print(f"  {Colors.dim('3. Copy the bot token (looks like 123:ABC...)')}\n")
+
+            token = input(f"  {Colors.green('Bot token?')} ").strip()
+            if not token:
+                print(f"\n{Colors.yellow('⚠')} No token entered — setup cancelled")
+                return
+
+            # Save to .env
+            env_file = os.path.join(WW_HOME, ".env")
+            _upsert_env(env_file, "TELEGRAM_WW_TOKEN", token)
+            print(f"\n{Colors.green('✓')} Telegram token saved to .env")
+
+            # Ask for workspace (group) ID
+            print(f"\n  {Colors.dim('Optional: add your bot to a Telegram group,')}")
+            print(f"  {Colors.dim('then get the group ID from @userinfobot')}\n")
+            ws = input(f"  {Colors.green('Group ID?')} (press Enter to skip): ").strip()
+            if ws:
+                _upsert_env(env_file, "TELEGRAM_WW_WORKSPACE", ws)
+                print(f"{Colors.green('✓')} Workspace saved")
+
+            # Restart gateway
+            print(f"\n{Colors.cyan('⟳')} Starting gateway...")
+            result = api_post("/ww/gateway/start", {"platform": "telegram"})
+            if result:
+                print(f"{Colors.green('✓')} Telegram gateway started!")
+                print(f"  {Colors.dim('Try sending /start to your bot on Telegram')}")
+            else:
+                print(f"{Colors.yellow('⚠')} Gateway start failed — restart server: ww server restart")
+
+            return
+
+        print(f"\n{Colors.yellow('⚠')} Only Telegram is supported for now")
+        return
+
+    # ── List ──
+    if action == "list":
         status = api_get("/ww/gateway/list") if ensure_server_running() else None
         if status and isinstance(status, dict):
             gateways = status.get("gateways", status)
@@ -1259,9 +1338,10 @@ def cmd_gateway(args):
                         if k not in ("platform", "running"):
                             print(f"      {k}: {v}")
         else:
-            print(f"  {Colors.dim('(no gateway)')}")
+            print(f"\n  {Colors.dim('(no gateway configured)')}")
+            print(f"  {Colors.yellow('→')} Run {Colors.cyan('ww gateway setup')} to get started\n")
 
-    elif args.action == "start":
+    elif action == "start":
         platform = args.platform or "telegram"
         result = api_post("/ww/gateway/start", {"platform": platform})
         if result:
@@ -1269,10 +1349,29 @@ def cmd_gateway(args):
         else:
             print(f"  {Colors.red('✗')} Failed to start (server not running?)")
 
-    elif args.action == "stop":
+    elif action == "stop":
         platform = args.platform or "telegram"
         api_post("/ww/gateway/stop", {"platform": platform})
         print(f"  {Colors.yellow('○')} {platform} gateway stopped")
+
+
+def _upsert_env(path, key, value):
+    """Update or add a key=value line in a .env file."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lines = []
+    if os.path.exists(path):
+        with open(path) as f:
+            lines = f.readlines()
+    found = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith(f"{key}=") or line.strip().startswith(f"# {key}="):
+            lines[i] = f"{key}={value}\n"
+            found = True
+            break
+    if not found:
+        lines.append(f"{key}={value}\n")
+    with open(path, "w") as f:
+        f.writelines(lines)
 
 
 def cmd_memory(args):
