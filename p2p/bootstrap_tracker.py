@@ -90,11 +90,18 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.rstrip("/")
 
-        if path == "/p2p/peers":
+        if path in ("/p2p/peers", "/p2p/peers/all"):
             return self._json({
                 "peers": get_active_peers(),
                 "count": len(peers),
                 "tracker_version": "ww-tracker-v1",
+            })
+
+        if path == "/p2p/bootstrap-urls":
+            return self._json({
+                "urls": [],
+                "dht_seeds": [],
+                "node_id": "tracker",
             })
 
         if path == "/p2p/stats":

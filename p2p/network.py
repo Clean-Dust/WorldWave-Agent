@@ -169,10 +169,17 @@ def _make_handler(network: "GlobalP2PNetwork", gossip_handler=None) -> type:
                     "public": network.public_mode,
                 })
 
-            elif self.path == "/p2p/peers":
+            elif self.path in ("/p2p/peers", "/p2p/peers/all"):
                 self._json({
                     "peers": [p.to_dict() for p in network.peers.values()],
                     "count": len(network.peers),
+                })
+
+            elif self.path == "/p2p/bootstrap-urls":
+                self._json({
+                    "urls": network.bootstrap_urls,
+                    "dht_seeds": DHT_BOOTSTRAP_NODES,
+                    "node_id": network.node_id,
                 })
 
             elif self.path == "/p2p/blockchain/height":
@@ -275,12 +282,19 @@ def _make_handler(network: "GlobalP2PNetwork", gossip_handler=None) -> type:
                 self._json({"accepted": ok})
 
             elif self.path == "/p2p/peers/exchange":
-                """Exchange peer list."""
+                """Exchange peer list and bootstrap URLs."""
                 their_peers = data.get("peers", [])
+                their_urls = data.get("bootstrap_urls", [])
                 network.exchange_peers(their_peers)
+                # Learn new bootstrap URLs from peers
+                for url in their_urls:
+                    if url not in network.bootstrap_urls:
+                        network.bootstrap_urls.append(url)
+                        logger.info(f"🔗 Learned bootstrap URL via exchange: {url}")
                 self._json({
                     "exchanged": True,
                     "peers": [p.to_dict() for p in list(network.peers.values())[:20]],
+                    "bootstrap_urls": network.bootstrap_urls,
                 })
 
             elif self.path == "/p2p/payload":
@@ -584,25 +598,79 @@ class GlobalP2PNetwork:
         except Exception as e:
             logger.info(f"Bootstrap {tracker_url} failed: {e}")
 
-    def _bootstrap_loop(self):
-        """Connect to bootstrap tracker and DHT peers.
+    def _bootstrap_with_peer(self, peer: PeerInfo):
+        """Use a known peer as a bootstrap point — every node is a tracker."""
+        try:
+            # Register self with peer
+            gossip_url = ""
+            if self.public_mode and self._my_address:
+                gossip_url = f"http://{self._my_address}:{self.listen_port}"
+            register_data = {
+                "node_id": self.node_id,
+                "address": self._my_address,
+                "port": self.listen_port,
+                "version": self.version,
+                "public": self.public_mode,
+                "height": self.blockchain_height(),
+                "gossip_url": gossip_url,
+            }
+            self._http_post(peer, "/p2p/register", register_data)
 
-        Two independent discovery channels:
-          1. HTTP tracker (WW_BOOTSTRAP_URLS) — primary, fast
-          2. DHT seeds (WW_DHT_BOOTSTRAP_NODES) — fallback, fully decentralized
-        Either channel alone is sufficient for peer discovery.
+            # Get peer list from this peer (it IS a tracker)
+            resp = self._http_get(peer, "/p2p/peers")
+            if resp:
+                for pd in resp.get("peers", []):
+                    if pd.get("node_id") and pd["node_id"] != self.node_id:
+                        self.add_peer(PeerInfo.from_dict(pd))
+
+            # Also learn new bootstrap URLs
+            resp2 = self._http_get(peer, "/p2p/bootstrap-urls")
+            if resp2:
+                for url in resp2.get("urls", []):
+                    if url not in self.bootstrap_urls:
+                        self.bootstrap_urls.append(url)
+                        logger.info(f"🔗 Learned bootstrap URL from peer: {url}")
+                for seed in resp2.get("dht_seeds", []):
+                    if seed not in DHT_BOOTSTRAP_NODES:
+                        pass  # env var is immutable at runtime, but DHT knows
+
+            logger.info(f"🔗 Peer bootstrap from {peer.node_id[:12]} @ {peer.address}:{peer.port}")
+            return True
+        except Exception as e:
+            logger.debug(f"Peer bootstrap {peer.node_id[:12]} failed: {e}")
+            return False
+
+    def _bootstrap_loop(self):
+        """Connect to peers and bootstrap trackers.
+
+        Three-layer discovery — any one layer alone is sufficient:
+          1. Cached peers (peers.json) — survive restarts, zero-config
+          2. HTTP trackers (WW_BOOTSTRAP_URLS) — primary, fast
+          3. DHT seeds (WW_DHT_BOOTSTRAP_NODES) — fully decentralized fallback
+
+        Design principle: every node is a tracker. As long as ONE node
+        is online, new nodes can discover the network through it.
         """
-        if not self.bootstrap_urls and not DHT_BOOTSTRAP_NODES:
-            return
+        if not self.bootstrap_urls and not DHT_BOOTSTRAP_NODES and not self.peers:
+            logger.info("🌐 No bootstrap sources configured — node will only connect to cached peers")
         while self.running:
-            # DHT bootstrap: discover peers via Kademlia (standalone seeds)
+            # Layer 1: Try cached peers first (every node is a tracker)
+            if self.peers and not self.bootstrap_urls:
+                cached = sorted(self.peers.values(), key=lambda p: p.last_seen, reverse=True)[:5]
+                for peer in cached:
+                    if self._bootstrap_with_peer(peer):
+                        break
+
+            # Layer 2: DHT bootstrap (Kademlia peer discovery)
             if DHT_BOOTSTRAP_NODES:
                 self.dht.bootstrap(DHT_BOOTSTRAP_NODES)
-            # DHT bootstrap: discover peers via HTTP-tracker-discovered nodes
+            # DHT bootstrap via HTTP-tracker-discovered nodes
             self._dht_bootstrap_from_http()
-            # HTTP bootstrap: register with tracker
+
+            # Layer 3: HTTP tracker bootstrap
             for url in self.bootstrap_urls:
                 self._bootstrap_with_tracker(url)
+
             time.sleep(BOOTSTRAP_INTERVAL)
 
     # ── blocksync ──
