@@ -1,6 +1,24 @@
 #!/usr/bin/env bash
-# ww — Worldwave CLI shortcut
-# Installed by deploy.sh to ~/.local/bin/ww
+# ww — Worldwave CLI
+# Installed to ~/.local/bin/ww by deploy.sh
 INSTALL_DIR="${WW_HOME:-$HOME/worldwave}"
-cd "$INSTALL_DIR" 2>/dev/null || { echo "⚠️  Worldwave not installed. Run: bash <(curl -fsSL https://raw.githubusercontent.com/Clean-Dust/worldwave/main/deploy.sh)"; exit 1; }
-exec bash deploy.sh "$@"
+cd "$INSTALL_DIR" 2>/dev/null || {
+    echo "⚠️  Worldwave not installed."
+    echo "   Run: bash <(curl -fsSL https://raw.githubusercontent.com/Clean-Dust/worldwave/main/deploy.sh)"
+    exit 1
+}
+
+# update / key → deploy.sh (git pull, pip install, key management)
+case "${1:-}" in
+    update|key)
+        exec bash "$INSTALL_DIR/deploy.sh" "$@"
+        ;;
+esac
+
+# Everything else → Python CLI (chat, run, status, config, model, server, etc.)
+VENV="$INSTALL_DIR/.venv"
+if [ ! -f "$VENV/bin/python" ]; then
+    echo "⚠️  Virtual environment not found. Running deploy.sh first..."
+    exec bash "$INSTALL_DIR/deploy.sh"
+fi
+exec "$VENV/bin/python" "$INSTALL_DIR/ww_cli.py" "$@"
