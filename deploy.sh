@@ -90,16 +90,19 @@ if command -v python3 &>/dev/null; then
 fi
 if ! $HAVE_PY; then
     case "$OS" in
-        linux)  MISSING_PKGS="$MISSING_PKGS python3 python3-pip python3-venv" ;;
+        linux)  MISSING_PKGS="$MISSING_PKGS python3 python3-pip" ;;
         darwin) MISSING_PKGS="$MISSING_PKGS python3" ;;
         *)      warn "Python 3.10+ not found. Install it manually: https://python.org" ;;
     esac
 fi
 
+# Compute version-specific venv package name (e.g. python3.10-venv)
+VENV_PKG="python${PY_VER}-venv"
+
 # Check venv module separately — python3-venv package may be missing even with Python 3 installed
 if $HAVE_PY && ! python3 -m venv --help >/dev/null 2>&1; then
     case "$OS" in
-        linux) MISSING_PKGS="$MISSING_PKGS python3-venv" ;;
+        linux) MISSING_PKGS="$MISSING_PKGS $VENV_PKG" ;;
     esac
 fi
 
