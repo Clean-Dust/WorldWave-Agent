@@ -173,9 +173,17 @@ cd "$INSTALL_DIR"
 step "3/6  Python Environment"
 
 VENV_DIR="$INSTALL_DIR/.venv"
-if [ ! -d "$VENV_DIR" ]; then
+# Recreate venv if missing OR broken (leftover from failed install)
+if [ ! -f "$VENV_DIR/bin/pip" ]; then
+    if [ -d "$VENV_DIR" ]; then
+        warn "Found broken venv — recreating..."
+        rm -rf "$VENV_DIR"
+    fi
     info "Creating virtual environment..."
     "$PYTHON" -m venv "$VENV_DIR"
+    ok "Virtual environment ready"
+else
+    ok "Virtual environment exists"
 fi
 # Upgrade pip
 "$VENV_DIR/bin/pip" install --quiet --upgrade pip 2>/dev/null || true
