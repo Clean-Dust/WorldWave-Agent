@@ -663,9 +663,12 @@ def cmd_model(args):
             config["provider"] = "openrouter"
         save_config(config)
 
-        # Try API
-        api_post("/ww/config/set", {"model": args.name})
-        print(f"{Colors.green('✓')} Model switched to: {args.name}")
+        # Try API — switch model on running server
+        result = api_post("/ww/model", {"model": args.name})
+        if result and result.get("switched"):
+            print(f"{Colors.green('✓')} {result['from']} → {result['to']}")
+        else:
+            print(f"{Colors.green('✓')} Config updated — restart to apply")
     else:
         model = config.get("model", "deepseek/deepseek-v4-flash")
         provider = config.get("provider", "deepseek")

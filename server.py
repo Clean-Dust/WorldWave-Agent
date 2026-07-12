@@ -821,16 +821,22 @@ def task_result(task_id: str):
 
 @app.get("/ww/model")
 def model_info():
-    """Return the active model configuration (self-detection, not hardcoded)."""
+    """Return the active model."""
+    if server.ww:
+        return {"model": server.ww.model, "provider": server.ww.llm._provider if hasattr(server.ww.llm, '_provider') else "deepseek"}
     import os as _os
-    model = _os.environ.get("WW_MODEL", "deepseek/deepseek-v4-flash")
-    provider = _os.environ.get("WW_PROVIDER", "deepseek")
-    vision = _os.environ.get("AUXILIARY_VISION_MODEL", "not set")
-    return {
-        "model": model,
-        "provider": provider,
-        "vision_model": vision,
-    }
+    return {"model": _os.environ.get("WW_MODEL", "N/A"), "provider": _os.environ.get("WW_PROVIDER", "N/A")}
+
+@app.post("/ww/model")
+def model_switch(data: dict):
+    """Switch the active model on the fly."""
+    model = data.get("model", "")
+    if not model:
+        return {"error": "model name required"}
+    if not server.ww:
+        return {"error": "WW not initialized"}
+    result = server.ww.switch_model(model)
+    return result
 
 
 # ── Autonomous Loop Endpoint ──

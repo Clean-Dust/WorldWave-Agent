@@ -400,7 +400,7 @@ class TelegramAdapter(BaseAdapter):
                 "/help — Show this menu\n"
                 "/status — Session status\n"
                 "/tools — List available tools\n"
-                "/model — Current model info\n"
+                "/model — Show or switch model (eg /model flash)\n"
                 "/memory — Memory statistics\n"
                 "/new — Start a fresh session\n"
                 "/stop — Stop current task\n"
@@ -445,17 +445,31 @@ class TelegramAdapter(BaseAdapter):
             return True
 
         if c == "model":
-            try:
-                import requests
-                r = requests.get(f"{self._ww_api}/ww/model?api_key={self._ww_key}", timeout=5)
-                s = r.json()
-                text = (
-                    f"**Model:** `{s.get('model', 'N/A')}`\n"
-                    f"**Provider:** `{s.get('provider', 'N/A')}`\n"
-                    f"**Vision:** `{s.get('vision_model', 'N/A')}`"
-                )
-            except Exception:
-                text = "**Model:** Could not detect"
+            if args.strip():
+                # Switch model
+                try:
+                    import requests
+                    r = requests.post(f"{self._ww_api}/ww/model?api_key={self._ww_key}",
+                                      json={"model": args.strip()}, timeout=5)
+                    s = r.json()
+                    if s.get("switched"):
+                        text = f"✓ Switched: `{s['from']}` → `{s['to']}`"
+                    else:
+                        text = f"✗ Failed: {s.get('error', 'unknown')}"
+                except Exception as e:
+                    text = f"✗ Error: {e}"
+            else:
+                # Show current
+                try:
+                    import requests
+                    r = requests.get(f"{self._ww_api}/ww/model?api_key={self._ww_key}", timeout=5)
+                    s = r.json()
+                    text = (
+                        f"**Model:** `{s.get('model', 'N/A')}`\n"
+                        f"**Provider:** `{s.get('provider', 'N/A')}`"
+                    )
+                except Exception:
+                    text = "**Model:** Could not detect"
             self.send_message(chat_id, text)
             return True
 

@@ -1830,6 +1830,37 @@ class Worldwave:
         except Exception:
             return "Check the basic health status of the system"
 
+    def switch_model(self, model_name: str) -> dict:
+        """Switch the LLM model on the fly. Works mid-conversation."""
+        model_name = model_name.strip()
+        # Support short names
+        aliases = {
+            "flash": "deepseek/deepseek-v4-flash",
+            "pro": "deepseek/deepseek-v4-pro",
+        }
+        model = aliases.get(model_name.lower(), model_name)
+        if "/" not in model:
+            model = f"deepseek/{model}"
+
+        old_model = self.model
+        self.model = model
+        # Update LLM client
+        self.llm.model = model
+        # Update provider if needed
+        new_provider = model.split("/")[0] if "/" in model else "deepseek"
+        if hasattr(self.llm, '_provider'):
+            self.llm._provider = new_provider
+        # Persist to config
+        self.config.set("model", model)
+        self.config.set("provider", new_provider)
+
+        return {
+            "switched": True,
+            "from": old_model,
+            "to": model,
+            "provider": new_provider,
+        }
+
     def _log(self, msg: str):
         if self.verbose:
             ts = datetime.now().strftime("%H:%M:%S")
