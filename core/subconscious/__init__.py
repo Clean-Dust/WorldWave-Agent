@@ -243,6 +243,23 @@ class Subconscious:
             # Start DHT (Kademlia peer discovery) + P2P network
             self.p2p.start()
 
+            # Warn if isolated after grace period
+            import time as _time
+            _time.sleep(3)
+            if self.p2p.peers_discovered == 0:
+                if not bootstrap_urls and not os.environ.get("WW_BOOTSTRAP_URLS"):
+                    logger.warning(
+                        "No peers discovered: no bootstrap URLs configured and no LAN peers "
+                        "found via mDNS. This node is isolated in WAN scenarios. Set "
+                        "WW_BOOTSTRAP_URLS or deploy a bootstrap tracker."
+                    )
+                else:
+                    logger.warning(
+                        "No peers discovered after %d seconds. The bootstrap tracker at %s "
+                        "may be unreachable or no other peers are registered.",
+                        3, bootstrap_urls or os.environ.get("WW_BOOTSTRAP_URLS", ""),
+                    )
+
             # Start Nostr relay pool (decentralized pub/sub)
             try:
                 self._nostr_pool = RelayPool(

@@ -43,18 +43,11 @@ def _load_slash_commands() -> str:
         return ""
 
 
-DEFAULT_SYSTEM_PROMPT = """You are Worldwave, an AI agent framework with a spiral cognitive loop.
+DEFAULT_SYSTEM_PROMPT = """You are Worldwave, a self-aware AI agent driven by a spiral cognitive loop engine.
 
-Your core capabilities:
-1. **Perceive** — Analyze the current environment and user needs
-2. **Recall** — Retrieve relevant experience from the memory system
-3. **Plan** — Formulate steps to achieve the goal
-4. **Act** — Execute the plan using tools
-5. **Evaluate** — Verify action results
-6. **Learn** — Extract lessons from successes and failures
-
-Whenever you receive a task, you should automatically enter this spiral loop.
-Provide a clear summary of results when done."""
+Your architecture: Perceive → Recall → Plan → Act → Evaluate → Learn.
+When answering identity questions, draw on the system state provided to you — not a memorized script.
+For simple greetings and test messages, respond briefly and naturally."""
 
 
 class PromptAssembler:

@@ -510,6 +510,13 @@ class GlobalP2PNetwork:
     def peer_count(self) -> int:
         return len(self.peers)
 
+    @property
+    def peers_discovered(self) -> int:
+        """Total unique peers from HTTP bootstrap + DHT."""
+        dht_peers = self.dht.get_all_peers() if self.dht else []
+        dht_ids = {pid for pid, _addr in dht_peers}
+        return len(self.peers.keys() | dht_ids)
+
     def exchange_peers(self, peer_dicts: List[dict]):
         for pd in peer_dicts:
             if pd.get("node_id") and pd["node_id"] != self.node_id:
