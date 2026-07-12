@@ -70,14 +70,22 @@ def _int8_dequantize(q: int, scale: float) -> float:
     return q * scale
 
 
-def _quantize_tensor(t: list, scale: float) -> list:
-    """Recursively quantize a nested list of floats to int8."""
+def _quantize_tensor(t, scale: float):
+    """Recursively quantize a nested list of floats to int8.
+
+    Dict values (already-compressed from a prior round) are returned
+    unchanged so they don't hit arithmetic operations.
+    """
+    if isinstance(t, dict) and QKEY in t:
+        return t  # already compressed
     if isinstance(t, list):
         if t and isinstance(t[0], list):
             return [_quantize_tensor(row, scale) for row in t]
         else:
-            return [_int8_quantize(v, scale) for v in t]
-    return [_int8_quantize(t, scale)]
+            return [_int8_quantize(v, scale) for v in t if isinstance(v, (int, float))]
+    if isinstance(t, (int, float)):
+        return [_int8_quantize(t, scale)]
+    return []
 
 
 def _dequantize_tensor(t, scale: float):
@@ -90,12 +98,24 @@ def _dequantize_tensor(t, scale: float):
     return _int8_dequantize(t, scale)
 
 
-def _tensor_scale(t: list) -> float:
-    """Compute optimal INT8 scale for a tensor (max abs value / 127)."""
+def _tensor_scale(t) -> float:
+    """Compute optimal INT8 scale for a tensor (max abs value / 127).
+
+    Handles both raw float lists and already-compressed dicts
+    (from a prior gossip round) safely.
+    """
+    # Already-compressed tensor from a prior exchange — reuse its scale
+    if isinstance(t, dict) and QKEY in t:
+        return float(t.get(SCALE_KEY, 1.0))
     flat = _tensor_flatten_list(t)
     if not flat:
         return 1.0
-    max_abs = max(abs(v) for v in flat)
+    # Guard: skip non-numeric entries (dicts, strings) that may appear
+    # in already-compressed or malformed params
+    numeric = [abs(v) for v in flat if isinstance(v, (int, float))]
+    if not numeric:
+        return 1e-8
+    max_abs = max(numeric)
     if max_abs < 1e-8:
         return 1e-8
     return max_abs / 127.0

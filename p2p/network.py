@@ -52,6 +52,17 @@ BOOTSTRAP_URLS = (
     else []
 )
 
+# DHT bootstrap seeds — UDP addresses for Kademlia peer discovery.
+# Format: "IP:port,IP:port,..." (e.g. "tracker.example.com:9834")
+# These are used when the HTTP tracker is unavailable, enabling
+# fully decentralized peer discovery without a central server.
+_DHT_SEEDS_ENV = os.environ.get("WW_DHT_BOOTSTRAP_NODES", "")
+DHT_BOOTSTRAP_NODES = (
+    [u.strip() for u in _DHT_SEEDS_ENV.split(",") if u.strip()]
+    if _DHT_SEEDS_ENV
+    else []
+)
+
 PEERS_FILE = os.environ.get("WW_PEERS_FILE",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "data", "subconscious", "peers.json"))
 
@@ -574,11 +585,20 @@ class GlobalP2PNetwork:
             logger.info(f"Bootstrap {tracker_url} failed: {e}")
 
     def _bootstrap_loop(self):
-        """Connect to bootstrap tracker and DHT peers."""
-        if not self.bootstrap_urls:
+        """Connect to bootstrap tracker and DHT peers.
+
+        Two independent discovery channels:
+          1. HTTP tracker (WW_BOOTSTRAP_URLS) — primary, fast
+          2. DHT seeds (WW_DHT_BOOTSTRAP_NODES) — fallback, fully decentralized
+        Either channel alone is sufficient for peer discovery.
+        """
+        if not self.bootstrap_urls and not DHT_BOOTSTRAP_NODES:
             return
         while self.running:
-            # DHT bootstrap: discover peers via Kademlia
+            # DHT bootstrap: discover peers via Kademlia (standalone seeds)
+            if DHT_BOOTSTRAP_NODES:
+                self.dht.bootstrap(DHT_BOOTSTRAP_NODES)
+            # DHT bootstrap: discover peers via HTTP-tracker-discovered nodes
             self._dht_bootstrap_from_http()
             # HTTP bootstrap: register with tracker
             for url in self.bootstrap_urls:

@@ -54,6 +54,7 @@ from contacts import ContactManager, register_api_routes
 from core.credentials import CredentialStore
 from core.credentials import get_credential_manager as get_credential_manager_v2
 from coding import register_tools as register_coding_tools
+from p2p.network import GlobalP2PNetwork
 # Wavegate Agent gRPC server — imported lazily (grpcio is optional)
 
 logger = logging.getLogger("ww")
@@ -177,6 +178,9 @@ class WorldwaveServer:
         # Contacts module (distributed multi-agent address book)
         self.contacts = ContactManager()
 
+        # P2P network (global gossip/blockchain layer)
+        self.p2p: Optional[GlobalP2PNetwork] = None
+
         # Credentials manager (encrypted API key/secret storage)
         self.credentials = CredentialStore()
 
@@ -282,6 +286,54 @@ class WorldwaveServer:
             logger.info("Webhook adapter not yet available (gateway/adapters/webhook.py)")
         except Exception as e:
             logger.warning("Webhook gateway init failed: %s", e)
+
+    # ── P2P network helpers ──
+
+    def _load_consent(self) -> dict:
+        """Load user consent from ~/.worldwave/consent.json."""
+        consent_path = os.path.join(os.path.expanduser("~"), ".worldwave", "consent.json")
+        try:
+            with open(consent_path) as f:
+                data = json.load(f)
+                return data.get("consent", {})
+        except Exception:
+            return {}
+
+    def _node_id(self) -> str:
+        """Persistent node ID for this WW installation."""
+        node_id_path = os.path.join(self.persist_dir, "node_id.txt")
+        try:
+            with open(node_id_path) as f:
+                return f.read().strip()
+        except Exception:
+            import uuid
+            nid = uuid.uuid4().hex[:12]
+            with open(node_id_path, "w") as f:
+                f.write(nid)
+            return nid
+
+    def _init_p2p(self) -> Optional[GlobalP2PNetwork]:
+        """Start global P2P network if user has consented.
+
+        Returns None when consent not granted or startup fails.
+        """
+        consent = self._load_consent()
+        if not consent.get("p2p_network", False):
+            logger.info("P2P network not started (no consent)")
+            return None
+
+        p2p_port = int(os.environ.get("WW_P2P_PORT", "19833"))
+        dht_port = int(os.environ.get("WW_P2P_DHT_PORT", "19834"))
+
+        p2p = GlobalP2PNetwork(
+            node_id=self._node_id(),
+            listen_port=p2p_port,
+            dht_port=dht_port,
+            version=f"ww-v{WW_VERSION}",
+            public_mode=False,
+        )
+        p2p.start()
+        return p2p
 
     def _gateway_task_handler(self, command: str, context: dict) -> str:
         """Handle a task from the gateway (e.g. @mention)."""
@@ -1919,6 +1971,17 @@ def startup():
             logger.info("Contacts module started")
         except Exception as e:
             logger.warning(f"Contacts start failed: {e}")
+
+        # Start P2P network (global gossip + tracker bootstrap)
+        try:
+            server.p2p = server._init_p2p()
+            if server.p2p:
+                logger.info("P2P network started: node=%s mode=%s peers=%d",
+                            server.p2p.node_id[:12],
+                            "public" if server.p2p.public_mode else "private",
+                            server.p2p.peer_count())
+        except Exception as e:
+            logger.warning(f"P2P network start failed: {e}")
 
         time.sleep(3)  # etc WW Fully initialized
         try:
