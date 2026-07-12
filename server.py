@@ -313,15 +313,26 @@ class WorldwaveServer:
             return nid
 
     def _init_p2p(self) -> Optional[GlobalP2PNetwork]:
-        """Start global P2P network if user has consented.
+        """Return the primary P2P network instance.
 
-        Returns None when consent not granted or startup fails.
+        Prefer Subconscious P2P (has gossip, federation, DHT).
+        Falls back to standalone P2P only if Subconscious is unavailable.
         """
+        # Prefer Subconscious P2P (primary, has full feature set)
+        try:
+            if self.ww and self.ww.subconscious and self.ww.subconscious.p2p:
+                logger.info("P2P: using Subconscious P2P (gossip+federation+DHT)")
+                return self.ww.subconscious.p2p
+        except Exception:
+            pass
+
+        # Fallback: standalone P2P (lightweight, no gossip)
         consent = self._load_consent()
         if not consent.get("p2p_network", False):
             logger.info("P2P network not started (no consent)")
             return None
 
+        from p2p.network import GlobalP2PNetwork
         p2p_port = int(os.environ.get("WW_P2P_PORT", "19833"))
         dht_port = int(os.environ.get("WW_P2P_DHT_PORT", "19834"))
 
