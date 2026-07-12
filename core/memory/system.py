@@ -28,6 +28,7 @@ from .amygdala import Amygdala
 from .sleep import DailyScheduler, IdleDetector, SleepConsolidation, SleepDaemon
 from .recall import RecallEngine
 from .reconsolidation import Reconsolidation
+from .edges import EdgeStore
 
 logger = logging.getLogger("ww.memory.system")
 
@@ -114,6 +115,9 @@ class MemorySystem:
             top_k=top_k,
         )
         self.reconsolidation = Reconsolidation(data_dir=self.data_dir)
+
+        # ── Edge store (knowledge graph relations) ──
+        self.edges = EdgeStore(data_dir=self.data_dir)
 
         # ── Dual trigger: daily schedule + dynamic idle ──
         self.scheduler = DailyScheduler(

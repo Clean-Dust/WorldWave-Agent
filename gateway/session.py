@@ -29,11 +29,16 @@ SESSION_TTL = 86400
 
 @dataclass
 class Session:
-    """A single user session."""
+    """A single user session — now backed by entity_id for cross-platform continuity.
+
+    The session_key format is now: "{platform}:{entity_id}:{chat_id}"
+    where entity_id is the unified identity across all platforms.
+    """
 
     session_key: str
     platform: str
-    user_id: str
+    entity_id: str  # Unified entity ID (replaces old user_id)
+    user_id: str  # Platform-specific user ID (for backward compat)
     chat_id: str
     display_name: str = "unknown"
     role: str = "operator"
@@ -55,6 +60,7 @@ class Session:
         return {
             "session_key": self.session_key,
             "platform": self.platform,
+            "entity_id": self.entity_id,
             "user_id": self.user_id,
             "chat_id": self.chat_id,
             "display_name": self.display_name,
@@ -72,6 +78,7 @@ class Session:
         return cls(
             session_key=data.get("session_key", ""),
             platform=data.get("platform", ""),
+            entity_id=data.get("entity_id", ""),
             user_id=data.get("user_id", ""),
             chat_id=data.get("chat_id", ""),
             display_name=data.get("display_name", "unknown"),
@@ -85,12 +92,14 @@ class Session:
         )
 
     @classmethod
-    def from_sender(cls, session_key: str, sender, platform: str) -> "Session":
+    def from_sender(cls, session_key: str, sender, platform: str,
+                    entity_id: str = "") -> "Session":
         """Create a Session from a sender protobuf object.
 
         Parses the session_key to extract platform/user/chat components.
         Handles both legacy 3-part (platform:user:chat) and new 4-part
         (tenant:platform:user:chat) key formats.
+        entity_id is the unified cross-platform identity.
         """
         parts = session_key.split(":")
         if len(parts) == 4:
@@ -98,6 +107,7 @@ class Session:
             return cls(
                 session_key=session_key,
                 platform=parts[1],
+                entity_id=entity_id or parts[2],
                 user_id=parts[2],
                 chat_id=parts[3],
                 display_name=sender.display_name if sender else "unknown",
@@ -109,6 +119,7 @@ class Session:
         return cls(
             session_key=session_key,
             platform=parts[0] if parts else platform,
+            entity_id=entity_id or (parts[1] if len(parts) > 1 else ""),
             user_id=parts[1] if len(parts) > 1 else "",
             chat_id=parts[2] if len(parts) > 2 else "",
             display_name=sender.display_name if sender else "unknown",

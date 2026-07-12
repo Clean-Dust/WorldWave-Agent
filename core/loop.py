@@ -43,6 +43,10 @@ from core.computer_use.skill_solidification import SkillSolidifier
 from core.self_model import init_self_model
 
 
+# Module-level reference for tool handlers to access the active Worldwave instance
+_active_ww_instance: Optional["Worldwave"] = None
+
+
 class Worldwave:
     """
     Worldwave Subject — v0.2 LLM Driven version. 
@@ -59,6 +63,8 @@ class Worldwave:
         memory_system=None,
         llm_config: Optional[Dict[str, Any]] = None,
         tools: Optional[ToolRegistry] = None,
+        entity_state_mgr=None,  # EntityStateManager for cross-platform continuity
+        identity_resolver=None,  # IdentityResolver for platform→entity mapping
     ):
         self.model = model
         self.memory = memory_system  # Built-in MemorySystem Instance (Optional)
@@ -70,6 +76,16 @@ class Worldwave:
         self.scheduler = Scheduler()
         self.evolution = EvolutionEngine(ww=self)
         self.metrics = self.evolution.metrics
+
+        # ── Entity continuity (P0: Persistent Cognitive Entity) ──
+        self.entity_state_mgr = entity_state_mgr
+        self.identity_resolver = identity_resolver
+        self._current_entity_id: str = ""
+        self._memory_tools = None  # Lazy init
+
+        # Register as active instance for tool handlers
+        global _active_ww_instance
+        _active_ww_instance = self
 
         self.running = False
         self.verbose = True
@@ -158,6 +174,44 @@ class Worldwave:
         except Exception as e:
             logger.warning(f"_store_memory Failure: {e}")
             return None
+
+    # ── Entity continuity (P0) ──────────────────────────────────
+
+    def set_entity(self, entity_id: str, platform: str = ""):
+        """Set the current entity context before running a spiral.
+
+        This loads the entity's persistent state (working memory, preferences,
+        last context) so the agent has continuity across platforms and time.
+        """
+        self._current_entity_id = entity_id
+        if self.entity_state_mgr:
+            state = self.entity_state_mgr.get(entity_id)
+            if platform:
+                state.last_platform = platform
+                self.entity_state_mgr.save(state)
+            # Init memory tools for this entity
+            if self.memory:
+                from core.memory.tools import MemoryTools
+                self._memory_tools = MemoryTools(
+                    memory_system=self.memory,
+                    entity_state_mgr=self.entity_state_mgr,
+                    entity_id=entity_id,
+                )
+
+    def _get_entity_context(self) -> str:
+        """Get entity context to inject into the system prompt."""
+        if self.entity_state_mgr and self._current_entity_id:
+            return self.entity_state_mgr.get_context_for(self._current_entity_id)
+        return ""
+
+    def _record_entity_interaction(self, context_summary: str, platform: str = ""):
+        """Record a completed interaction in entity state."""
+        if self.entity_state_mgr and self._current_entity_id:
+            self.entity_state_mgr.record_interaction(
+                entity_id=self._current_entity_id,
+                context_summary=context_summary,
+                platform=platform,
+            )
 
     def _recall_memory(self, query: str, limit: int = 5) -> List[Dict]:
         """Recall (Built-in MemorySystem) . """
@@ -473,6 +527,12 @@ class Worldwave:
         self._log("## Worldwave v0.2 LLM Driven version")
         self._log("## Goal: " + goal)
         self.running = True
+
+        # ── Entity continuity injection ──
+        entity_ctx = self._get_entity_context()
+        if entity_ctx:
+            self._log("## Entity context loaded")
+            goal = f"[Entity Context]\n{entity_ctx}\n\n[Current Request]\n{goal}"
 
         # ── Self-question: direct answer, skip all tools ──
         if self._is_self_question(goal):
@@ -908,6 +968,12 @@ class Worldwave:
         except Exception as e:
             self._log("## Audit failure (Non-critical): " + str(e))
         
+        # ── Record entity interaction (P0: Entity continuity) ──
+        summary = self.state.summary()
+        if self._current_entity_id:
+            summary_text = summary.get("result_summary", summary.get("final_response", "")) if isinstance(summary, dict) else str(summary)
+            self._record_entity_interaction(summary_text)
+
         return {
             "status": "interrupted" if (self.state.get_last_checkpoint() and 
                        not (self.state.get_last_checkpoint().interrupt_reason or "").startswith("rewind:")) 
@@ -915,7 +981,7 @@ class Worldwave:
             "spirals_completed": len(results),
             "results": results,
             "session_id": self.state.session_id,
-            "summary": self.state.summary(),
+            "summary": summary,
         }
 
     # ════════════════════════════════════════════════════════

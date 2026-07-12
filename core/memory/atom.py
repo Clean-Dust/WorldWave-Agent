@@ -47,6 +47,10 @@ class MemoryAtom:
         source: str = "",  # "user", "system", "tool", "inference"
         tags: Optional[List[str]] = None,
         context_id: str = "",  # Belonging spiral ID
+        # ── Temporal validity (P1: Entity continuity) ──
+        valid_from: float = 0,  # When this fact became true (epoch)
+        valid_until: float = 0,  # When this fact stopped being true (0 = still valid)
+        superseded_by: str = "",  # atom_id that supersedes this one
     ):
         self.atom_id = atom_id or uuid.uuid4().hex[:16]
         self.content = content
@@ -58,6 +62,11 @@ class MemoryAtom:
         self.source = source
         self.tags = tags or []
         self.context_id = context_id
+
+        # ── Temporal validity ──
+        self.valid_from = valid_from or self.timestamp
+        self.valid_until = valid_until  # 0 = still valid
+        self.superseded_by = superseded_by  # atom_id that replaces this
 
         # Link trace (maintained by Amygdala/Sleep)
         self.links: Dict[str, float] = {}  # target_atom_id -> link_strength
@@ -73,14 +82,14 @@ class MemoryAtom:
         self.visual_data: Optional[Dict] = None
         """Visual memory data. Structure:
         {
-            "screenshot_path": str,      # screenshotpath (if  has ) 
+            "screenshot_path": str,      # screenshot path (if has)
             "ui_elements": [              # Key UI elements
                 {"label": str, "bbox": [x1,y1,x2,y2], "tag": str},
             ],
             "region_of_interest": {       # Area of interest
                 "x": int, "y": int, "w": int, "h": int
             },
-            "screen_size": {"w": int, "h": int},  # screenresolution
+            "screen_size": {"w": int, "h": int},  # screen resolution
         }
         """
         self.spatial_markers: Optional[List[Dict]] = None
@@ -88,6 +97,15 @@ class MemoryAtom:
         [{"name": str, "x": int, "y": int, "context": str}, ...]
         Example: [{"name": "Chrome address bar", "x": 300, "y": 50, "context": "browser_top"}]
         """
+
+    @property
+    def is_currently_valid(self) -> bool:
+        """True if this fact is still valid (not expired, not superseded)."""
+        if self.superseded_by:
+            return False
+        if self.valid_until and time.time() > self.valid_until:
+            return False
+        return True
 
     def to_dict(self) -> dict:
         return {
@@ -101,6 +119,10 @@ class MemoryAtom:
             "source": self.source,
             "tags": self.tags,
             "context_id": self.context_id,
+            # Temporal validity
+            "valid_from": self.valid_from,
+            "valid_until": self.valid_until,
+            "superseded_by": self.superseded_by,
             "links": {k: round(v, 4) for k, v in self.links.items()},
             "recall_count": self.recall_count,
             "last_recalled": self.last_recalled,
@@ -153,6 +175,9 @@ class MemoryAtom:
             source=d.get("source", ""),
             tags=d.get("tags", []),
             context_id=d.get("context_id", ""),
+            valid_from=d.get("valid_from", 0),
+            valid_until=d.get("valid_until", 0),
+            superseded_by=d.get("superseded_by", ""),
         )
         atom.links = d.get("links", {})
         atom.recall_count = d.get("recall_count", 0)

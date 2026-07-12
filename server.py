@@ -163,6 +163,12 @@ class WorldwaveServer:
         # Built-in Memory System (replaces external v2)
         self.memory = MemorySystem()
 
+        # ── Entity continuity (P0: Persistent Cognitive Entity) ──
+        from core.entity_state import EntityStateManager
+        from wavegate.identity import IdentityResolver
+        self.entity_mgr = EntityStateManager()
+        self.identity_resolver = IdentityResolver()
+
         # Autonomous Loop Control
         self._autonomous_thread: Optional[threading.Thread] = None
         self._autonomous_running = False
@@ -221,6 +227,8 @@ class WorldwaveServer:
             persist_dir=self.persist_dir,
             memory_system=self.memory,
             tools=tools,
+            entity_state_mgr=self.entity_mgr,
+            identity_resolver=self.identity_resolver,
         )
 
     def _register_mcp_tools(self, registry):
@@ -391,8 +399,28 @@ class WorldwaveServer:
 
     def run_task(self, goal: str, max_spirals: int = 10,
                  model: str = "", provider: str = "", image_path: str = "",
-                 reasoning_effort: str = "") -> Dict[str, Any]:
-        """Execute a task."""
+                 reasoning_effort: str = "", entity_id: str = "",
+                 platform: str = "http") -> Dict[str, Any]:
+        """Execute a task.
+
+        Args:
+            entity_id: Optional entity ID for cross-platform continuity.
+                       If empty, uses the default entity (single-user mode).
+            platform: Platform identifier for context (telegram, terminal, http, etc.)
+        """
+        # ── Entity continuity: resolve and set entity context ──
+        if not entity_id and self.identity_resolver:
+            # Single-user mode: use default entity
+            entities = self.identity_resolver.get_all_entities()
+            if entities:
+                entity_id = entities[0]["entity_id"]
+            else:
+                entity_id = self.identity_resolver.resolve(
+                    platform="http", user_id="default", display_name="User"
+                )
+        if entity_id:
+            self.ww.set_entity(entity_id, platform)
+
         # Notify Mascot: Start thinking
         try:
             from core.mascot import mascot
@@ -2056,6 +2084,54 @@ def startup():
             pass
 
     threading.Thread(target=_launch_tray, daemon=True).start()
+
+
+# ── Entity Identity Endpoints (P0: Persistent Cognitive Entity) ──
+
+@app.get("/ww/identity/entities")
+def identity_list():
+    """List all known entities."""
+    return {"entities": server.identity_resolver.get_all_entities()}
+
+@app.get("/ww/identity/entity/{entity_id}")
+def identity_get(entity_id: str):
+    """Get entity details including platform links."""
+    entity = server.identity_resolver.get_entity(entity_id)
+    if not entity:
+        raise HTTPException(404, f"Entity {entity_id} not found")
+    links = server.identity_resolver.get_platform_ids(entity_id)
+    return {"entity": entity, "platform_links": links}
+
+@app.post("/ww/identity/link")
+def identity_link(req: dict):
+    """Link a platform identity to an entity."""
+    entity_id = req.get("entity_id", "")
+    platform = req.get("platform", "")
+    user_id = req.get("user_id", "")
+    chat_id = req.get("chat_id", "")
+    if not entity_id or not platform or not user_id:
+        raise HTTPException(400, "entity_id, platform, user_id required")
+    server.identity_resolver.link(entity_id, platform, user_id, chat_id)
+    return {"status": "linked"}
+
+@app.get("/ww/identity/state/{entity_id}")
+def entity_state_get(entity_id: str):
+    """Get entity persistent state (working memory, preferences, context)."""
+    state = server.entity_mgr.get(entity_id)
+    return state.to_dict()
+
+@app.post("/ww/identity/state/{entity_id}")
+def entity_state_set(entity_id: str, req: dict):
+    """Set entity working memory or preferences."""
+    state = server.entity_mgr.get(entity_id)
+    if "working_memory" in req:
+        for k, v in req["working_memory"].items():
+            state.working_memory[k] = v
+    if "preferences" in req:
+        for k, v in req["preferences"].items():
+            state.preferences[k] = v
+    server.entity_mgr.save(state)
+    return state.to_dict()
 
 
 if __name__ == "__main__":

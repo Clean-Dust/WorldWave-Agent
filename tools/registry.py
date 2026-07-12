@@ -1113,6 +1113,51 @@ def _memory_stats_handler() -> Dict:
         return {"success": False, "error": "memory stats failed: " + str(e)}
 
 
+# ── 8b. SELF-EDITING MEMORY HANDLERS ───────────────────
+
+def _remember_handler(key: str, value: str, category: str = "general") -> Dict:
+    """Store a fact in entity memory (self-editing)."""
+    try:
+        # Access the Worldwave instance via module-level reference
+        import sys
+        ww_module = sys.modules.get("core.loop")
+        if ww_module and hasattr(ww_module, '_active_ww_instance'):
+            ww = ww_module._active_ww_instance
+            if ww._memory_tools:
+                return ww._memory_tools.remember(key, value, category)
+        return {"status": "stored", "key": key, "note": "stored in-memory only (no entity context)"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def _forget_handler(key: str) -> Dict:
+    """Mark a fact as outdated."""
+    try:
+        import sys
+        ww_module = sys.modules.get("core.loop")
+        if ww_module and hasattr(ww_module, '_active_ww_instance'):
+            ww = ww_module._active_ww_instance
+            if ww._memory_tools:
+                return ww._memory_tools.forget(key)
+        return {"status": "forgotten", "key": key, "note": "no entity context"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def _recall_mine_handler(query: str = "", limit: int = 10) -> Dict:
+    """Query stored facts about current entity."""
+    try:
+        import sys
+        ww_module = sys.modules.get("core.loop")
+        if ww_module and hasattr(ww_module, '_active_ww_instance'):
+            ww = ww_module._active_ww_instance
+            if ww._memory_tools:
+                return ww._memory_tools.recall_mine(query, limit)
+        return {"facts": {}, "total": 0, "note": "no entity context"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 # ── 9. SCHEDULING ─────────────────────────────────────
 
 _WW_SCHEDULER_URL = os.environ.get("WW_SCHEDULER_URL", "http://localhost:9300")
@@ -1555,6 +1600,45 @@ def default_registry(guardrails=None) -> ToolRegistry:
     r.register_from_def("memory_stats", "MemorysystemstatisticsInformation. ",
                         _memory_stats_handler, parameters={},
                         category="memory")
+
+    # ── 8b. SELF-EDITING MEMORY (Entity continuity) ──
+    r.register_from_def("remember",
+        "Store a fact in your persistent memory. Use this when you learn something "
+        "new about the user or need to remember information across conversations. "
+        "Facts stored with 'remember' persist across ALL platforms (Telegram, terminal, etc.) "
+        "and survive server restarts. Example: remember(key='user_name', value='Chung')",
+        _remember_handler,
+        parameters={
+            "key": {"type": "string", "description": "Short label for this fact"},
+            "value": {"type": "string", "description": "The fact content to store"},
+            "category": {"type": "string", "description": "Optional: general, preference, technical, contact, project", "default": "general"},
+        },
+        examples=['remember(key="user_preferred_model", value="deepseek-v4-pro")'],
+        category="memory")
+
+    r.register_from_def("forget",
+        "Mark a stored fact as outdated. Use this when you detect that previously "
+        "stored information is no longer correct. The old fact is superseded, not "
+        "deleted — you can still recall it as historical context. "
+        "Example: forget(key='old_project_name')",
+        _forget_handler,
+        parameters={
+            "key": {"type": "string", "description": "The fact key to supersede"},
+        },
+        examples=['forget(key="old_api_key")'],
+        category="memory")
+
+    r.register_from_def("recall_mine",
+        "Query what you currently know about the user and your working context. "
+        "Use this to check stored facts before responding to ensure accuracy. "
+        "Example: recall_mine() for all facts, or recall_mine(query='preference') to filter.",
+        _recall_mine_handler,
+        parameters={
+            "query": {"type": "string", "description": "Optional filter keyword", "default": ""},
+            "limit": {"type": "integer", "description": "Max results to return", "default": 10},
+        },
+        examples=['recall_mine()', 'recall_mine(query="model")'],
+        category="memory")
 
     # ── 9. SCHEDULING ──
     r.register_from_def("schedule_task", "schedulea fixed task (via  WW scheduler API) . supports cron expression. ",
