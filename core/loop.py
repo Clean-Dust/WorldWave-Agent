@@ -41,6 +41,12 @@ from core.subconscious.basal_ganglia import BasalGanglia
 from core.computer_use.predictive_model import PredictiveModel
 from core.computer_use.skill_solidification import SkillSolidifier
 from core.self_model import init_self_model
+from core.delegation import DelegationManager, ParallelPlanner
+from core.skill_evolution import SkillEvolutionEngine
+from core.autonomous_scheduler import AutonomousScheduler
+from core.tracing import TraceCollector
+from core.user_model import UserModelManager
+from core.enterprise import ApprovalGating, get_approval_gating
 
 
 # Module-level reference for tool handlers to access the active Worldwave instance
@@ -158,6 +164,44 @@ class Worldwave:
             subconscious=self.subconscious,
         )
 
+        # ── Gap-close modules (2026-07) ──
+
+        # Multi-Agent Orchestration
+        self.delegator = DelegationManager(ww_factory=lambda: Worldwave(
+            model=self.model, persist_dir=persist_dir,
+            memory_system=self.memory, tools=self.tools,
+            entity_state_mgr=self.entity_state_mgr,
+            identity_resolver=self.identity_resolver,
+        ))
+        self.planner = ParallelPlanner(ww=self, delegator=self.delegator)
+
+        # Autonomous Skill Evolution
+        self.skill_evolution = SkillEvolutionEngine(
+            enabled=self.config.get("skill_evolution_enabled", True),
+        )
+        if hasattr(self.llm, 'chat'):
+            self.skill_evolution.set_llm(self.llm)
+
+        # Autonomous Scheduler (heartbeat loop)
+        self.autonomous_scheduler = AutonomousScheduler(
+            run_callback=self._autonomous_task_callback,
+            heartbeat_interval=self.config.get("heartbeat_interval", 300),
+            enabled=self.config.get("autonomous_enabled", True),
+        )
+
+        # Spiral Tracing (observability)
+        self.tracer = TraceCollector(
+            enabled=self.config.get("tracing_enabled", True),
+        )
+
+        # Dynamic User Modeling
+        self.user_models = UserModelManager(
+            enabled=self.config.get("user_modeling_enabled", True),
+        )
+
+        # Approval Gating
+        self.approval_gating = get_approval_gating()
+
 
     def _store_memory(self, content: str, source: str = "ww_loop",
                       entities: List[str] = None) -> Optional[str]:
@@ -200,9 +244,23 @@ class Worldwave:
 
     def _get_entity_context(self) -> str:
         """Get entity context to inject into the system prompt."""
+        parts = []
         if self.entity_state_mgr and self._current_entity_id:
-            return self.entity_state_mgr.get_context_for(self._current_entity_id)
-        return ""
+            entity_ctx = self.entity_state_mgr.get_context_for(self._current_entity_id)
+            if entity_ctx:
+                parts.append(entity_ctx)
+
+        # ── User Model context (dynamic) ──
+        if self._current_entity_id:
+            try:
+                user_model = self.user_models.get(self._current_entity_id)
+                um_ctx = user_model.get_context_injection()
+                if um_ctx:
+                    parts.append("[User Model]\n" + um_ctx)
+            except Exception:
+                pass
+
+        return "\n\n".join(parts)
 
     def _record_entity_interaction(self, context_summary: str, platform: str = ""):
         """Record a completed interaction in entity state."""
@@ -547,6 +605,7 @@ class Worldwave:
         is_image_task = "[Photo received:" in goal or "[Attached image:" in goal or image_path
         if self.config.get("reflex_arc_enabled", True) and not is_image_task:
             complexity = self._estimate_complexity(goal)
+            last_complexity = complexity  # Save for tracing
             threshold = self.config.get("reflex_threshold", self.REFLEX_THRESHOLD)
             if complexity < threshold:
                 self._log(f"## ⚡ Reflex Arc — complexity {complexity:.2f} < {threshold}")
@@ -564,6 +623,11 @@ class Worldwave:
 
         results = []
         prev_failure = None  # Track previous spiral failure for retry guidance
+        last_complexity = 0.0  # Track complexity for tracing
+
+        # ── Touch autonomous scheduler (user is active) ──
+        self.autonomous_scheduler.touch()
+
         for _ in range(max_spirals):
             if not self.running:
                 break
@@ -579,6 +643,15 @@ class Worldwave:
             self._log("")
             self._log("### Spiral #" + str(spiral.spiral_number))
 
+            # ── Start tracing this spiral ──
+            self.tracer.start_spiral(
+                spiral_number=spiral.spiral_number,
+                session_id=self.state.session_id,
+                goal=goal,
+                entity_id=self._current_entity_id,
+                complexity=last_complexity,
+            )
+
             # Subconscious observation: New spiral begins
             self.subconscious.observe_spiral(0, spiral.spiral_number)
             self._log("")
@@ -586,7 +659,9 @@ class Worldwave:
             try:
                 # ── 1. Perception ──
                 self._log("#### [Perception] Analyzing environment...")
+                self.tracer.start_phase("perceive")
                 spiral.perception = self._llm_perceive(goal, prev_failure=prev_failure)
+                self.tracer.end_phase(success=True)
                 self.state.set_phase("perceive")
                 if on_spiral_progress:
                     on_spiral_progress("PERCEIVE", "Analyzing goal and environment", 15)
@@ -625,7 +700,9 @@ class Worldwave:
 
                 # ── 2. Recall ──
                 self._log("#### [Recall] Recalling relevant memories...")
+                self.tracer.start_phase("recall")
                 spiral.recall = self._llm_recall(spiral.perception, goal)
+                self.tracer.end_phase(success=True)
                 self.state.set_phase("recall")
                 if on_spiral_progress:
                     on_spiral_progress("RECALL", "Recalling relevant memories", 30)
@@ -647,7 +724,40 @@ class Worldwave:
 
                 # ── 3. Plan ──
                 self._log("#### [Plan] Planning actions...")
+                self.tracer.start_phase("plan")
+
+                # ── Orchestration trigger: auto-decompose complex goals ──
+                if last_complexity > 0.6 and self.config.get("orchestration_enabled", True):
+                    self._log("  🎯 High complexity detected — auto-decomposing...")
+                    try:
+                        orchestrated = self.planner.plan_and_execute(goal, auto_decompose=True)
+                        if orchestrated.get("sub_tasks", 0) > 1:
+                            self._log(f"  → Decomposed into {orchestrated['sub_tasks']} parallel subtasks")
+                            spiral.plan = {"strategy": "orchestrated", "steps": [],
+                                           "orchestration_result": orchestrated}
+                            self.tracer.end_phase(success=True,
+                                metadata={"orchestrated": True, "sub_tasks": orchestrated.get("sub_tasks", 0)})
+                            # Skip normal plan/act/eval — orchestration already executed
+                            self.state.complete_spiral()
+                            results.append({
+                                "spiral": spiral.spiral_number,
+                                "goal": goal[:80],
+                                "steps": [],
+                                "actions": [],
+                                "evaluation": {"success": orchestrated.get("done", 0) > 0,
+                                               "reason": f"Orchestrated: {orchestrated.get('done', 0)}/{orchestrated.get('sub_tasks', 0)} done"},
+                                "success": orchestrated.get("done", 0) > 0,
+                                "learned": False,
+                            })
+                            self.tracer.end_spiral(success=orchestrated.get("done", 0) > 0)
+                            if orchestrated.get("done", 0) >= orchestrated.get("sub_tasks", 0):
+                                break
+                            continue
+                    except Exception as oe:
+                        self._log(f"  Orchestration fallback: {oe}")
+
                 spiral.plan = self._llm_plan(spiral.perception, spiral.recall, goal)
+                self.tracer.end_phase(success=True)
                 self.state.set_phase("plan")
                 if on_spiral_progress:
                     on_spiral_progress("PLAN", "Planning action steps", 45)
@@ -675,7 +785,12 @@ class Worldwave:
 
                 # ── 4. Action ──
                 self._log("#### [Action] Executing...")
+                self.tracer.start_phase("act")
                 spiral.actions = self._llm_act(spiral.plan, goal)
+                self.tracer.end_phase(success=True, metadata={
+                    "actions_count": len(spiral.actions),
+                    "tools": [a.get("tool", "?") for a in spiral.actions[:10]],
+                })
                 self.state.set_phase("act")
                 if on_spiral_progress:
                     on_spiral_progress("ACT", "Executing actions", 60)
@@ -747,7 +862,9 @@ class Worldwave:
 
                 # ── 5. Evaluate ──
                 self._log("#### [Evaluate] Evaluating results...")
+                self.tracer.start_phase("evaluate")
                 spiral.evaluation = self._llm_evaluate(spiral.plan, spiral.actions, goal)
+                self.tracer.end_phase(success=spiral.evaluation.get("success", False))
                 self.state.set_phase("evaluate")
                 if on_spiral_progress:
                     on_spiral_progress("EVALUATE", "Evaluating results against goal", 80)
@@ -833,7 +950,29 @@ class Worldwave:
 
                 # ── 6. Learn ──
                 self._log("#### [Learn] Codifying experience...")
+                self.tracer.start_phase("learn")
                 spiral.learning = self._llm_learn(spiral, goal)
+                self.tracer.end_phase(success=spiral.learning.get("stored", False))
+
+                # ── Skill Evolution: observe this task execution ──
+                try:
+                    success = spiral.evaluation.get("success", False)
+                    tool_names = [a.get("tool", "?") for a in spiral.actions]
+                    errors = [
+                        a.get("result", {}).get("error", "")
+                        for a in spiral.actions
+                        if not a.get("result", {}).get("success", False)
+                    ]
+                    self.skill_evolution.observe_task(
+                        goal=goal,
+                        tool_sequence=tool_names,
+                        success=success,
+                        spirals=spiral.spiral_number,
+                        duration=spiral.duration_seconds,
+                        errors=errors,
+                    )
+                except Exception as se:
+                    pass  # Non-critical
                 self.state.set_phase("learn")
                 if on_spiral_progress:
                     on_spiral_progress("LEARN", "Codifying lessons learned", 100)
@@ -883,8 +1022,10 @@ class Worldwave:
                 # Check whether the goal has been achieved
                 if self._goal_achieved(spiral):
                     self._log("## Goal achieved!")
+                    self.tracer.end_spiral(success=True)
                     break
                 else:
+                    self.tracer.end_spiral(success=False)
                     # Build failure context for retry — tell next spiral what went wrong
                     failed_steps = [a for a in spiral.actions
                                     if not a.get("result", {}).get("success", False)]
@@ -1413,6 +1554,32 @@ class Worldwave:
                     )
                     continue
 
+                # ── Approval Gating: per-action permission check ──
+                tool_def = self.tools._tools.get(tool_name)
+                tool_category = tool_def.category if tool_def else "general"
+                approval = self.approval_gating.check(
+                    tool_name=tool_name,
+                    tool_category=tool_category,
+                    entity_id=self._current_entity_id,
+                )
+                if not approval.get("allowed", True):
+                    self._log(f"    🔒 BLOCKED by approval gating: {approval['reason']}")
+                    step_result = {
+                        "step": i,
+                        "tool": tool_name,
+                        "params": params,
+                        "description": desc,
+                        "result": {
+                            "success": False,
+                            "error": f"Action requires approval: {approval['reason']}",
+                            "blocked_by": "approval_gating",
+                            "approval_id": approval.get("approval_id"),
+                        },
+                    }
+                    results.append(step_result)
+                    step_outputs[i] = json.dumps(step_result.get("result", {}))
+                    continue
+
                 result = self.tools.call(tool_name, params)
                 step_result = {
                     "step": i,
@@ -1601,6 +1768,11 @@ class Worldwave:
             }
         except:
             return {"info": "unavailable"}
+
+    def _autonomous_task_callback(self, goal: str) -> Dict[str, Any]:
+        """Callback for autonomous scheduler — runs a goal through the spiral loop."""
+        self.autonomous_scheduler.touch()
+        return self.run(goal, max_spirals=2)
 
     def _goal_achieved(self, spiral: SpiralState) -> bool:
         """Check whether the goal has been achieved. """

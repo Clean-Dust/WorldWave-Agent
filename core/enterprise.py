@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 log = logging.getLogger("ww.enterprise")
 
@@ -505,9 +505,298 @@ class EnterpriseSystem:
         return self.rbac.get_user(user_id=payload.get("sub", ""))
 
 
+# ════════════════════════════════════════════════════════════════
+# Approval Gating — Per-Action Permission System
+# ════════════════════════════════════════════════════════════════
+
+class ApprovalMode:
+    """Approval modes for action gating."""
+    AUTO = "auto"       # Execute automatically (no prompt)
+    ASK = "ask"         # Ask user for confirmation
+    DENY = "deny"       # Always deny (block execution)
+    SANDBOX = "sandbox" # Run in sandbox only
+
+
+class ApprovalPolicy:
+    """Policy rule: determines approval mode for a tool category."""
+
+    def __init__(
+        self,
+        name: str,
+        tool_categories: List[str] = None,
+        tool_names: List[str] = None,
+        mode: str = ApprovalMode.AUTO,
+        entities: List[str] = None,    # Apply to specific entities only
+        time_window: tuple = None,     # (start_hour, end_hour) restriction
+        max_per_hour: int = 0,         # Rate limit
+    ):
+        self.name = name
+        self.tool_categories = tool_categories or []
+        self.tool_names = tool_names or []
+        self.mode = mode
+        self.entities = entities or []   # Empty = all entities
+        self.time_window = time_window
+        self.max_per_hour = max_per_hour
+        self._counter: Dict[str, int] = {}  # entity_id → count
+        self._counter_reset = time.time()
+
+    def matches(self, tool_name: str, tool_category: str,
+                entity_id: str = "") -> bool:
+        """Check if this policy applies to a tool call."""
+        # Entity filter
+        if self.entities and entity_id not in self.entities:
+            return False
+
+        # Tool match
+        if tool_name in self.tool_names:
+            return True
+        if tool_category in self.tool_categories:
+            return True
+
+        return False
+
+    def check_rate_limit(self, entity_id: str) -> bool:
+        """Check if rate limit is exceeded. Returns True if allowed."""
+        if self.max_per_hour <= 0:
+            return True
+
+        now = time.time()
+        if now - self._counter_reset > 3600:
+            self._counter = {}
+            self._counter_reset = now
+
+        count = self._counter.get(entity_id, 0)
+        return count < self.max_per_hour
+
+    def record_use(self, entity_id: str):
+        """Record a tool use for rate limiting."""
+        if self.max_per_hour <= 0:
+            return
+        self._counter[entity_id] = self._counter.get(entity_id, 0) + 1
+
+
+class ApprovalGating:
+    """Per-action approval gating system.
+
+    Layers on top of RBAC. Each tool call goes through:
+    1. RBAC check — does user have permission?
+    2. Policy check — what approval mode applies?
+    3. Rate limit check — is usage within limits?
+
+    Config via WW_APPROVAL_DEFAULT_MODE (default: "auto").
+    """
+
+    # Default policies for common dangerous tool categories
+    DEFAULT_POLICIES = [
+        ApprovalPolicy(
+            name="destructive-filesystem",
+            tool_names=["rm", "delete", "format", "mkfs", "dd"],
+            mode=ApprovalMode.ASK,
+        ),
+        ApprovalPolicy(
+            name="system-commands",
+            tool_categories=["system"],
+            mode=ApprovalMode.ASK,
+        ),
+        ApprovalPolicy(
+            name="network-egress",
+            tool_categories=["network", "web"],
+            mode=ApprovalMode.AUTO,
+            max_per_hour=60,
+        ),
+        ApprovalPolicy(
+            name="file-writes",
+            tool_categories=["file_write"],
+            mode=ApprovalMode.AUTO,
+            max_per_hour=200,
+        ),
+        ApprovalPolicy(
+            name="code-execution",
+            tool_categories=["code", "exec"],
+            mode=ApprovalMode.SANDBOX,
+        ),
+    ]
+
+    def __init__(
+        self,
+        default_mode: str = "",
+        policies: List[ApprovalPolicy] = None,
+        enterprise: EnterpriseSystem = None,
+    ):
+        self.default_mode = default_mode or os.environ.get(
+            "WW_APPROVAL_DEFAULT_MODE", ApprovalMode.AUTO
+        )
+        self._policies: List[ApprovalPolicy] = policies or list(self.DEFAULT_POLICIES)
+        self._enterprise = enterprise or get_enterprise()
+        self._pending_approvals: Dict[str, Dict] = {}  # approval_id → context
+        self._lock = threading.Lock()
+
+    def add_policy(self, policy: ApprovalPolicy):
+        """Add a custom approval policy."""
+        self._policies.append(policy)
+
+    def remove_policy(self, name: str) -> bool:
+        """Remove a policy by name."""
+        for i, p in enumerate(self._policies):
+            if p.name == name:
+                self._policies.pop(i)
+                return True
+        return False
+
+    def list_policies(self) -> List[Dict]:
+        """List all active policies."""
+        return [
+            {
+                "name": p.name,
+                "mode": p.mode,
+                "categories": p.tool_categories,
+                "tools": p.tool_names,
+                "rate_limit": p.max_per_hour,
+                "entities": p.entities or ["all"],
+            }
+            for p in self._policies
+        ]
+
+    def check(self, tool_name: str, tool_category: str = "general",
+              entity_id: str = "") -> Dict:
+        """Check if a tool call is allowed.
+
+        Returns:
+            {"allowed": bool, "mode": str, "reason": str, "approval_id": str or None}
+        """
+        # Find matching policies (most restrictive wins)
+        applicable = [p for p in self._policies
+                      if p.matches(tool_name, tool_category, entity_id)]
+
+        if not applicable:
+            return {"allowed": True, "mode": self.default_mode, "reason": "default"}
+
+        # Most restrictive mode
+        mode_priority = {
+            ApprovalMode.AUTO: 0,
+            ApprovalMode.SANDBOX: 1,
+            ApprovalMode.ASK: 2,
+            ApprovalMode.DENY: 3,
+        }
+        most_restrictive = max(applicable, key=lambda p: mode_priority.get(p.mode, 0))
+
+        mode = most_restrictive.mode
+
+        if mode == ApprovalMode.DENY:
+            return {
+                "allowed": False,
+                "mode": mode,
+                "reason": f"Blocked by policy: {most_restrictive.name}",
+            }
+
+        # Rate limit check
+        if not most_restrictive.check_rate_limit(entity_id):
+            return {
+                "allowed": False,
+                "mode": ApprovalMode.DENY,
+                "reason": f"Rate limit exceeded for {most_restrictive.name}",
+            }
+
+        if mode == ApprovalMode.AUTO:
+            most_restrictive.record_use(entity_id)
+            return {"allowed": True, "mode": mode, "reason": "auto-approved"}
+
+        if mode == ApprovalMode.ASK:
+            # Create pending approval
+            import uuid
+            approval_id = uuid.uuid4().hex[:12]
+            with self._lock:
+                self._pending_approvals[approval_id] = {
+                    "tool": tool_name,
+                    "category": tool_category,
+                    "entity_id": entity_id,
+                    "policy": most_restrictive.name,
+                    "timestamp": time.time(),
+                    "status": "pending",
+                }
+            return {
+                "allowed": False,
+                "mode": mode,
+                "reason": f"Requires approval: {most_restrictive.name}",
+                "approval_id": approval_id,
+            }
+
+        # SANDBOX
+        most_restrictive.record_use(entity_id)
+        return {
+            "allowed": True,
+            "mode": mode,
+            "reason": "running in sandbox",
+            "sandbox": True,
+        }
+
+    def approve(self, approval_id: str) -> bool:
+        """Approve a pending action."""
+        with self._lock:
+            if approval_id in self._pending_approvals:
+                self._pending_approvals[approval_id]["status"] = "approved"
+                # Record for audit
+                ctx = self._pending_approvals[approval_id]
+                self._enterprise.audit.log_tool_call(
+                    tool_name=ctx["tool"],
+                    user_email=ctx.get("entity_id", ""),
+                    success=True,
+                    details=f"User approved: {ctx['policy']}",
+                )
+                return True
+        return False
+
+    def deny(self, approval_id: str) -> bool:
+        """Deny a pending action."""
+        with self._lock:
+            if approval_id in self._pending_approvals:
+                self._pending_approvals[approval_id]["status"] = "denied"
+                ctx = self._pending_approvals[approval_id]
+                self._enterprise.audit.log_tool_call(
+                    tool_name=ctx["tool"],
+                    user_email=ctx.get("entity_id", ""),
+                    success=False,
+                    details=f"User denied: {ctx['policy']}",
+                )
+                return True
+        return False
+
+    def get_pending(self) -> List[Dict]:
+        """List pending approval requests."""
+        with self._lock:
+            return [
+                {"approval_id": aid, **ctx}
+                for aid, ctx in self._pending_approvals.items()
+                if ctx["status"] == "pending"
+            ]
+
+    def cleanup_expired(self, max_age_seconds: int = 300):
+        """Remove expired pending approvals."""
+        now = time.time()
+        with self._lock:
+            expired = [
+                aid for aid, ctx in self._pending_approvals.items()
+                if now - ctx["timestamp"] > max_age_seconds
+            ]
+            for aid in expired:
+                del self._pending_approvals[aid]
+
+    def stats(self) -> Dict:
+        """Approval gating statistics."""
+        return {
+            "policies": len(self._policies),
+            "pending_approvals": len([
+                a for a in self._pending_approvals.values()
+                if a["status"] == "pending"
+            ]),
+            "default_mode": self.default_mode,
+        }
+
+
 # ── Singleton ────────────────────────────────────────────────────
 
 _enterprise: Optional[EnterpriseSystem] = None
+_approval_gating: Optional[ApprovalGating] = None
 
 
 def get_enterprise() -> EnterpriseSystem:
@@ -515,3 +804,10 @@ def get_enterprise() -> EnterpriseSystem:
     if _enterprise is None:
         _enterprise = EnterpriseSystem()
     return _enterprise
+
+
+def get_approval_gating() -> ApprovalGating:
+    global _approval_gating
+    if _approval_gating is None:
+        _approval_gating = ApprovalGating(enterprise=get_enterprise())
+    return _approval_gating
