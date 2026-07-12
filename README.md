@@ -37,6 +37,8 @@ Every AI agent framework today (Claude Code, Codex, OpenClaw, Hermes) is session
 | **Flat vector search** — facts conflict with no time dimension | **Temporal knowledge graph** — facts have `valid_from`/`valid_until`/`superseded_by`; outdated facts are superseded, not deleted |
 | **External graph DB** (Neo4j) required for multi-hop reasoning | **SQLite CTE** recursive queries for typed edge traversal — zero extra dependencies |
 
+Currently serving 13 messaging platforms, 192 tools across 16 categories, with P2P node gossip in active testing.
+
 ### Architecture
 
 ```
@@ -242,6 +244,8 @@ MIT — see [LICENSE](LICENSE).
 | **无状态 worker** — 每次请求重新构建上下文 | **状态机** — 收到消息自动唤醒载入，空闲自动持久化休眠 |
 | **扁平向量搜索** — 事实冲突，无时间维度 | **时态知识图谱** — 事实有 `valid_from`/`valid_until`/`superseded_by`；过时事实标记取代而非删除 |
 | **需要外部图数据库**（Neo4j）进行多跳推理 | **SQLite CTE** 递归查询实现类型化边遍历 — 零额外依赖 |
+
+目前已接入 13 个即时通讯平台，192 个工具覆盖 16 个类别，P2P 节点 gossip 正在测试中。
 
 ### 架构
 
