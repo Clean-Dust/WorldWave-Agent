@@ -20,12 +20,16 @@ REPO="${WW_REPO:-https://github.com/Clean-Dust/worldwave.git}"
 BRANCH="${WW_BRANCH:-main}"
 INSTALL_DIR="${WW_HOME:-$HOME/worldwave}"
 PYTHON="${WW_PYTHON:-python3}"
-# Bootstrap trackers — comma-separated. At least one must be reachable.
-BOOTSTRAP_URLS="${WW_BOOTSTRAP_URLS:-http://tracker.dse-5-star-star.org}"
-# P2P port — must match what server.py uses (default 9833)
-P2P_PORT="${WW_P2P_PORT:-9833}"
-# DHT bootstrap seeds (optional, for fully decentralized discovery)
-DHT_SEEDS="${WW_DHT_BOOTSTRAP_NODES:-}"
+# ── Bootstrap — every node is a tracker. Comma-separated, tried in order.
+#     Public:    http://tracker.dse-5-star-star.org      (Apple, anyone)
+#     Tailscale: http://100.80.143.105:19833              (Banana, team only)
+#     Custom:    set WW_BOOTSTRAP_URLS env var to override
+BOOTSTRAP_URLS="${WW_BOOTSTRAP_URLS:-http://tracker.dse-5-star-star.org,http://100.80.143.105:19833}"
+# P2P port for HTTP server (every node serves as tracker on this port)
+P2P_PORT="${WW_P2P_PORT:-19833}"
+# DHT bootstrap seeds — UDP-based, fully decentralized (no central server needed)
+# Format: "IP:port,IP:port"  (port is usually P2P_PORT+1 = 19834)
+DHT_SEEDS="${WW_DHT_BOOTSTRAP_NODES:-100.80.143.105:19834}"
 # Server port for WW API
 WW_PORT="${WW_PORT:-9300}"
 
