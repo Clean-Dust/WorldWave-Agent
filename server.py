@@ -582,12 +582,7 @@ else:
     import secrets
     _auto_key = secrets.token_urlsafe(32)
     WW_API_KEY = _auto_key
-    logger.warning("=" * 50)
-    logger.warning("⚠️  WW_API_KEY not set! Auto-generated random key (in-memory only, not persisted).")
-    logger.warning("🔑  WW_API_KEY=%s", _auto_key)
-    logger.warning("    Set WW_API_KEY in your .env to make it permanent.")
-    logger.warning("    Authenticate via Authorization: Bearer <key> or ?api_key=<key>")
-    logger.warning("=" * 50)
+    logger.info("WW_API_KEY auto-generated — set it in .env to make it permanent")
 
 _API_BYPASS_PATHS = {"/ww/health", "/docs", "/openapi.json", "/redoc", "/ww/webui", "/ww/webui/", "/ww/mascot/state"}
 
