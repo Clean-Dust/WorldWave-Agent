@@ -27,7 +27,13 @@
 
 A **persistent cognitive entity** framework. One agent, one timeline — regardless of which platform you use to talk to it.
 
-Every AI agent framework today (Claude Code, Codex, OpenClaw, Hermes) is session-based: close the window, lose the context. Worldwave models the agent as a **continuously running entity** with its own memory, identity, and state that survives restarts.
+**Claude Code and Codex** are the strongest coding agents available today. Nothing comes close for writing, debugging, and shipping code. But they share one limitation: they're session-based. Close the window, lose the context. Start a new session, re-explain your project from scratch.
+
+Worldwave doesn't ask you to give them up — it works **alongside** them.
+
+Worldwave adds what Claude Code and Codex are missing: a **persistent memory** that survives sessions, **cross-platform identity** (continue on Telegram what you started in the terminal), and a **cognitive entity** that remembers your projects, preferences, and decisions across days and weeks.
+
+Use Claude Code or Codex for the heavy coding. Use Worldwave as the assistant that remembers everything, coordinates across tools, and keeps your workflow continuous. Together, they maximize your efficiency without forcing you to abandon the tools you already rely on.
 
 ### What makes this different
 
@@ -211,7 +217,13 @@ MIT — see [LICENSE](LICENSE).
 
 一个**持久认知主体**（Persistent Cognitive Entity）框架。无论你从终端、Telegram、飞书还是网页接入，连接的都是同一个实体、同一条时间线。
 
-当前所有 AI 代理框架（Claude Code、Codex、OpenClaw、Hermes）都基于会话：关闭窗口就丢失上下文。Worldwave 将代理建模为一个**持续运行的实体**，拥有自己的记忆、身份和状态，重启不丢失。
+**Claude Code 和 Codex** 是当下最强的编程代理——写代码、调试、交付项目，无出其右。但它们有一个共同局限：基于会话。关闭窗口，上下文消失。开启新会话，你得从头解释一遍项目。
+
+Worldwave 不要求你放弃它们——而是与它们**并肩工作**。
+
+Worldwave 补上了 Claude Code 和 Codex 缺失的能力：**持久记忆**（跨会话不丢失）、**跨平台统一身份**（在 Telegram 上继续终端未完成的话题）、**认知实体**（记住你的项目、偏好和决策，跨天、跨周）。
+
+用 Claude Code 或 Codex 搞定重活编程。用 Worldwave 做那个记住一切、协调工具、保持工作流连续的助手。两者叠加，效率最大化——你不需要放弃已经依赖的工具。
 
 ### 为什么不同
 
