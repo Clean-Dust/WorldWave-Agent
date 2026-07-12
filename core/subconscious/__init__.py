@@ -358,6 +358,10 @@ class Subconscious:
             logger.info("🧠 subconscious v8 start: DeepRiskNet hidden_dim=%d, lr=%s",
                         hidden_dim, learning_rate)
 
+        # Warmup: seed with synthetic data so gossip has weights to exchange
+        if not self.predictor._has_trained:
+            self._warmup()
+
     def _handle_nostr_model_update(self, model_data: dict) -> None:
         """Handle incoming model update from Nostr relay."""
         logger.debug("Nostr model update received: %d keys", len(model_data))
@@ -1018,6 +1022,33 @@ class Subconscious:
         # (guard against 0 % N == 0 bug that fires on every call)
         if self._spiral_count > 0 and self._spiral_count % self.auto_train_interval == 0:
             self.train()
+
+    def _warmup(self):
+        """Seed model with synthetic data so gossip has weights to exchange.
+
+        Generates diverse random samples covering success/failure patterns.
+        Only runs once when model has never been trained."""
+        logger.info("🔥 Model warmup: generating synthetic training data...")
+        n_samples = 20
+        n_features = PADDED_FEATURES
+        X = []
+        y = []
+        for i in range(n_samples):
+            # Mix: 60% success-ish, 40% failure-ish patterns
+            if i < n_samples * 0.6:
+                # Success pattern: moderate values
+                vec = [0.3 + (i * 0.03) % 0.4 for _ in range(n_features)]
+                y.append(0.1 + (i * 0.02) % 0.3)
+            else:
+                # Failure pattern: more extreme values
+                vec = [0.5 + (i * 0.05) % 0.5 for _ in range(n_features)]
+                y.append(0.6 + (i * 0.03) % 0.4)
+            X.append(vec)
+
+        self._training_buffer_x = X
+        self._training_buffer_y = y
+        result = self.train(epochs=5)
+        logger.info(f"🔥 Warmup complete: {result}")
 
     def train(self, epochs: int = 10) -> Dict[str, Any]:
         """
