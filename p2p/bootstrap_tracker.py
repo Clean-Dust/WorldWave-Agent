@@ -104,6 +104,23 @@ class Handler(BaseHTTPRequestHandler):
                 "node_id": "tracker",
             })
 
+        if path.startswith("/p2p/whois/"):
+            nid = path[len("/p2p/whois/"):]
+            peer = peers.get(nid)
+            if peer:
+                now = time.time()
+                ago = int(now - peer.get("last_seen", now))
+                return self._json({
+                    "found": True,
+                    "node_id": peer["node_id"],
+                    "address": peer["address"],
+                    "port": peer["port"],
+                    "version": peer.get("version", ""),
+                    "last_seen_seconds_ago": ago,
+                    "status": "online" if ago < PEER_TIMEOUT else "offline",
+                })
+            return self._json({"found": False, "node_id": nid}, 404)
+
         if path == "/p2p/stats":
             now = time.time()
             active = sum(1 for p in peers.values() if now - p.get("last_seen", 0) < PEER_TIMEOUT)

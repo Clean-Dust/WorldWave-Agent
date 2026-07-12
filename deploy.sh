@@ -9,9 +9,9 @@
 #
 #  Or local:
 #    bash deploy.sh
-#
+# ============================================================
 #  Supports: Linux (Ubuntu/Debian), macOS, WSL2
-#  Requires: Python 3.10+, git
+#  Zero manual setup — auto-installs Python + Git if missing
 # ============================================================
 set -euo pipefail
 
@@ -38,6 +38,14 @@ warn()  { echo -e "${YELLOW}  ⚠${NC} $1"; }
 err()   { echo -e "${RED}  ✗${NC} $1"; }
 step()  { echo -e "\n${BOLD}${CYAN}══ $1 ══${NC}\n"; }
 
+# ── OS detection ──
+case "$(uname -s)" in
+    Linux)  OS="linux" ;;
+    Darwin) OS="darwin" ;;
+    MINGW*|MSYS*|CYGWIN*) OS="windows" ;;
+    *)      OS="unknown" ;;
+esac
+
 # ── Banner ──
 cat << 'BANNER'
 
@@ -52,40 +60,79 @@ cat << 'BANNER'
 BANNER
 
 # ═══════════════════════════════════════════════════════════
-#  1. Pre-flight Checks
+#  0. Auto-install missing system deps
 # ═══════════════════════════════════════════════════════════
-step "1/6  Pre-flight Checks"
-
-# Python
-if ! command -v "$PYTHON" &>/dev/null; then
-    err "Python 3 not found. Install Python 3.10+ and retry."
-    echo "    Ubuntu: sudo apt install python3 python3-pip python3-venv"
-    echo "    macOS:  brew install python3"
-    exit 1
-fi
-PY_VER=$("$PYTHON" --version 2>&1 | grep -oP '\d+\.\d+' | head -1 || echo "0.0")
-PY_MAJOR=$(echo "$PY_VER" | cut -d. -f1)
-PY_MINOR=$(echo "$PY_VER" | cut -d. -f2)
-if [ "$PY_MAJOR" -lt 3 ] || { [ "$PY_MAJOR" -eq 3 ] && [ "$PY_MINOR" -lt 10 ]; }; then
-    err "Need Python 3.10+ (have $PY_VER)"
-    exit 1
-fi
-ok "Python $PY_VER"
+NEED_SUDO=""
+MISSING_PKGS=""
 
 # Git
 if ! command -v git &>/dev/null; then
-    err "Git not found. Install git and retry."
-    exit 1
+    case "$OS" in
+        linux)  MISSING_PKGS="$MISSING_PKGS git" ;;
+        darwin) MISSING_PKGS="$MISSING_PKGS git" ;;  # brew handles below
+        *)      warn "Git not found. Install it manually: https://git-scm.com" ;;
+    esac
 fi
-ok "Git $(git --version 2>&1 | grep -oP '\d+\.\d+\.\d+' || echo 'ok')"
 
-# OS
-case "$(uname -s)" in
-    Linux)  OS="linux" ;;
-    Darwin) OS="darwin" ;;
-    MINGW*|MSYS*|CYGWIN*) OS="windows" ;;
-    *)      OS="unknown" ;;
-esac
+# Python 3
+HAVE_PY=false
+if command -v python3 &>/dev/null; then
+    PY_VER=$(python3 --version 2>&1 | grep -oP '\d+\.\d+' | head -1 || echo "0.0")
+    PY_MJ=$(echo "$PY_VER" | cut -d. -f1)
+    PY_MN=$(echo "$PY_VER" | cut -d. -f2)
+    if [ "$PY_MJ" -ge 3 ] && [ "$PY_MN" -ge 10 ]; then
+        HAVE_PY=true
+    fi
+fi
+if ! $HAVE_PY; then
+    case "$OS" in
+        linux)  MISSING_PKGS="$MISSING_PKGS python3 python3-pip python3-venv" ;;
+        darwin) MISSING_PKGS="$MISSING_PKGS python3" ;;
+        *)      warn "Python 3.10+ not found. Install it manually: https://python.org" ;;
+    esac
+fi
+
+# Install missing packages
+if [ -n "$MISSING_PKGS" ]; then
+    step "0/6  Installing System Dependencies"
+    echo -e "  Missing:${BOLD}$MISSING_PKGS${NC}"
+    echo ""
+    case "$OS" in
+        linux)
+            if command -v sudo &>/dev/null && [ "$(id -u)" != "0" ]; then
+                NEED_SUDO="sudo"
+            fi
+            info "Running: $NEED_SUDO apt update && $NEED_SUDO apt install -y$MISSING_PKGS"
+            echo ""
+            $NEED_SUDO apt-get update -qq 2>/dev/null || true
+            $NEED_SUDO apt-get install -y -qq $MISSING_PKGS 2>&1 | tail -3
+            ;;
+        darwin)
+            if ! command -v brew &>/dev/null; then
+                err "Homebrew not found. Install it first:"
+                echo '    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+                exit 1
+            fi
+            # Install missing individually
+            for pkg in $MISSING_PKGS; do
+                info "brew install $pkg..."
+                brew install "$pkg" 2>&1 | tail -1
+            done
+            ;;
+    esac
+    ok "Dependencies installed"
+else
+    step "0/6  System Dependencies"
+    ok "Python 3 + Git already installed"
+fi
+
+# ═══════════════════════════════════════════════════════════
+#  1. Environment Summary
+# ═══════════════════════════════════════════════════════════
+step "1/6  Environment Check"
+
+ok "Python $("$PYTHON" --version 2>&1)"
+ok "Git $(git --version 2>&1 | grep -oP '\d+\.\d+\.\d+' || echo 'ok')"
 ok "System: $(uname -s) / $(uname -m)"
 
 # ═══════════════════════════════════════════════════════════
@@ -199,6 +246,20 @@ echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━
 echo -e "  ${DIM}  Logs below. Press Ctrl+C to stop.${NC}"
 echo -e "  ${DIM}  Health check: curl http://localhost:$WW_PORT/health${NC}"
 echo -e "  ${DIM}  P2P peers:   curl http://localhost:$P2P_PORT/p2p/peers/all${NC}"
+echo ""
+
+# Show node ID (pre-generate if needed)
+NODE_ID_FILE="$HOME/.ww_data/node_id.txt"
+if [ -f "$NODE_ID_FILE" ]; then
+    NID=$(cat "$NODE_ID_FILE")
+else
+    NID=$("$VENV_DIR/bin/python" -c "import uuid; print(uuid.uuid4().hex[:12])")
+    mkdir -p "$(dirname "$NODE_ID_FILE")"
+    echo "$NID" > "$NODE_ID_FILE"
+fi
+echo -e "  ${BOLD}${GREEN}🆔 Your Node ID: ${CYAN}$NID${NC}"
+echo -e "  ${DIM}  Share this with the network admin so they can find you.${NC}"
+echo -e "  ${DIM}  Verify: curl http://tracker.dse-5-star-star.org/p2p/whois/$NID${NC}"
 echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
