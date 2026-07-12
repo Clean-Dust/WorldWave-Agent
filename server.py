@@ -589,7 +589,7 @@ else:
     logger.warning("    Authenticate via Authorization: Bearer <key> or ?api_key=<key>")
     logger.warning("=" * 50)
 
-_API_BYPASS_PATHS = {"/ww/health", "/docs", "/openapi.json", "/redoc", "/ww/webui", "/ww/webui/"}
+_API_BYPASS_PATHS = {"/ww/health", "/docs", "/openapi.json", "/redoc", "/ww/webui", "/ww/webui/", "/ww/mascot/state"}
 
 @app.middleware("http")
 async def api_auth_middleware(request: Request, call_next):
