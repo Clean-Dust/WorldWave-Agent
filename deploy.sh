@@ -285,5 +285,29 @@ echo -e "  ${DIM}  Verify: curl http://tracker.dse-5-star-star.org/p2p/whois/$NI
 echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
+# LLM API Key check
+ENV_FILE="$INSTALL_DIR/.env"
+if [ -z "${DEEPSEEK_API_KEY:-}" ] && [ ! -f "$ENV_FILE" ]; then
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "  ${YELLOW}⚠  LLM API key not configured${NC}"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    echo -e "  ${BOLD}Worldwave needs an LLM API key to respond to messages.${NC}"
+    echo -e "  Without it, your P2P node runs but cannot chat or process tasks."
+    echo ""
+    echo -e "  ${BOLD}${GREEN}→ Get a free key:${NC}  https://platform.deepseek.com"
+    echo ""
+    echo -e "  ${BOLD}Then run:${NC}"
+    echo -e "  ${CYAN}  echo 'DEEPSEEK_API_KEY=sk-your-key-here' > $ENV_FILE${NC}"
+    echo -e "  ${CYAN}  bash <(curl -fsSL https://raw.githubusercontent.com/Clean-Dust/worldwave/main/deploy.sh)${NC}"
+    echo ""
+    echo -e "  ${DIM}Other providers (OpenAI, Groq, Ollama) are also supported."
+    echo -e "  ${DIM}See: https://github.com/Clean-Dust/worldwave#configuration${NC}"
+    echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    warn "LLM key not set — starting in P2P-only mode (no chat responses)"
+    echo ""
+fi
+
 cd "$INSTALL_DIR"
 exec env $ENV "$VENV_DIR/bin/python" server.py
