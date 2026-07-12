@@ -106,12 +106,22 @@ def get_active_peers() -> list:
 
 def register_peer(data: dict) -> dict:
     node_id = data.get("node_id", "")
+    address = data.get("address", "")
+    port = int(data.get("port", 9833))
     if not node_id:
         return {"error": "node_id required"}
+
+    # Deduplicate by (address, port): reinstalls from same machine
+    for existing_id, existing in list(peers.items()):
+        if existing.get("address") == address and existing.get("port") == port:
+            if existing_id != node_id:
+                del peers[existing_id]
+            break
+
     peers[node_id] = {
         "node_id": node_id,
-        "address": data.get("address", ""),
-        "port": int(data.get("port", 9833)),
+        "address": address,
+        "port": port,
         "version": data.get("version", ""),
         "public": bool(data.get("public", False)),
         "height": int(data.get("height", 0)),
