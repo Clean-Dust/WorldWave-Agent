@@ -8,9 +8,12 @@
   <a href="https://github.com/Clean-Dust/worldwave/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python"></a>
   <a href="#"><img src="https://img.shields.io/badge/version-0.8.0-informational" alt="Version"></a>
+  <a href="https://github.com/Clean-Dust/worldwave"><img src="https://img.shields.io/github/stars/Clean-Dust/worldwave?style=social" alt="Stars"></a>
+  <br>
   <a href="#"><img src="https://img.shields.io/badge/tests-584_passed-brightgreen" alt="Tests"></a>
   <a href="#"><img src="https://img.shields.io/badge/tools-192-orange" alt="Tools"></a>
   <a href="#"><img src="https://img.shields.io/badge/modules-213-blueviolet" alt="Modules"></a>
+  <a href="#"><img src="https://img.shields.io/badge/platforms-13-lightgrey" alt="Platforms"></a>
 </p>
 
 <p align="center">
@@ -39,52 +42,13 @@ Every AI agent framework today (Claude Code, Codex, OpenClaw, Hermes) is session
 
 Currently serving 13 messaging platforms, 192 tools across 16 categories, with P2P node gossip in active testing.
 
+<p align="center">
+  <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3MjAiIGhlaWdodD0iNTYwIiB2aWV3Qm94PSIwIDAgNzIwIDU2MCI+PHJlY3Qgd2lkdGg9IjcyMCIgaGVpZ2h0PSI1NjAiIGZpbGw9IiMxYTFhMmUiIHJ4PSI4Ii8+PHRleHQgeD0iMzYwIiB5PSIzMCIgZmlsbD0iIzg4ODhhYSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMyIgdGV4dC1hbmNob3I9Im1pZGRsZSI+V09STERXQVZFIEFSQ0hJVEVDVFVSRTwvdGV4dD48IS0tIFBsYXRmb3JtIExheWVyIC0tPjxyZWN0IHg9IjYwIiB5PSI0NSIgd2lkdGg9IjYwMCIgaGVpZ2h0PSI2MCIgZmlsbD0iIzJkMmQzYSIgc3Ryb2tlPSIjNDg0ODU4IiBzdHJva2Utd2lkdGg9IjEiIHJ4PSI0Ii8+PHRleHQgeD0iMzYwIiB5PSI2NSIgZmlsbD0iI2NjY2NkZCIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMiIgdGV4dC1hbmNob3I9Im1pZGRsZSI+UGxhdGZvcm0gTGF5ZXI8L3RleHQ+PHRleHQgeD0iMzYwIiB5PSI4NSIgZmlsbD0iIzc3NzdhYSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMCIgdGV4dC1hbmNob3I9Im1pZGRsZSI+VGVybWluYWwgfCBUZWxlZ3JhbSB8IEhUVFAgfCBEaXNjb3JkIHwgRmVpc2h1IHwgU2xhY2sgfCBTaWduYWwgfCBXZUNoYXQgfCA4IG1vcmU8L3RleHQ+PCEtLSBBcnJvdyBQbGF0Zm9ybSAtPiBJZGVudGl0eSAtLT48bGluZSB4MT0iMzYwIiB5MT0iMTA1IiB4Mj0iMzYwIiB5Mj0iMTMwIiBzdHJva2U9IiM2MGE1ZmEiIHN0cm9rZS13aWR0aD0iMiIvPjxwb2x5Z29uIHBvaW50cz0iMzU1LDEyNSAzNjAsMTM1IDM2NSwxMjUiIGZpbGw9IiM2MGE1ZmEiLz48IS0tIElkZW50aXR5IFJlc29sdmVyIC0tPjxyZWN0IHg9IjE2MCIgeT0iMTM1IiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjU1IiBmaWxsPSIjMmQyZDNhIiBzdHJva2U9IiM2MGE1ZmEiIHN0cm9rZS13aWR0aD0iMSIgcng9IjQiLz48dGV4dCB4PSIzNjAiIHk9IjE1NSIgZmlsbD0iIzYwYTVmYSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMiIgdGV4dC1hbmNob3I9Im1pZGRsZSI+SWRlbnRpdHlSZXNvbHZlcjwvdGV4dD48dGV4dCB4PSIzNjAiIHk9IjE3NSIgZmlsbD0iIzc3NzdhYSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMCIgdGV4dC1hbmNob3I9Im1pZGRsZSI+YWxsIHBsYXRmb3JtIElEcyDihpIgc2luZ2xlIGVudGl0eV9pZCAoU1FMaXRlLCBhdXRvLWNyZWF0ZSk8L3RleHQ+PCEtLSBBcnJvdyBJZGVudGl0eSAtPiBFbnRpdHkgU3RhdGUgLS0+PGxpbmUgeDE9IjM2MCIgeTE9IjE5MCIgeDI9IjM2MCIgeTI9IjIxNSIgc3Ryb2tlPSIjZmZiYjMzIiBzdHJva2Utd2lkdGg9IjIiLz48cG9seWdvbiBwb2ludHM9IjM1NSwyMTAgMzYwLDIyMCAzNjUsMjEwIiBmaWxsPSIjZmZiYjMzIi8+PCEtLSBFbnRpdHkgU3RhdGUgTWFjaGluZSAtLT48cmVjdCB4PSIxNDAiIHk9IjIyMCIgd2lkdGg9IjQ0MCIgaGVpZ2h0PSI4NSIgZmlsbD0iIzJkMmQzYSIgc3Ryb2tlPSIjZmZiYjMzIiBzdHJva2Utd2lkdGg9IjEiIHJ4PSI0Ii8+PHRleHQgeD0iMzYwIiB5PSIyNDAiIGZpbGw9IiNmZmJiMzMiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iMTIiIHRleHQtYW5jaG9yPSJtaWRkbGUiPkVudGl0eSBTdGF0ZSBNYWNoaW5lPC90ZXh0PjxyZWN0IHg9IjE1NSIgeT0iMjUwIiB3aWR0aD0iNDEwIiBoZWlnaHQ9IjQ1IiBmaWxsPSIjMWEyYjNhIiByeD0iMyIvPjx0ZXh0IHg9IjE2NSIgeT0iMjY2IiBmaWxsPSIjYWFhYWJiIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjEwIj53b3JraW5nX21lbW9yeSAoYWdlbnQgY2FuIHNlbGYtZWRpdCkgfCBwcmVmZXJlbmNlczwvdGV4dD48dGV4dCB4PSIxNjUiIHk9IjI4NCIgZmlsbD0iI2FhYWFiYiIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMCI+bGFzdF9jb250ZXh0IHwgYWN0aXZlX2dvYWwgfCBoeWRyYXRlIOKGkiBwZXJzaXN0IOKGkiBzbGVlcDwvdGV4dD48IS0tIEFycm93IEVudGl0eSAtPiBTcGlyYWwgLS0+PGxpbmUgeDE9IjM2MCIgeTE9IjMwNSIgeDI9IjM2MCIgeTI9IjMzMCIgc3Ryb2tlPSIjZmY2YjZiIiBzdHJva2Utd2lkdGg9IjIiLz48cG9seWdvbiBwb2ludHM9IjM1NSwzMjUgMzYwLDMzNSAzNjUsMzI1IiBmaWxsPSIjZmY2YjZiIi8+PCEtLSBTcGlyYWwgTG9vcCAtLT48cmVjdCB4PSIxMDAiIHk9IjMzNSIgd2lkdGg9IjUyMCIgaGVpZ2h0PSI4MCIgZmlsbD0iIzJkMmQzYSIgc3Ryb2tlPSIjZmY2YjZiIiBzdHJva2Utd2lkdGg9IjEiIHJ4PSI0Ii8+PHRleHQgeD0iMzYwIiB5PSIzNTUiIGZpbGw9IiNmZjZiNmIiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iMTIiIHRleHQtYW5jaG9yPSJtaWRkbGUiPlNwaXJhbCBDb2duaXRpdmUgTG9vcCAoNyBwaGFzZSwgTExNLWRyaXZlbik8L3RleHQ+PHRleHQgeD0iMzYwIiB5PSIzNzgiIGZpbGw9IiNjY2NjZGQiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iMTAiIHRleHQtYW5jaG9yPSJtaWRkbGUiPlBFUkNFSVZFIOKGkiBSRUNBTEwg4oaSIFBMQU4g4oaSIEFDVCDihpIgRVZBTFVBVEUg4oaSIExFQVJOIOKGkiBDT05TT0xJREFURTwvdGV4dD48dGV4dCB4PSIzNjAiIHk9IjM5OCIgZmlsbD0iIzc3NzdhYSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSI5IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5lYWNoIHBoYXNlIGNoZWNrcG9pbnRlZCBmb3IgY3Jhc2ggcmVjb3ZlcnkgfCBhdXRvLWluamVjdHMgZW50aXR5IGNvbnRleHQ8L3RleHQ+PCEtLSBBcnJvd3MgdG8gc3Vic3lzdGVtcyAtLT48bGluZSB4MT0iMzYwIiB5MT0iNDE1IiB4Mj0iMzYwIiB5Mj0iNDM1IiBzdHJva2U9IiM0ODQ4NTgiIHN0cm9rZS13aWR0aD0iMiIvPjwhLS0gU3Vic3lzdGVtcyAtLT48cmVjdCB4PSI0MCIgeT0iNDQwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjY1IiBmaWxsPSIjMmQyZDNhIiBzdHJva2U9IiM0ODQ4NTgiIHN0cm9rZS13aWR0aD0iMSIgcng9IjQiLz48dGV4dCB4PSIxMDAiIHk9IjQ2MCIgZmlsbD0iI2NjY2NkZCIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+TWVtb3J5PC90ZXh0Pjx0ZXh0IHg9IjEwMCIgeT0iNDc4IiBmaWxsPSIjNzc3N2FhIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiPjggbGF5ZXJzPC90ZXh0Pjx0ZXh0IHg9IjEwMCIgeT0iNDk0IiBmaWxsPSIjNzc3N2FhIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiPnRlbXBvcmFsIEtHPC90ZXh0PjxyZWN0IHg9IjE3NSIgd2lkdGg9IjEyMCIgaGVpZ2h0PSI2NSIgeT0iNDQwIiBmaWxsPSIjMmQyZDNhIiBzdHJva2U9IiM0ODQ4NTgiIHN0cm9rZS13aWR0aD0iMSIgcng9IjQiLz48dGV4dCB4PSIyMzUiIHk9IjQ2MCIgZmlsbD0iI2NjY2NkZCIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+VG9vbHM8L3RleHQ+PHRleHQgeD0iMjM1IiB5PSI0NzgiIGZpbGw9IiM3Nzc3YWEiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iOSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+MTkyIHRvb2xzPC90ZXh0Pjx0ZXh0IHg9IjIzNSIgeT0iNDk0IiBmaWxsPSIjNzc3N2FhIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiPjE2IGNhdGVnb3JpZXM8L3RleHQ+PHJlY3QgeD0iMzEwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjY1IiB5PSI0NDAiIGZpbGw9IiMyZDJkM2EiIHN0cm9rZT0iIzQ4NDg1OCIgc3Ryb2tlLXdpZHRoPSIxIiByeD0iNCIvPjx0ZXh0IHg9IjM3MCIgeT0iNDYwIiBmaWxsPSIjY2NjY2RkIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjExIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5TdWJjb25zY2lvdXM8L3RleHQ+PHRleHQgeD0iMzcwIiB5PSI0NzgiIGZpbGw9IiM3Nzc3YWEiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iOSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+bG9jYWwgTUw8L3RleHQ+PHRleHQgeD0iMzcwIiB5PSI0OTQiIGZpbGw9IiM3Nzc3YWEiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iOSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+NzAwIEtCIE5OPC90ZXh0PjxyZWN0IHg9IjQ0NSIgd2lkdGg9IjEyMCIgaGVpZ2h0PSI2NSIgeT0iNDQwIiBmaWxsPSIjMmQyZDNhIiBzdHJva2U9IiM0ODQ4NTgiIHN0cm9rZS13aWR0aD0iMSIgcng9IjQiLz48dGV4dCB4PSI1MDUiIHk9IjQ2MCIgZmlsbD0iI2NjY2NkZCIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+UDJQPC90ZXh0Pjx0ZXh0IHg9IjUwNSIgeT0iNDc4IiBmaWxsPSIjNzc3N2FhIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiPmdvc3NpcDwvdGV4dD48dGV4dCB4PSI1MDUiIHk9IjQ5NCIgZmlsbD0iIzc3NzdhYSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSI5IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5NZXJrbGUgY2hhaW48L3RleHQ+PHJlY3QgeD0iNTgwIiB3aWR0aD0iMTAwIiBoZWlnaHQ9IjY1IiB5PSI0NDAiIGZpbGw9IiMyZDJkM2EiIHN0cm9rZT0iIzQ4NDg1OCIgc3Ryb2tlLXdpZHRoPSIxIiByeD0iNCIvPjx0ZXh0IHg9IjYzMCIgeT0iNDYwIiBmaWxsPSIjY2NjY2RkIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjExIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5Db2Rpbmc8L3RleHQ+PHRleHQgeD0iNjMwIiB5PSI0NzgiIGZpbGw9IiM3Nzc3YWEiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iOSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+ZGVmZW5zaXZlPC90ZXh0Pjx0ZXh0IHg9IjYzMCIgeT0iNDk0IiBmaWxsPSIjNzc3N2FhIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiPmVkaXQgKyBBU1Q8L3RleHQ+PHRleHQgeD0iMzYwIiB5PSI1MzAiIGZpbGw9IiM4ODg4YWEiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iOSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+wr0gT1MgSW50ZXJmYWNlIHwgwr0gTENMIEludGVyZmFjZSB8IMK9IEhUVFAgQVBJIHwgwr0gV2ViIFVJIHwgwr0gTXVsdGktcGxhdGZvcm0gR2F0ZXdheTwvdGV4dD48L3N2Zz4=" alt="Architecture" width="700">
+</p>
+
 ### Architecture
 
-```
-                    ┌─────────────────────────────┐
-                    │       Platform Layer          │
-                    │  Terminal │ Telegram │ HTTP   │
-                    │  Discord  │  Feishu  │ Slack  │
-                    │  Signal   │  WeChat  │ 更多…  │
-                    └────────────┬────────────────┘
-                                 ▼
-                    ┌─────────────────────────────┐
-                    │     IdentityResolver         │
-                    │  all platform IDs → entity_id │
-                    │  SQLite, auto-create on first │
-                    │  contact from any platform    │
-                    └────────────┬────────────────┘
-                                 ▼
-                    ┌─────────────────────────────┐
-                    │   Entity State Machine        │
-                    │  ┌───────────────────────┐   │
-                    │  │ working_memory (agent  │   │
-                    │  │ can self-edit)         │   │
-                    │  │ preferences            │   │
-                    │  │ last_context summary   │   │
-                    │  │ active_goal            │   │
-                    │  └───────────────────────┘   │
-                    │  hydrate ←→ persist ←→ sleep │
-                    └────────────┬────────────────┘
-                                 ▼
-                    ┌─────────────────────────────┐
-                    │   Spiral Cognitive Loop       │
-                    │  PERCEIVE → RECALL → PLAN    │
-                    │    → ACT → EVALUATE           │
-                    │    → LEARN → CONSOLIDATE      │
-                    │  (7 phase, LLM-driven)        │
-                    └────────────┬────────────────┘
-                                 ▼
-        ┌───────────┬───────────┼───────────┬───────────┐
-        ▼           ▼           ▼           ▼           ▼
-   ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
-   │ Memory  │ │Tools 192│ │Subcon-  │ │P2P Net  │ │Coding   │
-   │ 8-layer │ │16 cats  │ │scious   │ │Federated│ │Engine   │
-   │ w/tempo-│ │Auto-    │ │Local ML │ │Gossip   │ │Defensive│
-   │ ral KG  │ │registry │ │700KB NN │ │Merkle   │ │Edit+AST │
-   └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘
-```
+The diagram above shows the layered architecture: Platform Layer → IdentityResolver → Entity State Machine → Spiral Cognitive Loop → subsystems.
 
 ### Demo: cross-platform continuity
 
@@ -226,6 +190,15 @@ For bug reports and feature requests, open an issue. For code contributions, ple
 
 MIT — see [LICENSE](LICENSE).
 
+<br>
+
+<p align="center">
+  <b>Like the idea of a persistent cognitive entity?</b><br>
+  <a href="https://github.com/Clean-Dust/worldwave">⭐ Star the repo</a> &nbsp;·&nbsp;
+  <a href="https://github.com/Clean-Dust/worldwave/issues">🐛 Report a bug</a> &nbsp;·&nbsp;
+  <a href="https://github.com/Clean-Dust/worldwave/fork">🍴 Fork & contribute</a>
+</p>
+
 ---
 
 <h2 id="chinese">Worldwave · 简体中文</h2>
@@ -247,51 +220,13 @@ MIT — see [LICENSE](LICENSE).
 
 目前已接入 13 个即时通讯平台，192 个工具覆盖 16 个类别，P2P 节点 gossip 正在测试中。
 
+<p align="center">
+  <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI3MjAiIGhlaWdodD0iNTYwIiB2aWV3Qm94PSIwIDAgNzIwIDU2MCI+PHJlY3Qgd2lkdGg9IjcyMCIgaGVpZ2h0PSI1NjAiIGZpbGw9IiMxYTFhMmUiIHJ4PSI4Ii8+PHRleHQgeD0iMzYwIiB5PSIzMCIgZmlsbD0iIzg4ODhhYSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMyIgdGV4dC1hbmNob3I9Im1pZGRsZSI+V09STERXQVZFIEFSQ0hJVEVDVFVSRTwvdGV4dD48IS0tIFBsYXRmb3JtIExheWVyIC0tPjxyZWN0IHg9IjYwIiB5PSI0NSIgd2lkdGg9IjYwMCIgaGVpZ2h0PSI2MCIgZmlsbD0iIzJkMmQzYSIgc3Ryb2tlPSIjNDg0ODU4IiBzdHJva2Utd2lkdGg9IjEiIHJ4PSI0Ii8+PHRleHQgeD0iMzYwIiB5PSI2NSIgZmlsbD0iI2NjY2NkZCIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMiIgdGV4dC1hbmNob3I9Im1pZGRsZSI+UGxhdGZvcm0gTGF5ZXI8L3RleHQ+PHRleHQgeD0iMzYwIiB5PSI4NSIgZmlsbD0iIzc3NzdhYSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMCIgdGV4dC1hbmNob3I9Im1pZGRsZSI+VGVybWluYWwgfCBUZWxlZ3JhbSB8IEhUVFAgfCBEaXNjb3JkIHwgRmVpc2h1IHwgU2xhY2sgfCBTaWduYWwgfCBXZUNoYXQgfCA4IG1vcmU8L3RleHQ+PCEtLSBBcnJvdyBQbGF0Zm9ybSAtPiBJZGVudGl0eSAtLT48bGluZSB4MT0iMzYwIiB5MT0iMTA1IiB4Mj0iMzYwIiB5Mj0iMTMwIiBzdHJva2U9IiM2MGE1ZmEiIHN0cm9rZS13aWR0aD0iMiIvPjxwb2x5Z29uIHBvaW50cz0iMzU1LDEyNSAzNjAsMTM1IDM2NSwxMjUiIGZpbGw9IiM2MGE1ZmEiLz48IS0tIElkZW50aXR5IFJlc29sdmVyIC0tPjxyZWN0IHg9IjE2MCIgeT0iMTM1IiB3aWR0aD0iNDAwIiBoZWlnaHQ9IjU1IiBmaWxsPSIjMmQyZDNhIiBzdHJva2U9IiM2MGE1ZmEiIHN0cm9rZS13aWR0aD0iMSIgcng9IjQiLz48dGV4dCB4PSIzNjAiIHk9IjE1NSIgZmlsbD0iIzYwYTVmYSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMiIgdGV4dC1hbmNob3I9Im1pZGRsZSI+SWRlbnRpdHlSZXNvbHZlcjwvdGV4dD48dGV4dCB4PSIzNjAiIHk9IjE3NSIgZmlsbD0iIzc3NzdhYSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMCIgdGV4dC1hbmNob3I9Im1pZGRsZSI+YWxsIHBsYXRmb3JtIElEcyDihpIgc2luZ2xlIGVudGl0eV9pZCAoU1FMaXRlLCBhdXRvLWNyZWF0ZSk8L3RleHQ+PCEtLSBBcnJvdyBJZGVudGl0eSAtPiBFbnRpdHkgU3RhdGUgLS0+PGxpbmUgeDE9IjM2MCIgeTE9IjE5MCIgeDI9IjM2MCIgeTI9IjIxNSIgc3Ryb2tlPSIjZmZiYjMzIiBzdHJva2Utd2lkdGg9IjIiLz48cG9seWdvbiBwb2ludHM9IjM1NSwyMTAgMzYwLDIyMCAzNjUsMjEwIiBmaWxsPSIjZmZiYjMzIi8+PCEtLSBFbnRpdHkgU3RhdGUgTWFjaGluZSAtLT48cmVjdCB4PSIxNDAiIHk9IjIyMCIgd2lkdGg9IjQ0MCIgaGVpZ2h0PSI4NSIgZmlsbD0iIzJkMmQzYSIgc3Ryb2tlPSIjZmZiYjMzIiBzdHJva2Utd2lkdGg9IjEiIHJ4PSI0Ii8+PHRleHQgeD0iMzYwIiB5PSIyNDAiIGZpbGw9IiNmZmJiMzMiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iMTIiIHRleHQtYW5jaG9yPSJtaWRkbGUiPkVudGl0eSBTdGF0ZSBNYWNoaW5lPC90ZXh0PjxyZWN0IHg9IjE1NSIgeT0iMjUwIiB3aWR0aD0iNDEwIiBoZWlnaHQ9IjQ1IiBmaWxsPSIjMWEyYjNhIiByeD0iMyIvPjx0ZXh0IHg9IjE2NSIgeT0iMjY2IiBmaWxsPSIjYWFhYWJiIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjEwIj53b3JraW5nX21lbW9yeSAoYWdlbnQgY2FuIHNlbGYtZWRpdCkgfCBwcmVmZXJlbmNlczwvdGV4dD48dGV4dCB4PSIxNjUiIHk9IjI4NCIgZmlsbD0iI2FhYWFiYiIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMCI+bGFzdF9jb250ZXh0IHwgYWN0aXZlX2dvYWwgfCBoeWRyYXRlIOKGkiBwZXJzaXN0IOKGkiBzbGVlcDwvdGV4dD48IS0tIEFycm93IEVudGl0eSAtPiBTcGlyYWwgLS0+PGxpbmUgeDE9IjM2MCIgeTE9IjMwNSIgeDI9IjM2MCIgeTI9IjMzMCIgc3Ryb2tlPSIjZmY2YjZiIiBzdHJva2Utd2lkdGg9IjIiLz48cG9seWdvbiBwb2ludHM9IjM1NSwzMjUgMzYwLDMzNSAzNjUsMzI1IiBmaWxsPSIjZmY2YjZiIi8+PCEtLSBTcGlyYWwgTG9vcCAtLT48cmVjdCB4PSIxMDAiIHk9IjMzNSIgd2lkdGg9IjUyMCIgaGVpZ2h0PSI4MCIgZmlsbD0iIzJkMmQzYSIgc3Ryb2tlPSIjZmY2YjZiIiBzdHJva2Utd2lkdGg9IjEiIHJ4PSI0Ii8+PHRleHQgeD0iMzYwIiB5PSIzNTUiIGZpbGw9IiNmZjZiNmIiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iMTIiIHRleHQtYW5jaG9yPSJtaWRkbGUiPlNwaXJhbCBDb2duaXRpdmUgTG9vcCAoNyBwaGFzZSwgTExNLWRyaXZlbik8L3RleHQ+PHRleHQgeD0iMzYwIiB5PSIzNzgiIGZpbGw9IiNjY2NjZGQiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iMTAiIHRleHQtYW5jaG9yPSJtaWRkbGUiPlBFUkNFSVZFIOKGkiBSRUNBTEwg4oaSIFBMQU4g4oaSIEFDVCDihpIgRVZBTFVBVEUg4oaSIExFQVJOIOKGkiBDT05TT0xJREFURTwvdGV4dD48dGV4dCB4PSIzNjAiIHk9IjM5OCIgZmlsbD0iIzc3NzdhYSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSI5IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5lYWNoIHBoYXNlIGNoZWNrcG9pbnRlZCBmb3IgY3Jhc2ggcmVjb3ZlcnkgfCBhdXRvLWluamVjdHMgZW50aXR5IGNvbnRleHQ8L3RleHQ+PCEtLSBBcnJvd3MgdG8gc3Vic3lzdGVtcyAtLT48bGluZSB4MT0iMzYwIiB5MT0iNDE1IiB4Mj0iMzYwIiB5Mj0iNDM1IiBzdHJva2U9IiM0ODQ4NTgiIHN0cm9rZS13aWR0aD0iMiIvPjwhLS0gU3Vic3lzdGVtcyAtLT48cmVjdCB4PSI0MCIgeT0iNDQwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjY1IiBmaWxsPSIjMmQyZDNhIiBzdHJva2U9IiM0ODQ4NTgiIHN0cm9rZS13aWR0aD0iMSIgcng9IjQiLz48dGV4dCB4PSIxMDAiIHk9IjQ2MCIgZmlsbD0iI2NjY2NkZCIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+TWVtb3J5PC90ZXh0Pjx0ZXh0IHg9IjEwMCIgeT0iNDc4IiBmaWxsPSIjNzc3N2FhIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiPjggbGF5ZXJzPC90ZXh0Pjx0ZXh0IHg9IjEwMCIgeT0iNDk0IiBmaWxsPSIjNzc3N2FhIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiPnRlbXBvcmFsIEtHPC90ZXh0PjxyZWN0IHg9IjE3NSIgd2lkdGg9IjEyMCIgaGVpZ2h0PSI2NSIgeT0iNDQwIiBmaWxsPSIjMmQyZDNhIiBzdHJva2U9IiM0ODQ4NTgiIHN0cm9rZS13aWR0aD0iMSIgcng9IjQiLz48dGV4dCB4PSIyMzUiIHk9IjQ2MCIgZmlsbD0iI2NjY2NkZCIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+VG9vbHM8L3RleHQ+PHRleHQgeD0iMjM1IiB5PSI0NzgiIGZpbGw9IiM3Nzc3YWEiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iOSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+MTkyIHRvb2xzPC90ZXh0Pjx0ZXh0IHg9IjIzNSIgeT0iNDk0IiBmaWxsPSIjNzc3N2FhIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiPjE2IGNhdGVnb3JpZXM8L3RleHQ+PHJlY3QgeD0iMzEwIiB3aWR0aD0iMTIwIiBoZWlnaHQ9IjY1IiB5PSI0NDAiIGZpbGw9IiMyZDJkM2EiIHN0cm9rZT0iIzQ4NDg1OCIgc3Ryb2tlLXdpZHRoPSIxIiByeD0iNCIvPjx0ZXh0IHg9IjM3MCIgeT0iNDYwIiBmaWxsPSIjY2NjY2RkIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjExIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5TdWJjb25zY2lvdXM8L3RleHQ+PHRleHQgeD0iMzcwIiB5PSI0NzgiIGZpbGw9IiM3Nzc3YWEiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iOSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+bG9jYWwgTUw8L3RleHQ+PHRleHQgeD0iMzcwIiB5PSI0OTQiIGZpbGw9IiM3Nzc3YWEiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iOSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+NzAwIEtCIE5OPC90ZXh0PjxyZWN0IHg9IjQ0NSIgd2lkdGg9IjEyMCIgaGVpZ2h0PSI2NSIgeT0iNDQwIiBmaWxsPSIjMmQyZDNhIiBzdHJva2U9IiM0ODQ4NTgiIHN0cm9rZS13aWR0aD0iMSIgcng9IjQiLz48dGV4dCB4PSI1MDUiIHk9IjQ2MCIgZmlsbD0iI2NjY2NkZCIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSIxMSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+UDJQPC90ZXh0Pjx0ZXh0IHg9IjUwNSIgeT0iNDc4IiBmaWxsPSIjNzc3N2FhIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiPmdvc3NpcDwvdGV4dD48dGV4dCB4PSI1MDUiIHk9IjQ5NCIgZmlsbD0iIzc3NzdhYSIgZm9udC1mYW1pbHk9Im1vbm9zcGFjZSIgZm9udC1zaXplPSI5IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5NZXJrbGUgY2hhaW48L3RleHQ+PHJlY3QgeD0iNTgwIiB3aWR0aD0iMTAwIiBoZWlnaHQ9IjY1IiB5PSI0NDAiIGZpbGw9IiMyZDJkM2EiIHN0cm9rZT0iIzQ4NDg1OCIgc3Ryb2tlLXdpZHRoPSIxIiByeD0iNCIvPjx0ZXh0IHg9IjYzMCIgeT0iNDYwIiBmaWxsPSIjY2NjY2RkIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjExIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5Db2Rpbmc8L3RleHQ+PHRleHQgeD0iNjMwIiB5PSI0NzgiIGZpbGw9IiM3Nzc3YWEiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iOSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+ZGVmZW5zaXZlPC90ZXh0Pjx0ZXh0IHg9IjYzMCIgeT0iNDk0IiBmaWxsPSIjNzc3N2FhIiBmb250LWZhbWlseT0ibW9ub3NwYWNlIiBmb250LXNpemU9IjkiIHRleHQtYW5jaG9yPSJtaWRkbGUiPmVkaXQgKyBBU1Q8L3RleHQ+PHRleHQgeD0iMzYwIiB5PSI1MzAiIGZpbGw9IiM4ODg4YWEiIGZvbnQtZmFtaWx5PSJtb25vc3BhY2UiIGZvbnQtc2l6ZT0iOSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+wr0gT1MgSW50ZXJmYWNlIHwgwr0gTENMIEludGVyZmFjZSB8IMK9IEhUVFAgQVBJIHwgwr0gV2ViIFVJIHwgwr0gTXVsdGktcGxhdGZvcm0gR2F0ZXdheTwvdGV4dD48L3N2Zz4=" alt="Architecture" width="700">
+</p>
+
 ### 架构
 
-```
-                    ┌─────────────────────────────┐
-                    │        平台接入层             │
-                    │  终端机 │ Telegram │ HTTP    │
-                    │  Discord│  飞书    │ Slack   │
-                    │  Signal │  微信    │ 更多…   │
-                    └────────────┬────────────────┘
-                                 ▼
-                    ┌─────────────────────────────┐
-                    │     IdentityResolver         │
-                    │  所有平台 ID → entity_id      │
-                    │  SQLite 持久化，首次接触      │
-                    │  任何平台即自动创建实体        │
-                    └────────────┬────────────────┘
-                                 ▼
-                    ┌─────────────────────────────┐
-                    │   Entity State Machine        │
-                    │  ┌───────────────────────┐   │
-                    │  │ working_memory（代理    │   │
-                    │  │ 可自主编辑）            │   │
-                    │  │ preferences 偏好设置    │   │
-                    │  │ last_context 上次摘要   │   │
-                    │  │ active_goal 当前任务    │   │
-                    │  └───────────────────────┘   │
-                    │  载入 ←→ 持久化 ←→ 休眠      │
-                    └────────────┬────────────────┘
-                                 ▼
-                    ┌─────────────────────────────┐
-                    │   螺旋认知循环（7 阶段）       │
-                    │  感知 → 回忆 → 规划           │
-                    │    → 行动 → 评估              │
-                    │    → 学习 → 巩固              │
-                    │  （LLM 驱动，每阶段可检查点）   │
-                    └────────────┬────────────────┘
-                                 ▼
-        ┌───────────┬───────────┼───────────┬───────────┐
-        ▼           ▼           ▼           ▼           ▼
-   ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐
-   │ 记忆系统 │ │192 工具 │ │ 潜意识  │ │ P2P 网络│ │ 编程引擎 │
-   │ 8 层记忆 │ │16 类别  │ │ 本地 ML │ │ 联邦学习│ │ 防御编辑 │
-   │ 时态图谱 │ │自动注册 │ │ 700KB   │ │ Gossip  │ │ AST搜索 │
-   └─────────┘ └─────────┘ └─────────┘ └─────────┘ └─────────┘
-```
+上图展示了分层架构：平台层 → IdentityResolver → Entity State Machine → 螺旋认知循环 → 子系统。
 
 ### 演示：跨平台连续性
 
@@ -432,3 +367,12 @@ pip install -e ".[all]"         # 全部安装
 ### 许可证
 
 MIT — 详见 [LICENSE](LICENSE)。
+
+<br>
+
+<p align="center">
+  <b>喜欢持久认知实体这个理念？</b><br>
+  <a href="https://github.com/Clean-Dust/worldwave">⭐ 给个 Star</a> &nbsp;·&nbsp;
+  <a href="https://github.com/Clean-Dust/worldwave/issues">🐛 报告问题</a> &nbsp;·&nbsp;
+  <a href="https://github.com/Clean-Dust/worldwave/fork">🍴 Fork 参与贡献</a>
+</p>
