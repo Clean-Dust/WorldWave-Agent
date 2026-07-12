@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/Clean-Dust/worldwave/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python"></a>
-  <a href="#"><img src="https://img.shields.io/badge/version-0.9.0-informational" alt="Version"></a>
+  <a href="#"><img src="https://img.shields.io/badge/version-0.5.0-informational" alt="Version"></a>
   <a href="https://github.com/Clean-Dust/worldwave"><img src="https://img.shields.io/github/stars/Clean-Dust/worldwave?style=social" alt="Stars"></a>
   <br>
   <a href="#"><img src="https://img.shields.io/badge/tests-584_passed-brightgreen" alt="Tests"></a>
