@@ -94,7 +94,7 @@ class Worldwave:
         _active_ww_instance = self
 
         self.running = False
-        self.verbose = True
+        self.verbose = os.environ.get("WW_VERBOSE", "").lower() in ("1", "true", "yes")
         self._pending_question = None
         self._wwlog = get_logger()
         self.checkpoint_db = CheckpointDB()
