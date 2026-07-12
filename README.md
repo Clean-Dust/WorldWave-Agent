@@ -27,13 +27,9 @@
 
 A **persistent cognitive entity** framework. One agent, one timeline — regardless of which platform you use to talk to it.
 
-**Claude Code and Codex** are powerful tools with established workflows. But they're session-based: close the window, lose the context. Start a new session, re-explain your project from scratch.
+Worldwave gives your agent a **persistent memory** that survives sessions, a **cross-platform identity** (continue on Telegram what you started in the terminal), and a **cognitive entity** that remembers your projects, preferences, and decisions across days and weeks.
 
-Worldwave works **alongside** them — you don't have to choose.
-
-Worldwave adds what session-based agents are missing: a **persistent memory** that survives sessions, **cross-platform identity** (continue on Telegram what you started in the terminal), and a **cognitive entity** that remembers your projects, preferences, and decisions across days and weeks.
-
-Keep your existing workflow with Claude Code or Codex. Add Worldwave as the persistent layer that remembers everything, coordinates across tools, and keeps your workflow continuous. Use them together — no need to abandon the tools you already rely on.
+Close the terminal, open Telegram — same agent, same context. No re-explaining.
 
 ### What makes this different
 
@@ -182,6 +178,12 @@ pip install -e ".[all]"         # Everything
 | v1.0 | Multi-node P2P auto-discovery end-to-end tested, production deployment guide, benchmark suite | Planned |
 | v1.5 | Public benchmarks vs OpenClaw / Claude Code / Codex, plugin registry, Windows native launcher | Planned |
 
+### Working alongside Claude Code & Codex
+
+**Claude Code and Codex** are powerful tools with established workflows. But they're session-based: close the window, lose the context. Start a new session, re-explain your project from scratch.
+
+Worldwave works **alongside** them — you don't have to choose. Keep your existing workflow. Add Worldwave as the persistent layer that remembers everything, coordinates across tools, and keeps your workflow continuous.
+
 ### Contributing
 
 Areas where help is most needed:
@@ -217,13 +219,9 @@ MIT — see [LICENSE](LICENSE).
 
 一个**持久认知主体**（Persistent Cognitive Entity）框架。无论你从终端、Telegram、飞书还是网页接入，连接的都是同一个实体、同一条时间线。
 
-**Claude Code 和 Codex** 是强大的工具，拥有成熟的用户工作流。但它们基于会话：关闭窗口，上下文消失。开启新会话，你得从头解释一遍项目。
+Worldwave 给你的代理**持久记忆**（跨会话不丢失）、**跨平台统一身份**（在 Telegram 上继续终端未完成的话题）、一个**认知实体**（记住你的项目、偏好和决策，跨天、跨周）。
 
-Worldwave 与它们**并肩工作**——你不需要二选一。
-
-Worldwave 补上了基于会话的代理缺失的能力：**持久记忆**（跨会话不丢失）、**跨平台统一身份**（在 Telegram 上继续终端未完成的话题）、**认知实体**（记住你的项目、偏好和决策，跨天、跨周）。
-
-保持你现有的 Claude Code 或 Codex 工作流。把 Worldwave 加进去，作为记住一切、协调工具、保持工作流连续的持久层。一起用——不需要放弃你已经依赖的工具。
+关了终端，打开 Telegram——同一个代理，同一个上下文。不用重新解释。
 
 ### 为什么不同
 
@@ -371,6 +369,12 @@ pip install -e ".[all]"         # 全部安装
 | v0.9 | 多智能体协作、技能演化、自主排程、可观测性、审批门控、用户建模 | ✓ 已完成 |
 | v1.0 | 多节点 P2P 自动发现端到端测试、生产部署指南、基准测试套件 | 计划中 |
 | v1.5 | 公开基准测试对比 OpenClaw / Claude Code / Codex、插件注册表、Windows 原生启动器 | 计划中 |
+
+### 与 Claude Code 和 Codex 协同工作
+
+**Claude Code 和 Codex** 是强大的工具，拥有成熟的用户工作流。但它们基于会话：关闭窗口，上下文消失。开启新会话，你得从头解释一遍项目。
+
+Worldwave 与它们**并肩工作**——你不需要二选一。保持你现有的工作流，把 Worldwave 加进去作为持久层：记住一切、协调工具、保持工作流连续。
 
 ### 参与贡献
 
