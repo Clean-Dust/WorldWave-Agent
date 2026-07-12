@@ -262,6 +262,26 @@ ENV="WW_BOOTSTRAP_URLS=$BOOTSTRAP_URLS"
 ENV="$ENV WW_PORT=$WW_PORT"
 [ -n "$DHT_SEEDS" ] && ENV="$ENV WW_DHT_BOOTSTRAP_NODES=$DHT_SEEDS"
 
+# Auto-detect LLM API key from environment and persist to .env
+ENV_FILE="$INSTALL_DIR/.env"
+if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+    ENV="$ENV DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY"
+    mkdir -p "$(dirname "$ENV_FILE")"
+    if [ ! -f "$ENV_FILE" ]; then
+        echo "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" > "$ENV_FILE"
+    elif ! grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
+        echo "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" >> "$ENV_FILE"
+    fi
+    ok "DEEPSEEK_API_KEY detected from environment"
+else
+    # Check if .env already has it
+    if [ -f "$ENV_FILE" ] && grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
+        KEY_VAL=$(grep "^DEEPSEEK_API_KEY=" "$ENV_FILE" | head -1)
+        ENV="$ENV $KEY_VAL"
+        ok "DEEPSEEK_API_KEY loaded from $ENV_FILE"
+    fi
+fi
+
 info "Launching server..."
 echo ""
 echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -286,7 +306,6 @@ echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━
 echo ""
 
 # LLM API Key check
-ENV_FILE="$INSTALL_DIR/.env"
 if [ -z "${DEEPSEEK_API_KEY:-}" ] && [ ! -f "$ENV_FILE" ]; then
     echo -e "  ${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "  ${YELLOW}⚠  LLM API key not configured${NC}"
