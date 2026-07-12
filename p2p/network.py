@@ -540,13 +540,11 @@ class GlobalP2PNetwork:
     def _bootstrap_with_tracker(self, tracker_url: str):
         """Register with bootstrap tracker and get peer list."""
         try:
-            import urllib.request
-
             # Register self
             gossip_url = ""
             if self.public_mode and self._my_address:
                 gossip_url = f"http://{self._my_address}:{self.listen_port}"
-            register_data = json.dumps({
+            register_data = {
                 "node_id": self.node_id,
                 "address": self._my_address,
                 "port": self.listen_port,
@@ -554,33 +552,22 @@ class GlobalP2PNetwork:
                 "public": self.public_mode,
                 "height": self.blockchain_height(),
                 "gossip_url": gossip_url,
-            }).encode()
-            req = urllib.request.Request(
-                tracker_url.rstrip("/") + "/p2p/register",
-                data=register_data,
-                headers={
-                    "Content-Type": "application/json",
-                    "User-Agent": "Worldwave-P2P/0.7",
-                },
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                resp_body = json.loads(resp.read().decode())
+            }
+            register_url = tracker_url.rstrip("/") + "/p2p/register"
+            resp_body = self._http_post_url(register_url, register_data)
+            if resp_body:
                 detected_ip = resp_body.get("detected_ip", "")
                 if detected_ip and not self._my_address:
                     self._my_address = detected_ip
                     logger.info(f"📍 Public IP detected from tracker: {detected_ip}")
 
             # get peer list
-            req2 = urllib.request.Request(
-                tracker_url.rstrip("/") + "/p2p/peers",
-                headers={"User-Agent": "Worldwave-P2P/0.7"},
-            )
-            with urllib.request.urlopen(req2, timeout=5) as resp:
-                data = json.loads(resp.read())
-            for pd in data.get("peers", []):
-                if pd.get("node_id") and pd["node_id"] != self.node_id:
-                    self.add_peer(PeerInfo.from_dict(pd))
+            peers_url = tracker_url.rstrip("/") + "/p2p/peers"
+            data = self._http_get_url(peers_url)
+            if data:
+                for pd in data.get("peers", []):
+                    if pd.get("node_id") and pd["node_id"] != self.node_id:
+                        self.add_peer(PeerInfo.from_dict(pd))
 
             logger.info(f"🌍 Bootstrap registered at {tracker_url}: height={self.blockchain_height()}")
         except Exception as e:
@@ -678,12 +665,11 @@ class GlobalP2PNetwork:
         """Pull a payload from known peer."""
         for peer in list(self.peers.values())[:10]:
             try:
-                import urllib.request
                 url = f"http://{peer.address}:{peer.port}/p2p/payload/{cid}"
-                req = urllib.request.Request(url, headers={"User-Agent": "Worldwave-P2P/0.7"})
-                with urllib.request.urlopen(req, timeout=timeout_s) as resp:
-                    raw = resp.read()
-                    return json.loads(raw.decode())
+                import requests
+                resp = requests.get(url, timeout=timeout_s, headers={"User-Agent": self._http_ua})
+                resp.raise_for_status()
+                return resp.json()
             except Exception:
                 continue
         logger.warning(f"Could not pull payload {cid} from any peer")
@@ -761,13 +747,15 @@ class GlobalP2PNetwork:
 
     # ── networktool ──
 
+    _http_ua = "Worldwave-P2P/0.7 (compatible; +https://github.com/Clean-Dust/worldwave)"
+
     def _http_get(self, peer: PeerInfo, path: str) -> Optional[dict]:
         try:
-            import urllib.request
+            import requests
             url = peer.url() + path
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return json.loads(resp.read())
+            resp = requests.get(url, timeout=5, headers={"User-Agent": self._http_ua})
+            resp.raise_for_status()
+            return resp.json()
         except Exception:
             peer.failures += 1
             if peer.failures >= 3:
@@ -776,17 +764,35 @@ class GlobalP2PNetwork:
 
     def _http_post(self, peer: PeerInfo, path: str, data: dict) -> Optional[dict]:
         try:
-            import urllib.request
+            import requests
             url = peer.url() + path
-            payload = json.dumps(data).encode()
-            req = urllib.request.Request(url, data=payload, method="POST")
-            req.add_header("Content-Type", "application/json")
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                return json.loads(resp.read())
+            resp = requests.post(url, json=data, timeout=5, headers={"User-Agent": self._http_ua})
+            resp.raise_for_status()
+            return resp.json()
         except Exception:
             peer.failures += 1
             if peer.failures >= 3:
                 self.remove_peer(peer.node_id)
+            return None
+
+    def _http_get_url(self, url: str) -> Optional[dict]:
+        """GET a raw URL (not a PeerInfo). Returns parsed JSON or None."""
+        try:
+            import requests
+            resp = requests.get(url, timeout=5, headers={"User-Agent": self._http_ua})
+            resp.raise_for_status()
+            return resp.json()
+        except Exception:
+            return None
+
+    def _http_post_url(self, url: str, data: dict) -> Optional[dict]:
+        """POST to a raw URL. Returns parsed JSON or None."""
+        try:
+            import requests
+            resp = requests.post(url, json=data, timeout=5, headers={"User-Agent": self._http_ua})
+            resp.raise_for_status()
+            return resp.json()
+        except Exception:
             return None
 
     def _can_open_port(self, port: int) -> bool:
@@ -802,11 +808,10 @@ class GlobalP2PNetwork:
     def _detect_public_ip(self) -> str:
         """Try to detect public IP (use external service)."""
         try:
-            import urllib.request
-            req = urllib.request.Request("https://api.ipify.org?format=json")
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                data = json.loads(resp.read())
-                return data.get("ip", "")
+            import requests
+            resp = requests.get("https://api.ipify.org?format=json", timeout=3,
+                               headers={"User-Agent": self._http_ua})
+            return resp.json().get("ip", "")
         except Exception:
             return ""
 
