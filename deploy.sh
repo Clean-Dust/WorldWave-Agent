@@ -417,11 +417,28 @@ echo -e "  ${DIM}  Verify: curl http://tracker.dse-5-star-star.org/p2p/whois/$NI
 echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
 
-# LLM API Key check
+# LLM API Key — prompt on first install
 if [ -z "${DEEPSEEK_API_KEY:-}" ] && [ ! -f "$ENV_FILE" ]; then
-    echo -e "  ${YELLOW}⚠  No API key — set one: ww key set sk-xxx${NC}"
-    echo -e "  ${DIM}  Get a free key: https://platform.deepseek.com${NC}"
     echo ""
+    echo -e "  ${BOLD}🔑  Before we start — paste your DeepSeek API key:${NC}"
+    echo -e "  ${DIM}     (get one: https://platform.deepseek.com — free)${NC}"
+    echo ""
+    printf "  ${CYAN}→ ${NC}"
+    read -r USER_KEY
+    if [ -n "$USER_KEY" ]; then
+        mkdir -p "$(dirname "$ENV_FILE")"
+        echo "DEEPSEEK_API_KEY=$USER_KEY" > "$ENV_FILE"
+        DEEPSEEK_API_KEY="$USER_KEY"
+        ENV="$ENV DEEPSEEK_API_KEY=$USER_KEY"
+        echo ""
+        ok "Key saved — change anytime: ww key set sk-xxx"
+        echo ""
+    else
+        echo ""
+        warn "No key entered — starting in P2P-only mode (no chat)"
+        echo -e "  ${DIM}  Set later: ww key set sk-xxx${NC}"
+        echo ""
+    fi
 fi
 
 # Install ww CLI to PATH
