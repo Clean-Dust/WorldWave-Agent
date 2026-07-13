@@ -473,6 +473,11 @@ class Worldwave:
         # ── Process tool calls from response ──
         tool_calls = getattr(resp, 'tool_calls', []) or []
         if not tool_calls:
+            # If goal mentions a registered tool, fall through to full spiral
+            goal_lower = goal.lower()
+            for tname in self.tools.tool_names():
+                if tname in goal_lower:
+                    return None  # Tool needed but LLM didn't call — let full spiral handle
             # LLM returned text only — use as direct response
             return {
                 "status": "completed",
@@ -593,18 +598,14 @@ class Worldwave:
         # Skip reflex arc for image/photo tasks — they need vision tools
         is_image_task = "[Photo received:" in goal or "[Attached image:" in goal or image_path
         if self.config.get("reflex_arc_enabled", True) and not is_image_task:
-            complexity = self._estimate_complexity(goal)
-            last_complexity = complexity  # Save for tracing
-            threshold = self.config.get("reflex_threshold", self.REFLEX_THRESHOLD)
-            if complexity < threshold:
-                self._log(f"## ⚡ Reflex Arc — complexity {complexity:.2f} < {threshold}")
-                self._log("## Goal classified as trivial, taking fast path...")
-                reflex_result = self._reflex_arc_execute(goal)
-                if reflex_result is not None:
-                    self._log(f"## Reflex arc complete: {reflex_result['summary']}")
-                    self.running = False
-                    return reflex_result
-                self._log("## Reflex arc failed, falling through to full spiral...")
+            # Always try reflex arc first — no complexity gating
+            self._log("## ⚡ Reflex Arc — attempting fast path")
+            reflex_result = self._reflex_arc_execute(goal)
+            if reflex_result is not None:
+                self._log(f"## Reflex arc complete: {reflex_result['summary']}")
+                self.running = False
+                return reflex_result
+            self._log("## Reflex arc failed, falling through to full spiral...")
 
         # Create context session
         session_key = self.state.session_id

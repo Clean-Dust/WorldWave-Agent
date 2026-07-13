@@ -104,6 +104,28 @@ class ToolRegistry:
         """List all registered tools."""
         return list(self._tools.values())
 
+    def to_openai_tools(self) -> list:
+        """Convert registered tools to OpenAI function-calling format."""
+        tools = []
+        for t in self._tools.values():
+            params = {"type": "object", "properties": {}, "required": []}
+            if t.parameters:
+                for k, v in t.parameters.items():
+                    if isinstance(v, dict):
+                        params["properties"][k] = v
+                    else:
+                        params["properties"][k] = {"type": "string", "description": str(v)}
+                    params["required"].append(k)
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description[:1024],
+                    "parameters": params,
+                }
+            })
+        return tools
+
     def list_by_category(self, category: str) -> List[ToolDef]:
         """Filter tools by category."""
         return [t for t in self._tools.values() if t.category == category]

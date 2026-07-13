@@ -1,0 +1,1 @@
+/usr/bin/bash: line 10: $'TOOLS:, [x.get(tool,?) for x in a])\nfor x in a:\n    r=x.get(result,{})\n    print(': command not found
