@@ -589,14 +589,6 @@ class Worldwave:
             self._log("## Entity context loaded")
             goal = f"[Entity Context]\n{entity_ctx}\n\n[Current Request]\n{goal}"
 
-        # ── Self-question: direct answer, skip all tools ──
-        if self._is_self_question(goal):
-            self._log("## Self-question detected — direct answer")
-            result = self._direct_self_answer(goal)
-            if result is not None:
-                self.running = False
-                return result
-
         # ── Reflex Arc: fast path for trivially simple tasks ──
         # Skip reflex arc for image/photo tasks — they need vision tools
         is_image_task = "[Photo received:" in goal or "[Attached image:" in goal or image_path
