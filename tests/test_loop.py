@@ -148,7 +148,7 @@ def make_minimal_ww(model="mock/model", persist_dir=None, with_memory=False):
             "context_max_messages": 30,
             "context_max_tokens": 32000,
             "workspace_capacity": 7,
-            "reflex_arc_enabled": True,
+            "reflex_arc_enabled": False,  # default off — reflex arc tests enable explicitly
             "reflex_threshold": 0.15,
         }.get(key, default)
         mock_config.return_value = cfg
@@ -448,6 +448,12 @@ class TestReflexArc:
 
     def test_run_uses_reflex_for_simple_goal(self):
         ww = make_minimal_ww()
+        # Enable reflex arc for this test
+        ww.llm._call.side_effect = None  # clear default side_effect
+        ww.config.get = MagicMock(side_effect=lambda key, default: {
+            "reflex_arc_enabled": True,
+            "reflex_threshold": 0.15,
+        }.get(key, default))
         # Force low complexity
         ww._estimate_complexity = MagicMock(return_value=0.01)
         ww._reflex_arc_execute = MagicMock(return_value={

@@ -35,6 +35,7 @@ class TestIdentity:
         shutil.rmtree(tmp)
 
     def test_sign_and_verify(self):
+        pytest.importorskip("cryptography")
         ident, tmp = make_identity()
         msg = b"hello world"
         sig = ident.sign(msg)
