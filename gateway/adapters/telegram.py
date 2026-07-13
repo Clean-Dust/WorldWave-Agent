@@ -841,6 +841,10 @@ class TelegramAdapter(BaseAdapter):
                 user_id = str(sender.get("id", ""))
                 display_name = sender.get("first_name", sender.get("username", "?"))
 
+                # Skip messages from the bot itself to prevent echo loops
+                if sender.get("is_bot"):
+                    continue
+
                 # ── Voice/audio: bypass @mention, but still check pairing ──
                 has_voice = bool(message.get("voice")) or bool(message.get("audio"))
 
