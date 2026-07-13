@@ -229,8 +229,9 @@ def register_telegram_tools(r):
     """registerall  Telegram toolto  registry. """
 
     r.register_from_def("telegram_verify", "validate Telegram Bot Token is valid, return bot info.",
-        {},
-        "platform")
+        _telegram_verify_handler,
+        parameters={},
+        category="platform")
 
     r.register_from_def("telegram_send", "sendtextmessageto  Telegram group/channel. ",
         _telegram_send_handler,

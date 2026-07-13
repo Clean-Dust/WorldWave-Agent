@@ -365,20 +365,33 @@ class WorldwaveServer:
             status = result.get("status", "?")
             spirals = result.get("spirals_completed", 0)
             
-            # Extract the actual response from the last spiral's respond action
+            # Extract the actual response — check reflex arc first, then spiral
             response_text = ""
             spiral_results = result.get("results", [])
             if spiral_results:
                 last_spiral = spiral_results[-1]
                 actions = last_spiral.get("actions", [])
+                # Reflex arc: check reflex_text (direct LLM response) or tool outputs
                 for a in reversed(actions):
+                    if a.get("tool") == "reflex_text":
+                        response_text = a.get("result", {}).get("output", "")
+                        break
                     if a.get("tool") == "respond":
                         response_text = a.get("result", {}).get("output", "")
                         break
+                # If reflex arc has tool calls but no text output, combine results
+                if not response_text and result.get("reflex"):
+                    parts = []
+                    for a in actions:
+                        out = a.get("result", {}).get("output", "") or a.get("result", {}).get("error", "")
+                        if out:
+                            parts.append(out)
+                    if parts:
+                        response_text = "\n".join(parts)
                 # Fallback: check evaluation summary
                 if not response_text:
                     eval_result = last_spiral.get("evaluation", {})
-                    response_text = eval_result.get("summary", "") or eval_result.get("reason", "") or eval_result.get("response", "")
+                    response_text = eval_result.get("summary", "") or eval_result.get("response", "")
             
             if response_text:
                 return response_text[:1500]

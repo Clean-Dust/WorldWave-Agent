@@ -108,14 +108,28 @@ class ToolRegistry:
         """Convert registered tools to OpenAI function-calling format."""
         tools = []
         for t in self._tools.values():
-            params = {"type": "object", "properties": {}, "required": []}
             if t.parameters:
-                for k, v in t.parameters.items():
-                    if isinstance(v, dict):
-                        params["properties"][k] = v
+                if isinstance(t.parameters, dict):
+                    # If parameters is already a full JSON Schema (has "type" + "properties"),
+                    # pass it through unchanged to avoid double-wrapping.
+                    if "type" in t.parameters and "properties" in t.parameters:
+                        params = t.parameters
                     else:
-                        params["properties"][k] = {"type": "string", "description": str(v)}
-                    params["required"].append(k)
+                        # Flat dict of {param_name: param_schema} — wrap into JSON Schema
+                        params = {"type": "object", "properties": {}, "required": []}
+                        for k, v in t.parameters.items():
+                            if isinstance(v, dict):
+                                params["properties"][k] = v
+                            else:
+                                params["properties"][k] = {"type": "string", "description": str(v)}
+                            params["required"].append(k)
+                else:
+                    # Non-dict parameters — wrap as single string input
+                    params = {"type": "object", "properties": {
+                        "input": {"type": "string", "description": str(t.parameters)}
+                    }}
+            else:
+                params = {"type": "object", "properties": {}, "required": []}
             tools.append({
                 "type": "function",
                 "function": {

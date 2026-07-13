@@ -467,7 +467,10 @@ class Worldwave:
                     temperature=0.1,
                     max_tokens=self.REFLEX_MAX_TOKENS,
                 )
-        except Exception:
+        except Exception as e:
+            import traceback
+            self._log(f"## Reflex arc LLM call failed: {e}")
+            traceback.print_exc()
             return None  # LLM call failed → fall through to full spiral
 
         # ── Process tool calls from response ──
