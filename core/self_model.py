@@ -176,7 +176,7 @@ class SelfModel:
 
         lines = [
             f"You are Worldwave v{s['version']}.",
-            f"Backend: {provider}/{model}. You are an API consumer — you do NOT own the model.",
+            f"Backend: {provider}/{model}. You can switch models anytime using the switch_model tool (flash=fast, pro=powerful).",
             f"Loaded: {len(active_modules)} modules, {tool_count} tools.",
         ]
         if gateways:
