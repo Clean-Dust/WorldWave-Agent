@@ -1086,8 +1086,10 @@ def _memory_store_handler(content: str, category: str = "general",
         return {"success": False, "error": "memory store failed: " + str(e)}
 
 
-def _memory_search_handler(query: str, limit: int = 5) -> Dict:
+def _memory_search_handler(query: str = "", limit: int = 5) -> Dict:
     """Search memory."""
+    if not query:
+        return {"success": False, "error": "missing required parameter: query"}
     try:
         import urllib.request
         payload = json.dumps({"query": query, "limit": limit}).encode()
@@ -1279,8 +1281,10 @@ def _skill_read_handler(name: str) -> Dict:
 
 # ── 12. CONFIG ────────────────────────────────────────
 
-def _config_get_handler(key: str) -> Dict:
+def _config_get_handler(key: str = "") -> Dict:
     """read WW configuration. """
+    if not key:
+        return {"success": False, "error": "missing required parameter: key"}
     config_path = os.path.expanduser("~/.ww_config.json")
     if not os.path.isfile(config_path):
         return {"success": False, "error": "no config file"}
@@ -1294,8 +1298,10 @@ def _config_get_handler(key: str) -> Dict:
         return {"success": False, "error": str(e)}
 
 
-def _config_set_handler(key: str, value: str) -> Dict:
+def _config_set_handler(key: str = "", value: str = "") -> Dict:
     """setting WW configuration. """
+    if not key:
+        return {"success": False, "error": "missing required parameter: key"}
     config_path = os.path.expanduser("~/.ww_config.json")
     try:
         config = {}

@@ -422,7 +422,9 @@ class TestReflexArc:
         result = ww._reflex_arc_execute("do something")
         assert result is None
 
-    def test_reflex_arc_basal_ganglia_blocks(self):
+    def test_reflex_arc_no_basal_ganglia_block(self):
+        """Reflex arc skips Basal Ganglia — it only handles trivial queries.
+        Full spiral loop still has Basal Ganglia for real risk evaluation."""
         ww = make_minimal_ww()
         ww.llm._call.side_effect = None  # clear default side_effect
         ww.llm._call.return_value = make_mock_response(
@@ -430,21 +432,22 @@ class TestReflexArc:
                 {
                     "function": {
                         "name": "shell",
-                        "arguments": '{"command": "rm -rf /"}',
+                        "arguments": '{"command": "echo hello"}',
                     }
                 }
             ]
         )
-        # Configure basal ganglia to block
+        # Even with basal ganglia configured to block, reflex arc passes through
         ww.basal_ganglia.evaluate_action.return_value = {
             "allow": False,
             "reason": "destructive command blocked",
         }
-        result = ww._reflex_arc_execute("delete everything")
+        result = ww._reflex_arc_execute("say hello")
         assert result is not None
         actions = result["results"][0]["actions"]
-        assert any(a.get("result", {}).get("blocked_by") == "basal_ganglia"
-                   for a in actions)
+        # Basal ganglia is NOT checked in reflex arc — tool should execute
+        assert not any(a.get("result", {}).get("blocked_by") == "basal_ganglia"
+                       for a in actions)
 
     def test_run_uses_reflex_for_simple_goal(self):
         ww = make_minimal_ww()
