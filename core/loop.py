@@ -289,16 +289,13 @@ class Worldwave:
 
     # ── Self-question detection ──────────────────────────────────
     SELF_QUESTION_KEYWORDS = [
-        # Chinese
-        "你是谁", "你是什么", "你的模型", "你能做", "你会做", "你可以做",
-        "你能改变", "你会改变", "你可以改变", "你能否改变", "你是什么模型",
-        "你用的什么模型", "你用什么模型", "你是什么版本", "你的版本",
+        # Chinese — identity / version queries only, NOT capability requests
+        "你是谁", "你是什么", "你用什么模型", "你是什么模型",
+        "你用的什么模型", "你是什么版本", "你的版本",
         "你的能力", "你有多少工具", "你支持什么", "你连了哪些",
-        "改变自己的模型", "换个模型", "切换模型", "换成",
-        # English
-        "what model", "which model", "change your model", "your model",
-        "what are you", "who are you", "your version", "your capabilities",
-        "can you change", "can you modify", "what llm",
+        # English — identity / version queries only
+        "what are you", "who are you", "what model", "which model",
+        "your model", "your version", "your capabilities", "what llm",
     ]
 
     def _is_self_question(self, goal: str) -> bool:

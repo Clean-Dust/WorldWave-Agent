@@ -465,9 +465,10 @@ class BasalGanglia:
                                      "analyze_image", "vision_analyze", "image",
                                      "screenshot", "photo", "picture", "ocr"]):
             return "safe_read"
-        # Safe info
+        # Safe info (non-destructive operations)
         if any(w in tool for w in ["web_search", "web_extract", "fetch", "curl",
-                                     "wget", "info", "help", "man"]):
+                                     "wget", "info", "help", "man", "switch_model",
+                                     "config_get", "config_list", "config"]):
             return "safe_info"
         # Local modify
         if any(w in tool for w in ["write", "patch", "edit", "mkdir", "touch",
