@@ -378,7 +378,7 @@ class WorldwaveServer:
                 # Fallback: check evaluation summary
                 if not response_text:
                     eval_result = last_spiral.get("evaluation", {})
-                    response_text = eval_result.get("summary", "") or eval_result.get("reason", "")
+                    response_text = eval_result.get("summary", "") or eval_result.get("reason", "") or eval_result.get("response", "")
             
             if response_text:
                 return response_text[:1500]
