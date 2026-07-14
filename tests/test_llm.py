@@ -488,8 +488,8 @@ class TestConstants:
         assert isinstance(WW_IDENTITY, str)
         assert len(WW_IDENTITY) > 50
 
-    def test_phase_prompts_have_five_phases(self):
-        assert set(PHASE_PROMPTS.keys()) == {"perceive", "recall", "plan", "evaluate", "learn"}
+    def test_phase_prompts_have_all_phases(self):
+        assert set(PHASE_PROMPTS.keys()) == {"perceive", "recall", "plan", "act", "evaluate", "learn", "consolidate"}
 
     def test_default_model_is_deepseek(self):
         assert "deepseek" in DEFAULT_MODEL

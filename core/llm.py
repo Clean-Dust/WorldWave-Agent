@@ -49,41 +49,81 @@ WW_IDENTITY = (
 
 PHASE_PROMPTS = {
     "perceive": (
-        "You is an autonomous Agent perception module. Analyze when environment and goal,"
-        "retrieve key information to drive subsequent decisions."
-        "output JSON: {\"observations\": [\"...\"], \"key_signals\": [\"...\"], "
-        "\"environment_summary\": \"...\", \"uncertainties\": [\"...\"]}"
+        "You are the PERCEIVE Module of Worldwave.\n"
+        "Your task is to observe the current input and environment accurately.\n"
+        "1. Identify key facts, emotions, and context from the user message and tools.\n"
+        "2. Note any ambiguities or missing information.\n"
+        "3. Output ONLY a valid JSON object. No explanation text before or after the JSON.\n"
+        "Format: {\"observations\": [...], \"emotions\": [...], \"ambiguities\": [...], \"confidence\": 0-100}"
     ),
     "recall": (
-        "You is a memory retrieval module. based on perception input,"
-        "decide what should recall from long-term memory."
-        "output JSON: {\"query\": \"...\", \"entities\": [\"...\"], \"aspect\": \"...\"}"
+        "You are the RECALL Module of Worldwave.\n"
+        "Retrieve and summarize relevant memories from the temporal knowledge graph.\n"
+        "1. Search for facts, patterns, and previous similar situations.\n"
+        "2. Evaluate which memories are currently valid (check valid_from/valid_until).\n"
+        "3. Output ONLY a valid JSON object. No explanation text before or after the JSON.\n"
+        "Format: {\"recalled_memories\": [...], \"relevance_score\": 0.0-1.0, \"key_insights\": [...]}"
     ),
     "plan": (
-        "You is a strategic planning module. formulate specific and feasibleexecute lineactionplan. \n"
-        "if  has needs askuser problemcan at  steps  use special tool \"question\" + content. \n"
-        "if taskonlyneeds textresponse (no needtool) , use tool=\"respond\", params leave blank. \n"
-        "eachstepmust designate tool or action, cannot be empty. \n"
-        "CRITICAL: When the goal asks about your own configuration, backend model, or environment, "
-        "you MUST plan shell_exec or file_read steps to INSPECT THE ACTUAL SYSTEM before any respond step. "
-        "Example: Step1=shell_exec(env | grep MODEL), Step2=respond with findings. "
-        "NEVER plan a direct respond for self-inspection questions. \n"
-        "output JSON: {\"goal\": \"...\", \"strategy\": \"...\", "
-        "\"steps\": [{\"tool\": \"...\", \"params\": {...}, \"description\": \"...\"}], "
-        "\"success_criteria\": \"...\", \"max_attempts\": 3}"
+        "You are the PLAN Module of Worldwave.\n"
+        "Create a feasible, step-by-step action plan based on perception and recall.\n"
+        "1. Think step by step: goal → constraints → possible actions → risks.\n"
+        "2. Prefer using available tools when possible.\n"
+        "3. If the task only needs a text response (no tools), use tool=\"respond\" with empty params.\n"
+        "4. If you need user clarification, use tool=\"question\" with the question as content.\n"
+        "5. Each step MUST designate a tool or action — never leave a step empty.\n"
+        "6. CRITICAL: When asked about your own configuration, backend model, or environment,\n"
+        "   plan shell_exec or file_read steps to INSPECT THE ACTUAL SYSTEM before any respond step.\n"
+        "   NEVER plan a direct respond for self-inspection questions.\n"
+        "7. Output ONLY a valid JSON object. No explanation text before or after the JSON.\n"
+        "Format: {\"goal\": \"...\", \"strategy\": \"...\", \"steps\": [{\"tool\": \"...\", \"params\": {...}, \"description\": \"...\"}], \"success_criteria\": \"...\", \"max_attempts\": 3}"
+    ),
+    "act": (
+        "You are the ACT Module of Worldwave.\n"
+        "Execute the approved plan using tools or direct actions.\n"
+        "1. Follow the plan steps precisely and in order.\n"
+        "2. Call tools in the required JSON format when needed.\n"
+        "3. Output ONLY a valid JSON object. No explanation text before or after the JSON.\n"
+        "Format: {\"actions_taken\": [...], \"tool_calls\": [...], \"immediate_results\": [...]}"
     ),
     "evaluate": (
-        "You is an evaluate module. based on plan and execute results,"
-        "judge whether goal is achieved, lessons, next step."
-        "output JSON: {\"success\": bool, \"reason\": \"...\", "
-        "\"lessons_learned\": [\"...\"], \"goal_remaining\": bool, "
-        "\"next_action\": \"continue|stop|adjust\"}"
+        "You are the EVALUATE Module of Worldwave.\n"
+        "Assess the outcome of actions against the original goal.\n"
+        "1. Compare results with expectations.\n"
+        "2. Identify successes, failures, and unexpected side effects.\n"
+        "3. Determine whether the goal is achieved or needs more work.\n"
+        "4. Output ONLY a valid JSON object. No explanation text before or after the JSON.\n"
+        "Format: {\"success\": true/false, \"reason\": \"...\", \"lessons_learned\": [...], \"goal_remaining\": true/false, \"next_action\": \"continue|stop|adjust\"}"
     ),
     "learn": (
-        "You is a learning encode module. based on spiral experience extract lessons."
-        "output JSON: {\"content\": \"...\", \"entities\": [\"...\"], "
-        "\"emotion_tags\": [\"...\"], \"importance\": 0.0-1.0, \"abstract_pattern\": \"...\"}"
+        "You are the LEARN Module of Worldwave.\n"
+        "Extract new skills, patterns, and knowledge from this cycle.\n"
+        "1. Identify what worked well and what should be remembered or forgotten.\n"
+        "2. Propose updates to the knowledge graph or skill library.\n"
+        "3. Output ONLY a valid JSON object. No explanation text before or after the JSON.\n"
+        "Format: {\"content\": \"...\", \"entities\": [...], \"emotion_tags\": [...], \"importance\": 0.0-1.0, \"abstract_pattern\": \"...\"}"
     ),
+    "consolidate": (
+        "You are the CONSOLIDATE Module of Worldwave.\n"
+        "Finalize the cycle and prepare for the next iteration.\n"
+        "1. Save important memories with proper timestamps and validity windows.\n"
+        "2. Update entity state and long-term knowledge graph.\n"
+        "3. Identify what should be the focus of the next cycle.\n"
+        "4. Output ONLY a valid JSON object. No explanation text before or after the JSON.\n"
+        "Format: {\"consolidated_memories\": [...], \"next_focus\": \"...\", \"state_updates\": {...}}"
+    ),
+}
+
+# Per-phase temperature defaults (overrideable at call time)
+# Higher = more creative/varied; lower = more deterministic/factual
+PHASE_TEMPERATURES = {
+    "perceive": 0.7,
+    "recall": 0.3,
+    "plan": 0.8,
+    "act": 0.7,
+    "evaluate": 0.5,
+    "learn": 0.6,
+    "consolidate": 0.5,
 }
 
 
@@ -267,7 +307,7 @@ class LLMClient:
     ) -> NormalizedResponse:
         """Core call method — via Transport layer process"""
         active_model = model or self.model
-        temp = temperature if temperature is not None else self.temperature
+        temp = temperature if temperature is not None else PHASE_TEMPERATURES.get(phase, self.temperature)
         mt = max_tokens if max_tokens is not None else self.max_tokens
 
         # Inject phase system prompt
@@ -419,7 +459,7 @@ class LLMClient:
                     yield f"data: {json.dumps({'finish': finish})}\\n\\n"
         """
         active_model = model or self.model
-        temp = temperature if temperature is not None else self.temperature
+        temp = temperature if temperature is not None else PHASE_TEMPERATURES.get(phase, self.temperature)
         mt = max_tokens if max_tokens is not None else self.max_tokens
 
         msgs = self._inject_phase_prompt(messages, phase)
