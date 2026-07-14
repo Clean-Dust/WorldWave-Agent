@@ -439,6 +439,15 @@ class WorldwaveServer:
                         chat_id=chat_id,
                         display_name=display_name,
                     )
+                    # Single-user owner: link owner Telegram to primary entity
+                    # so terminal/http and Telegram share the same timeline.
+                    entity_id = self.identity_resolver.ensure_owner_link(
+                        platform=platform,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        entity_id=entity_id,
+                        display_name=display_name,
+                    )
                 except Exception as e:
                     logger.warning("identity resolve failed: %s", e)
 
@@ -566,16 +575,15 @@ class WorldwaveServer:
             try:
                 self._lock_runs += 1
                 # ── Entity continuity: resolve and set entity context ──
+                # Never use entities[0] — order is last_active DESC and wrong
+                # for multi-entity nodes. Local http/terminal always go through
+                # IdentityResolver (primary entity in single-user mode).
                 if not entity_id and self.identity_resolver:
-                    entities = self.identity_resolver.get_all_entities()
-                    if entities:
-                        entity_id = entities[0]["entity_id"]
-                    else:
-                        entity_id = self.identity_resolver.resolve(
-                            platform=platform or "http",
-                            user_id="default",
-                            display_name="User",
-                        )
+                    entity_id = self.identity_resolver.resolve_local(
+                        platform=platform or "http",
+                        user_id="default",
+                        display_name="User",
+                    )
                     window = conversation_window or (
                         f"{platform}:{entity_id}" if entity_id else window
                     )
@@ -607,6 +615,21 @@ class WorldwaveServer:
                     reasoning_effort=reasoning_effort,
                     conversation_window=window,
                 )
+                # Always surface entity_id on the result for clients/CLI
+                if isinstance(self._last_result, dict):
+                    self._last_result["entity_id"] = entity_id or ""
+
+                # Persist entity state after task (set_entity + record_interaction
+                # already save; re-save ensures dirty in-memory edits land on disk)
+                if entity_id and self.entity_mgr:
+                    try:
+                        state = self.entity_mgr.get(entity_id)
+                        if platform:
+                            state.last_platform = platform
+                        self.entity_mgr.save(state)
+                    except Exception as e:
+                        logger.warning("entity state save failed: %s", e)
+
                 self._task_history.append({
                     "goal": goal[:100],
                     "time": datetime.now(timezone.utc).isoformat(),

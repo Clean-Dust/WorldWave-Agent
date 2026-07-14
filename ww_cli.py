@@ -1189,6 +1189,107 @@ def cmd_goal(args):
         print(f"  Usage: ww goal [start|status|stop|list] [args...]")
 
 
+def cmd_identity(args):
+    """Show or link identity (Same Timeline).
+
+    Commands:
+        ww identity / ww whoami              — entity + platform links
+        ww identity primary                  — show primary entity
+        ww identity link <platform> <user_id> [chat_id]
+    """
+    action = getattr(args, "action", "") or "show"
+    # "whoami" maps here with action show
+    if action in ("whoami", "show", "list", ""):
+        action = "show"
+
+    try:
+        from wavegate.identity import IdentityResolver, is_single_user_mode
+        resolver = IdentityResolver()
+    except Exception as e:
+        print(f"  Failed to load identity: {e}")
+        return
+
+    if action == "show":
+        primary = resolver.get_primary_entity_id()
+        entities = resolver.get_all_entities()
+        mode = "single-user" if is_single_user_mode() else "multi-user"
+        print(f"\n{Colors.bold('Identity')}  ({mode})\n")
+        if primary:
+            print(f"  Primary: {Colors.cyan(primary)}")
+        else:
+            print(f"  Primary: {Colors.dim('(not set)')}")
+        if not entities:
+            print(f"  {Colors.dim('(no entities yet — send a message or run a task)')}")
+            return
+        print()
+        for ent in entities:
+            eid = ent["entity_id"]
+            mark = " *" if primary and eid == primary else ""
+            name = ent.get("display_name") or ""
+            print(f"  {Colors.cyan(eid)}{mark}  {name}")
+            links = resolver.get_platform_ids(eid)
+            if links:
+                for lk in links:
+                    chat = f" chat={lk['chat_id']}" if lk.get("chat_id") else ""
+                    print(f"    - {lk['platform']}:{lk['user_id']}{chat}")
+            else:
+                print(f"    {Colors.dim('(no platform links)')}")
+        if primary:
+            print(f"\n  {Colors.dim('* primary entity')}")
+        print()
+
+    elif action == "primary":
+        primary = resolver.get_primary_entity_id()
+        if primary:
+            print(f"  Primary: {Colors.cyan(primary)}")
+            links = resolver.get_platform_ids(primary)
+            for lk in links:
+                chat = f" chat={lk['chat_id']}" if lk.get("chat_id") else ""
+                print(f"    - {lk['platform']}:{lk['user_id']}{chat}")
+        else:
+            print(f"  Primary: {Colors.dim('(not set)')}")
+
+    elif action == "link":
+        # Forms:
+        #   ww identity link <platform> <user_id> [chat_id]
+        #   ww identity link <entity_id> <platform> <user_id> [chat_id]
+        parts = list(getattr(args, "link_parts", None) or [])
+        entity_id = ""
+        platform = ""
+        user_id = ""
+        chat_id = ""
+        if parts and str(parts[0]).startswith("ent_"):
+            if len(parts) < 3:
+                print(f"  {Colors.yellow(chr(9888))} Usage: ww identity link <entity_id> <platform> <user_id> [chat_id]")
+                return
+            entity_id, platform, user_id = parts[0], parts[1], parts[2]
+            chat_id = parts[3] if len(parts) > 3 else ""
+        else:
+            if len(parts) < 2:
+                print(f"  {Colors.yellow(chr(9888))} Usage: ww identity link <platform> <user_id> [chat_id]")
+                return
+            platform, user_id = parts[0], parts[1]
+            chat_id = parts[2] if len(parts) > 2 else ""
+            entity_id = resolver.get_primary_entity_id() or ""
+            if not entity_id:
+                entity_id = resolver.resolve_local("http", "default", "User")
+        if not resolver.get_entity(entity_id):
+            print(f"  {Colors.red(chr(0x2717))} Entity not found: {entity_id}")
+            return
+        resolver.link(entity_id, platform, user_id, chat_id)
+        print(f"  {Colors.green(chr(0x2713))} Linked {platform}:{user_id} → {Colors.cyan(entity_id)}")
+
+    else:
+        print(f"  {Colors.yellow(chr(9888))} Unknown action: {action}")
+        print(f"  Usage: ww identity [primary|link ...] | ww whoami")
+
+
+def cmd_whoami(args):
+    """Alias for ww identity."""
+    args.action = "show"
+    cmd_identity(args)
+
+
 def cmd_tenant(args):
     """Multi-tenant management — create/list/delete tenants.
 
@@ -1776,6 +1877,10 @@ def cmd_help(args):
   memory stats|search|sleep  Memory operations
   mascot [open|tray|state]  Mascot (browser/tray)
   migrate [scan|<source>]   Cross-generation migration
+  identity / whoami      Show entity + platform links
+  identity primary       Show primary entity
+  identity link <platform> <user_id> [chat_id]
+                         Link a platform id to primary entity
 
   --home PATH            Specify WW path
   --no-color             Disable colors
@@ -1836,6 +1941,8 @@ COMMANDS = {
     "run": cmd_run,
     "help": cmd_help,
     "tenant": cmd_tenant,
+    "identity": cmd_identity,
+    "whoami": cmd_whoami,
 }
 
 
@@ -2003,6 +2110,23 @@ def main():
         else:
             args.tenant_id = goal_args[1] if len(goal_args) > 1 else ""
         cmd_tenant(args)
+
+    elif cmd in ("identity", "whoami"):
+        goal_args = list(getattr(args, "goal", []) or [])
+        if extra:
+            goal_args = goal_args + list(extra)
+        if cmd == "whoami":
+            args.action = "show"
+        else:
+            args.action = goal_args[0] if goal_args else "show"
+            if args.action == "link":
+                args.link_parts = goal_args[1:]
+            elif args.action == "primary":
+                pass
+            elif args.action not in ("show", "list", "primary", "link"):
+                # bare "ww identity" or unknown → show
+                args.action = "show"
+        COMMANDS["identity" if cmd == "identity" else "whoami"](args)
 
     elif cmd in ("run",):
         args.spirals = None
