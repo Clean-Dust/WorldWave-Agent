@@ -38,3 +38,5 @@ audit_log.txt
 context.py.v1_backup
 *.v*_backup
 .gitkeep
+MagicMock/
+skills/auto-build-python-api.md
