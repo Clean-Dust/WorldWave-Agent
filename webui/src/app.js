@@ -1,14 +1,115 @@
 // Worldwave AI — PWA Web Client v0.3
-// Connects to WW server API via same-origin + ?api_key= auth.
+// Connects to WW server API via same-origin + Bearer / ?api_key= auth.
 
-const API_KEY = localStorage.getItem('ww_api_key') || '';
+const API_KEY = (typeof localStorage !== 'undefined' && localStorage.getItem('ww_api_key')) || '';
 const MAX_SPIRALS = 5;
 
+/** Query-string fallback (server also accepts Bearer / X-API-Key). */
 function auth(url) {
     return API_KEY ? url + (url.includes('?') ? '&' : '?') + 'api_key=' + encodeURIComponent(API_KEY) : url;
 }
 
+/** Headers for authenticated fetch (Bearer preferred; query still set by auth()). */
+function authHeaders(extra) {
+    const h = Object.assign({}, extra || {});
+    if (API_KEY) {
+        h['Authorization'] = 'Bearer ' + API_KEY;
+        h['X-API-Key'] = API_KEY;
+    }
+    return h;
+}
+
 let tools = [];
+
+// ── Reply extraction (mirrors ww_cli.extract_user_response) ─────
+
+/**
+ * True if text looks like an internal status leak, not user-facing content.
+ * Never surface strings containing "Reflex arc" or "direct response".
+ */
+function isInternalResponseText(text) {
+    if (!text || typeof text !== 'string') return true;
+    const s = text.trim();
+    if (!s) return true;
+    const lower = s.toLowerCase();
+    if (lower.includes('reflex arc')) return true;
+    if (lower.includes('direct response')) return true;
+    if (lower.startsWith('error:')) return true;
+    if (lower.includes('traceback')) return true;
+    return false;
+}
+
+function _cleanReply(val) {
+    if (typeof val !== 'string') return '';
+    const s = val.trim();
+    if (!s || isInternalResponseText(s)) return '';
+    return s;
+}
+
+/**
+ * Best user-facing reply from a /ww/run payload.
+ * Priority:
+ *   1. Top-level response/reply/output/message
+ *   2. Actions with tool reflex_text/respond (result.output|text|response)
+ *   3. Any successful action result.output|text|response
+ *   4. evaluation.response/summary if not internal
+ * Never returns internal leaks. Empty string if nothing usable.
+ */
+function extractUserResponse(data) {
+    if (!data || typeof data !== 'object') return '';
+
+    for (const key of ['response', 'reply', 'output', 'message']) {
+        const got = _cleanReply(data[key]);
+        if (got) return got;
+    }
+
+    const spiralResults = Array.isArray(data.results) ? data.results : [];
+    const REPLY_TOOLS = new Set(['reflex_text', 'respond', 'reply', 'final_answer']);
+
+    // Prefer reflex_text / respond-style tools
+    for (const r of spiralResults) {
+        if (!r || typeof r !== 'object') continue;
+        for (const a of (r.actions || [])) {
+            if (!a || typeof a !== 'object') continue;
+            const tool = String(a.tool || '').toLowerCase();
+            if (!REPLY_TOOLS.has(tool)) continue;
+            const res = a.result || {};
+            if (!res || typeof res !== 'object') continue;
+            for (const key of ['output', 'text', 'response']) {
+                const got = _cleanReply(res[key]);
+                if (got) return got;
+            }
+        }
+    }
+
+    // Any successful action with output/text/response
+    for (const r of spiralResults) {
+        if (!r || typeof r !== 'object') continue;
+        for (const a of (r.actions || [])) {
+            if (!a || typeof a !== 'object') continue;
+            const res = a.result || {};
+            if (!res || typeof res !== 'object') continue;
+            if (res.success === false) continue;
+            for (const key of ['output', 'text', 'response']) {
+                const got = _cleanReply(res[key]);
+                if (got) return got;
+            }
+        }
+    }
+
+    // evaluation.response / evaluation.summary (skip internal)
+    for (const r of spiralResults) {
+        if (!r || typeof r !== 'object') continue;
+        const ev = r.evaluation || {};
+        if (!ev || typeof ev !== 'object') continue;
+        for (const key of ['response', 'summary']) {
+            const got = _cleanReply(ev[key]);
+            if (got) return got;
+        }
+    }
+
+    return '';
+}
 
 // ── API Key Prompt ──────────────────────────────────────────────
 
@@ -72,7 +173,7 @@ async function init() {
 
 async function loadTools() {
     try {
-        const res = await fetch(auth('/ww/tools'));
+        const res = await fetch(auth('/ww/tools'), { headers: authHeaders() });
         if (res.status === 401) { showKeyPrompt(); return; }
         const data = await res.json();
         tools = data.tools || [];
@@ -86,7 +187,7 @@ async function loadTools() {
 
 async function checkStatus() {
     try {
-        const res = await fetch(auth('/ww/status'));
+        const res = await fetch(auth('/ww/status'), { headers: authHeaders() });
         if (res.status === 401) { showKeyPrompt(); return; }
         if (res.ok) setStatus('🟢 Connected', 'online');
     } catch (e) {
@@ -133,7 +234,7 @@ async function sendMessage() {
     try {
         const res = await fetch(auth('/ww/run'), {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
             body: JSON.stringify({ goal: text, max_spirals: MAX_SPIRALS }),
         });
         if (res.status === 401) { showKeyPrompt(); showLoading(false); return; }
@@ -142,22 +243,10 @@ async function sendMessage() {
             throw new Error(err.message || err.error || `HTTP ${res.status}`);
         }
         const data = await res.json();
-        const results = data.results || [];
-        let response = '';
-        for (const r of results) {
-            const ev = r.evaluation || {};
-            // Same priority as CLI: user response > summary > meta reason
-            response = ev.response || ev.summary || ev.reason || '';
-            const actions = r.actions || [];
-            for (const a of actions) {
-                const output = a.result && a.result.output ? a.result.output : '';
-                if (output) {
-                    response += '\n[' + a.tool + '] ' + output;
-                }
-            }
-        }
+        // Mirror ww_cli.extract_user_response — never show "Reflex arc direct response"
+        let response = extractUserResponse(data);
         if (!response) {
-            response = 'Status: ' + (data.status || '?') + ' (' + (data.spirals_completed || 0) + ' spirals)';
+            response = 'No reply text from server';
         }
         appendMessage('assistant', response);
     } catch (e) {
@@ -192,11 +281,23 @@ function escAttr(s) {
     return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// ── Start ───────────────────────────────────────────────────────
+// ── Start (skip in Node unit checks) ────────────────────────────
 
-if (!API_KEY) {
-    showKeyPrompt();
-} else {
-    init();
-    setInterval(checkStatus, 30000);
+if (typeof document !== 'undefined') {
+    if (!API_KEY) {
+        showKeyPrompt();
+    } else {
+        init();
+        setInterval(checkStatus, 30000);
+    }
+}
+
+// Node/CommonJS export for unit-like fixture tests (no browser)
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        isInternalResponseText,
+        extractUserResponse,
+        authHeaders,
+        auth,
+    };
 }
