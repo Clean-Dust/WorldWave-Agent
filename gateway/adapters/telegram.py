@@ -49,11 +49,20 @@ class TelegramAdapter(BaseAdapter):
         pairing_mgr=None,
     ):
         self._token = token or os.environ.get("TELEGRAM_WW_TOKEN", "")
-        self._workspace_id = workspace_id
-        if not self._workspace_id:
-            raw = os.environ.get("TELEGRAM_WW_WORKSPACE", "")
+        # workspace_id is optional: None = DM-only (no group filter)
+        if workspace_id is not None:
+            self._workspace_id = workspace_id
+        else:
+            self._workspace_id = None
+            raw = (os.environ.get("TELEGRAM_WW_WORKSPACE") or "").strip()
             if raw:
-                self._workspace_id = int(raw)
+                try:
+                    self._workspace_id = int(raw)
+                except ValueError:
+                    log.warning(
+                        "Invalid TELEGRAM_WW_WORKSPACE=%r — DM-only mode",
+                        raw,
+                    )
         self._poll_interval = poll_interval
         self._on_message = on_message
         self._session_mgr = session_mgr
@@ -74,9 +83,9 @@ class TelegramAdapter(BaseAdapter):
         self._stream_state: dict = {}       # Streaming debounce state
         self.STREAM_DEBOUNCE_SEC = 1.5      # blueprint: 1.5-2s debounce
 
-        # WW local API URL for slash commands
+        # WW local API URL for slash commands (key may be auto-set by server)
         _port = os.environ.get("WW_PORT", "9300")
-        _key = os.environ["WW_API_KEY"]  # required, no default
+        _key = os.environ.get("WW_API_KEY", "")
         self._ww_api = f"http://localhost:{_port}"
         self._ww_key = _key
 
@@ -867,11 +876,18 @@ class TelegramAdapter(BaseAdapter):
                             "telegram", user_id, display_name, str(chat_id),
                         )
                         log.info(
-                            "Unknown user %s (%s) — dropped, pairing code: %s",
+                            "Unknown user %s (%s) — not processed, pairing code: %s",
                             display_name, user_id, code,
                         )
-                        # Silently drop — do not process the message
-                        # In future: send pairing code to admin channel
+                        # Tell the user they need admin approval (rate-limited)
+                        if self._pairing.should_notify_user(code):
+                            notice = self._pairing.pairing_notice_text(code)
+                            # Plain text only — avoid Markdown parse failures
+                            self._api_call("sendMessage", {
+                                "chat_id": str(chat_id),
+                                "text": notice[:4000],
+                            })
+                        # Do not process the task until approved
                         continue
 
                 log.info("Message from %s", display_name)

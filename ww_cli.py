@@ -15,6 +15,7 @@ Usage:
     ww delegate <goal>        Delegate sub-tasks
     ww gateway [action]       Gateway management
     ww pairing [action]       DM pairing — approve/reject user access
+    ww telegram status        Telegram bot config (token/workspace/pairing)
     ww memory <action>        Memory operations
     ww profile                Profile management
     ww help                   Show help
@@ -1282,6 +1283,91 @@ def cmd_tenant(args):
         print(f"  Usage: ww tenant [list|create|delete|rotate-key|disable|enable] [args...]")
 
 
+def _mask_secret(val: str, head: int = 6, tail: int = 4) -> str:
+    """Mask a token/secret for display."""
+    if not val:
+        return "(not set)"
+    if len(val) <= head + tail:
+        return val[:2] + "…" if len(val) > 2 else "***"
+    return f"{val[:head]}…{val[-tail:]}"
+
+
+def _read_env_file_value(env_path: str, key: str) -> str:
+    """Read KEY=value from a .env file (no export, first match)."""
+    if not env_path or not os.path.exists(env_path):
+        return ""
+    try:
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith(f"{key}="):
+                    return line.split("=", 1)[1].strip().strip("\"'")
+    except OSError:
+        pass
+    return ""
+
+
+def cmd_telegram(args):
+    """Telegram gateway helpers — status (token/workspace/pairing)."""
+    action = getattr(args, "action", "status") or "status"
+    CHECK = chr(0x2713)
+    CROSS = chr(0x2717)
+
+    if action != "status":
+        print(f"  {Colors.yellow(chr(9888))} Usage: ww telegram status")
+        print("  Token is set via .env (TELEGRAM_WW_TOKEN) or: ww gateway setup")
+        return
+
+    env_file = os.path.join(WW_HOME, ".env")
+    token = (
+        os.environ.get("TELEGRAM_WW_TOKEN", "").strip()
+        or _read_env_file_value(env_file, "TELEGRAM_WW_TOKEN")
+    )
+    workspace = (
+        os.environ.get("TELEGRAM_WW_WORKSPACE", "").strip()
+        or _read_env_file_value(env_file, "TELEGRAM_WW_WORKSPACE")
+    )
+    auto_raw = (
+        os.environ.get("WW_PAIRING_AUTO_APPROVE", "").strip()
+        or _read_env_file_value(env_file, "WW_PAIRING_AUTO_APPROVE")
+        or "false"
+    )
+    auto = str(auto_raw).strip().lower() in ("1", "true", "yes", "on", "y")
+
+    print(f"\n{Colors.bold('Telegram gateway')}\n")
+    if token:
+        print(f"  {Colors.green(CHECK)} Token:     {_mask_secret(token)}")
+    else:
+        print(f"  {Colors.red(CROSS)} Token:     (not set)")
+        print(f"     Set TELEGRAM_WW_TOKEN in {env_file}")
+        print(f"     or run: {Colors.cyan('ww gateway setup')}")
+        print(f"     DMs work with token alone — workspace is optional.")
+
+    if workspace:
+        print(f"  {Colors.green(CHECK)} Workspace: {workspace} (DM + that group)")
+    else:
+        print(f"  {Colors.yellow('○')} Workspace: (not set — DM-only mode)")
+        print(f"     Optional TELEGRAM_WW_WORKSPACE=<group_chat_id> for group chats")
+
+    if auto:
+        print(f"  {Colors.yellow(chr(9888))} Pairing:   AUTO-APPROVE on (any DM is whitelisted)")
+        print(f"     Set WW_PAIRING_AUTO_APPROVE=false for multi-user nodes")
+    else:
+        print(f"  {Colors.green(CHECK)} Pairing:   require approval (ww pairing approve CODE)")
+
+    try:
+        from gateway.pairing import PairingManager
+        pm = PairingManager()
+        pending = pm.list_pending()
+        wl = pm.list_whitelist()
+        print(f"  Pending:   {len(pending)} code(s)  |  Whitelist: {len(wl)} user(s)")
+    except Exception:
+        pass
+    print()
+
+
 def cmd_pairing(args):
     """DM pairing management — approve/reject/list pairing codes"""
     action = getattr(args, "action", "list")
@@ -1408,13 +1494,15 @@ def cmd_gateway(args):
             _upsert_env(env_file, "TELEGRAM_WW_TOKEN", token)
             print(f"\n{Colors.green('✓')} Telegram token saved to .env")
 
-            # Ask for workspace (group) ID
-            print(f"\n  {Colors.dim('Optional: add your bot to a Telegram group,')}")
-            print(f"  {Colors.dim('then get the group ID from @userinfobot')}\n")
-            ws = input(f"  {Colors.green('Group ID?')} (press Enter to skip): ").strip()
+            # Workspace is optional — DMs work with token alone
+            print(f"\n  {Colors.dim('Optional group: add bot to a group, get ID via @userinfobot.')}")
+            print(f"  {Colors.dim('Skip for DM-only mode.')}\n")
+            ws = input(f"  {Colors.green('Group ID?')} (press Enter to skip / DM-only): ").strip()
             if ws:
                 _upsert_env(env_file, "TELEGRAM_WW_WORKSPACE", ws)
-                print(f"{Colors.green('✓')} Workspace saved")
+                print(f"{Colors.green('✓')} Workspace saved (DM + group)")
+            else:
+                print(f"{Colors.green('✓')} DM-only mode (no TELEGRAM_WW_WORKSPACE)")
 
             # Restart gateway
             print(f"\n{Colors.cyan('⟳')} Starting gateway...")
@@ -1683,6 +1771,8 @@ def cmd_help(args):
   tools                  List available tools
   delegate <goal>        Delegate sub-tasks
   gateway list|start|stop Gateway management
+  telegram status        Telegram token/workspace/pairing status
+  pairing list|approve|reject  DM pairing codes
   memory stats|search|sleep  Memory operations
   mascot [open|tray|state]  Mascot (browser/tray)
   migrate [scan|<source>]   Cross-generation migration
@@ -1738,6 +1828,7 @@ COMMANDS = {
     "delegate": cmd_delegate,
     "goal": cmd_goal,
     "gateway": cmd_gateway,
+    "telegram": cmd_telegram,
     "pairing": cmd_pairing,
     "memory": cmd_memory,
     "mascot": cmd_mascot,
@@ -1835,6 +1926,10 @@ def main():
     elif cmd in ("gateway",):
         args.action = extra[0] if extra else "list"
         args.platform = extra[1] if len(extra) > 1 else None
+        COMMANDS[cmd](args)
+
+    elif cmd in ("telegram",):
+        args.action = extra[0] if extra else "status"
         COMMANDS[cmd](args)
 
     elif cmd in ("pairing",):

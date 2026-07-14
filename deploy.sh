@@ -52,6 +52,12 @@ if [ "$CMD" = "update" ]; then
         python3 -m venv "$VENV_DIR"
     fi
     "$VENV_DIR/bin/pip" install --quiet -r requirements.txt 2>/dev/null || true
+    "$VENV_DIR/bin/pip" install --quiet "python-dotenv>=1.0.0" 2>/dev/null || true
+    if ! "$VENV_DIR/bin/python" -c "import dotenv, fastapi, uvicorn, pydantic; from core.config import ConfigManager" 2>/dev/null; then
+        echo "   ✗ Core deps missing after update (dotenv/fastapi/…)"
+        echo "     Fix: $VENV_DIR/bin/pip install -r requirements.txt"
+        exit 1
+    fi
     echo "   ✓ Dependencies ready"
     # Re-install ww binary (in case bin/ww changed)
     LOCAL_BIN="$HOME/.local/bin"
@@ -372,8 +378,17 @@ if [ -f "requirements.txt" ]; then
     info "Installing dependencies..."
     "$VENV_DIR/bin/pip" install --quiet -r requirements.txt 2>&1 | tail -3
 fi
-# Ensure requests is installed (needed for P2P bootstrap with Cloudflare)
-"$VENV_DIR/bin/pip" install --quiet requests 2>/dev/null || true
+# Ensure critical packages are present (requirements.txt may lag pyproject)
+"$VENV_DIR/bin/pip" install --quiet "python-dotenv>=1.0.0" requests 2>/dev/null || true
+# Hard fail if core chat path cannot import (clean install regression guard)
+if ! "$VENV_DIR/bin/python" -c "import dotenv, fastapi, uvicorn, pydantic; from core.config import ConfigManager" 2>/dev/null; then
+    echo ""
+    echo "ERROR: Core Python dependencies missing after install."
+    echo "       Required: dotenv, fastapi, uvicorn, pydantic, core.config"
+    echo "       Try: $VENV_DIR/bin/pip install -r requirements.txt"
+    echo "            $VENV_DIR/bin/pip install 'python-dotenv>=1.0.0'"
+    exit 1
+fi
 ok "Virtual environment ready"
 
 # ═══════════════════════════════════════════════════════════

@@ -283,23 +283,45 @@ class WorldwaveServer:
     def _init_gateway(self):
         """Register gateway adapters (do not start pollers yet)."""
         from gateway.bridge import TelegramGateway  # lazy import for scope
-        token = os.environ.get("TELEGRAM_WW_TOKEN", "")
-        workspace_raw = os.environ.get("TELEGRAM_WW_WORKSPACE", "")
-        if token and workspace_raw:
+        token = (os.environ.get("TELEGRAM_WW_TOKEN") or "").strip()
+        workspace_raw = (os.environ.get("TELEGRAM_WW_WORKSPACE") or "").strip()
+        # Token alone is enough for DM mode. Workspace only filters group chats.
+        if token:
+            workspace_id = None
+            if workspace_raw:
+                try:
+                    workspace_id = int(workspace_raw)
+                except ValueError:
+                    logger.warning(
+                        "Invalid TELEGRAM_WW_WORKSPACE=%r — ignoring (DM mode only)",
+                        workspace_raw,
+                    )
             try:
                 tg = TelegramGateway(
                     token=token,
-                    workspace_id=int(workspace_raw),
+                    workspace_id=workspace_id,
                     poll_interval=2.0,
                     task_handler=self._gateway_task_handler,
                 )
                 # start=False: FastAPI startup calls start_all() once
                 self.gateway.register(tg, start=False)
-                logger.info("Telegram gateway registered (workspace=%s)", workspace_raw)
+                if workspace_id is not None:
+                    logger.info(
+                        "Telegram gateway registered (DM + group workspace=%s)",
+                        workspace_id,
+                    )
+                else:
+                    logger.info(
+                        "Telegram gateway registered (DM-only mode; "
+                        "set TELEGRAM_WW_WORKSPACE to also accept that group)"
+                    )
             except Exception as e:
                 logger.warning("Telegram gateway init failed: %s", e)
         else:
-            logger.info("Telegram gateway not configured")
+            logger.info(
+                "Telegram gateway not configured "
+                "(set TELEGRAM_WW_TOKEN for DMs; TELEGRAM_WW_WORKSPACE optional for groups)"
+            )
 
         # Discord gateway (deprecated — use gateway/adapters/ instead)
         discord_token = os.environ.get("DISCORD_BOT_TOKEN", "")
@@ -779,9 +801,11 @@ if os.environ.get("WW_API_KEY"):
 else:
     # Secure-by-default: Auto-generate random key IN-MEMORY only.
     # NEVER write to .env — that would create duplicate keys and corrupt config.
+    # Export to process env so gateway adapters (Telegram slash cmds) can read it.
     import secrets
     _auto_key = secrets.token_urlsafe(32)
     WW_API_KEY = _auto_key
+    os.environ["WW_API_KEY"] = _auto_key
     logger.info("WW_API_KEY auto-generated — set it in .env to make it permanent")
 
 if WW_API_KEY and len(WW_API_KEY) < 16:

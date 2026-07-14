@@ -1,8 +1,9 @@
 """Wavegate DM Pairing Manager.
 
 Implements the DM pairing protocol from the WW architecture blueprint:
-- Unknown users are silently dropped
+- Unknown users are not processed until approved
 - A one-time 8-character uppercase pairing code is generated (1h TTL)
+- Adapters should DM the user the code (once per code — see should_notify_user)
 - Admin approves via CLI: `ww pairing approve <CODE>`
 - Approved users are added to the whitelist
 
@@ -29,6 +30,8 @@ log = logging.getLogger("gateway.pairing")
 
 CODE_LENGTH = 8
 CODE_TTL = 3600  # 1 hour
+# Min seconds between re-sending the same pairing notice to a user
+NOTICE_COOLDOWN = 300
 PAIRING_STORE = os.path.expanduser("~/.ww/pairing.json")
 
 
@@ -113,6 +116,8 @@ class PairingManager:
         self._store_path = store_path
         self._pending: Dict[str, PendingPairing] = {}
         self._whitelist: Dict[str, WhitelistEntry] = {}
+        # code -> last notice send time (in-memory; rate-limit user feedback)
+        self._notice_sent: Dict[str, float] = {}
         self._last_cleanup = time.time()
         self._load()
 
@@ -256,6 +261,34 @@ class PairingManager:
                 return code
         return None
 
+    def should_notify_user(self, code: str, cooldown: float = NOTICE_COOLDOWN) -> bool:
+        """Return True if we should send the pairing notice for this code.
+
+        Rate-limits by code: first call returns True and records the send;
+        subsequent calls within ``cooldown`` seconds return False so adapters
+        do not spam the user on every message.
+        """
+        if not code:
+            return False
+        code = code.upper()
+        now = time.time()
+        last = self._notice_sent.get(code)
+        if last is not None and (now - last) < cooldown:
+            return False
+        self._notice_sent[code] = now
+        return True
+
+    def pairing_notice_text(self, code: str) -> str:
+        """Short human-facing message for an unknown user (no internal jargon)."""
+        code = (code or "").upper()
+        return (
+            "This bot requires admin approval before we can chat.\n\n"
+            f"Your pairing code: {code}\n\n"
+            "Ask the admin to run:\n"
+            f"  ww pairing approve {code}\n\n"
+            "This code expires in 1 hour. Your message was not processed."
+        )
+
     # ── Internal ────────────────────────────────────────────────
 
     def _whitelist_key(self, platform: str, user_id: str) -> str:
@@ -281,6 +314,7 @@ class PairingManager:
         expired = [c for c, p in self._pending.items() if p.is_expired]
         for c in expired:
             del self._pending[c]
+            self._notice_sent.pop(c, None)
         if expired:
             self._save()
             log.info("Pairing: cleaned up %d expired codes", len(expired))
