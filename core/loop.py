@@ -177,10 +177,10 @@ class Worldwave:
 
         # Autonomous Skill Evolution
         self.skill_evolution = SkillEvolutionEngine(
+            config=self.config,
+            llm=self.llm,
             enabled=self.config.get("skill_evolution_enabled", True),
         )
-        if hasattr(self.llm, 'chat'):
-            self.skill_evolution.set_llm(self.llm)
 
         # Autonomous Scheduler (heartbeat loop)
         self.autonomous_scheduler = AutonomousScheduler(
