@@ -178,6 +178,12 @@ class WorldwaveServer:
         # TaskQueue may have multiple workers; without this, concurrent Telegram/HTTP
         # requests race on phase state and model swaps.
         self._run_lock = threading.RLock()
+        # Per-session queues: same chat is strictly ordered; different chats still
+        # serialize on _run_lock because there is one shared engine.
+        self._session_locks: Dict[str, threading.RLock] = {}
+        self._session_locks_guard = threading.Lock()
+        self._lock_waits = 0
+        self._lock_runs = 0
 
         # History Record
         self._task_history: List[Dict] = []
@@ -438,11 +444,49 @@ class WorldwaveServer:
                     )
 
             if response_text:
-                return str(response_text)[:1500]
-            return f"[{status}] {command[:200]}"
+                return self._public_reply(str(response_text)[:1500], fallback="Done.")[:1500]
+            # Never leak internal status tags to chat users
+            return self._public_reply("", fallback="Done.")
         except Exception as e:
             logger.error("Gateway task error: %s", e)
-            return f"error: {str(e)[:200]}"
+            return "Something went wrong. Please try again."
+
+    def _session_lock(self, window: str) -> threading.RLock:
+        """Return an order-preserving lock for a conversation window."""
+        key = window or "default"
+        with self._session_locks_guard:
+            lock = self._session_locks.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                self._session_locks[key] = lock
+            return lock
+
+    @staticmethod
+    def _public_reply(text: str, fallback: str = "") -> str:
+        """Strip internal mechanism strings before showing them to end users."""
+        if not text:
+            return fallback
+        t = str(text).strip()
+        bad_prefixes = (
+            "Reflex arc:",
+            "status=",
+            "error:",
+            "[completed]",
+            "[failed]",
+            "[interrupted]",
+            "WW not initialized",
+            "loop.run",
+            "## ",
+        )
+        low = t.lower()
+        if any(t.startswith(p) for p in bad_prefixes):
+            return fallback or "Done."
+        if "reflex arc:" in low and len(t) < 80:
+            return fallback or "Done."
+        # Avoid leaking raw tool stack traces
+        if "traceback (most recent call last)" in low:
+            return fallback or "Something went wrong. Please try again."
+        return t
 
     def _get_sandbox(self):
         """Lazy load CodeSandbox. """
@@ -458,7 +502,7 @@ class WorldwaveServer:
                  reasoning_effort: str = "", entity_id: str = "",
                  platform: str = "http",
                  conversation_window: str = "") -> Dict[str, Any]:
-        """Execute a task under a process-wide lock.
+        """Execute a task under session + engine locks.
 
         Args:
             entity_id: Optional entity ID for cross-platform continuity.
@@ -466,69 +510,82 @@ class WorldwaveServer:
             platform: Platform identifier for context (telegram, terminal, http, etc.)
             conversation_window: Per-chat conversation key for ContextWindow isolation.
         """
-        with self._run_lock:
-            # ── Entity continuity: resolve and set entity context ──
-            if not entity_id and self.identity_resolver:
-                entities = self.identity_resolver.get_all_entities()
-                if entities:
-                    entity_id = entities[0]["entity_id"]
-                else:
-                    entity_id = self.identity_resolver.resolve(
-                        platform=platform or "http",
-                        user_id="default",
-                        display_name="User",
+        # Resolve window early so per-session lock orders same-chat messages
+        window = conversation_window or (
+            f"{platform}:{entity_id}" if entity_id else (platform or "http")
+        )
+        session_lock = self._session_lock(window)
+        with session_lock:
+            acquired = self._run_lock.acquire(blocking=False)
+            if not acquired:
+                self._lock_waits += 1
+                self._run_lock.acquire()
+            try:
+                self._lock_runs += 1
+                # ── Entity continuity: resolve and set entity context ──
+                if not entity_id and self.identity_resolver:
+                    entities = self.identity_resolver.get_all_entities()
+                    if entities:
+                        entity_id = entities[0]["entity_id"]
+                    else:
+                        entity_id = self.identity_resolver.resolve(
+                            platform=platform or "http",
+                            user_id="default",
+                            display_name="User",
+                        )
+                    window = conversation_window or (
+                        f"{platform}:{entity_id}" if entity_id else window
                     )
-            if entity_id:
-                self.ww.set_entity(entity_id, platform)
+                if entity_id:
+                    self.ww.set_entity(entity_id, platform)
 
-            # Notify Mascot: Start thinking
-            try:
-                from core.mascot import mascot
-                mascot.on_task_start(goal)
-            except Exception:
-                pass
-
-            if model or provider:
+                # Notify Mascot: Start thinking
                 try:
-                    llm_config = {
-                        "model": model or self.config.get("model", "deepseek/deepseek-v4-flash")
-                    }
-                    if provider:
-                        llm_config["provider"] = provider
-                    self.ww.llm = self.ww.llm.__class__(llm_config)
-                except Exception as e:
-                    logger.warning("Model switch failed: %s", e)
+                    from core.mascot import mascot
+                    mascot.on_task_start(goal)
+                except Exception:
+                    pass
 
-            window = conversation_window or (
-                f"{platform}:{entity_id}" if entity_id else ""
-            )
-            self._last_result = self.ww.run(
-                goal,
-                max_spirals,
-                image_path=image_path,
-                reasoning_effort=reasoning_effort,
-                conversation_window=window,
-            )
-            self._task_history.append({
-                "goal": goal[:100],
-                "time": datetime.now(timezone.utc).isoformat(),
-                "status": self._last_result.get("status", "?"),
-                "spirals": self._last_result.get("spirals_completed", 0),
-                "entity_id": entity_id,
-                "platform": platform,
-                "window": window,
-            })
+                if model or provider:
+                    try:
+                        llm_config = {
+                            "model": model or self.config.get("model", "deepseek/deepseek-v4-flash")
+                        }
+                        if provider:
+                            llm_config["provider"] = provider
+                        self.ww.llm = self.ww.llm.__class__(llm_config)
+                    except Exception as e:
+                        logger.warning("Model switch failed: %s", e)
 
-            try:
-                from core.mascot import mascot
-                success = self._last_result.get("status") in ("completed", "success")
-                mascot.on_task_complete(
-                    success, str(self._last_result.get("result", ""))[:80]
+                self._last_result = self.ww.run(
+                    goal,
+                    max_spirals,
+                    image_path=image_path,
+                    reasoning_effort=reasoning_effort,
+                    conversation_window=window,
                 )
-            except Exception:
-                pass
+                self._task_history.append({
+                    "goal": goal[:100],
+                    "time": datetime.now(timezone.utc).isoformat(),
+                    "status": self._last_result.get("status", "?"),
+                    "spirals": self._last_result.get("spirals_completed", 0),
+                    "entity_id": entity_id,
+                    "platform": platform,
+                    "window": window,
+                })
 
-            return self._last_result
+                try:
+                    from core.mascot import mascot
+                    success = self._last_result.get("status") in ("completed", "success")
+                    mascot.on_task_complete(
+                        success, str(self._last_result.get("result", ""))[:80]
+                    )
+                except Exception:
+                    pass
+
+                return self._last_result
+            finally:
+                self._run_lock.release()
 
     def run_in_background(self, goal: str, max_spirals: int = 10) -> Dict:
         """Execute task via async task queue with tracking.
@@ -662,6 +719,20 @@ class WorldwaveServer:
             "config_profile": self.config.active_profile(),
             "skills_count": len(self.skills.list()),
             "task_history_count": len(self._task_history),
+            "concurrency": {
+                "engine_lock_runs": self._lock_runs,
+                "engine_lock_waits": self._lock_waits,
+                "session_windows": len(self._session_locks),
+            },
+            "security": {
+                "api_key_strength": (
+                    "weak" if len(str(globals().get("WW_API_KEY") or os.environ.get("WW_API_KEY") or "")) < 16
+                    else "ok"
+                ),
+                "pairing_auto_approve": bool(os.environ.get("WW_PAIRING_AUTO_APPROVE")),
+                "skip_auto_evolution": bool(os.environ.get("WW_SKIP_AUTO_EVOLUTION")),
+                "approval_mode": os.environ.get("WW_APPROVAL_MODE", "auto"),
+            },
             "evolution": {
                 "metrics": self.ww.metrics.summary() if self.ww else {},
                 "available": True,
@@ -691,39 +762,55 @@ else:
     WW_API_KEY = _auto_key
     logger.info("WW_API_KEY auto-generated — set it in .env to make it permanent")
 
+if WW_API_KEY and len(WW_API_KEY) < 16:
+    logger.warning(
+        "WW_API_KEY is only %d chars — generate a stronger key "
+        "(e.g. python -c \"import secrets;print(secrets.token_urlsafe(32))\")",
+        len(WW_API_KEY),
+    )
+
 _API_BYPASS_PATHS = {"/ww/health", "/docs", "/openapi.json", "/redoc", "/ww/webui", "/ww/webui/", "/ww/mascot/state"}
+
+
+def _extract_api_key(request: Request) -> str:
+    """Accept Authorization Bearer, X-API-Key, or ?api_key=."""
+    auth = request.headers.get("Authorization", "") or ""
+    if auth.startswith("Bearer ") and auth[7:].strip():
+        return auth[7:].strip()
+    for h in ("X-API-Key", "X-Api-Key", "x-api-key"):
+        v = request.headers.get(h)
+        if v and str(v).strip():
+            return str(v).strip()
+    q = request.query_params.get("api_key")
+    return (q or "").strip()
+
 
 @app.middleware("http")
 async def api_auth_middleware(request: Request, call_next):
     """API Key verification middleware.
-    
-    WW_API_KEY environment variable must be set (auto-generated or manually set).
-    All non-whitelist endpoints must include Authorization: Bearer <key> header
-    or ?api_key=<key> query parameter.
+
+    Accepts Authorization Bearer, X-API-Key header, or ?api_key= query.
     """
+    from fastapi.responses import JSONResponse
+
     if not WW_API_KEY:
-        # Theoretically should not reach here (auto-generated during construction)
-        from fastapi.responses import JSONResponse
         return JSONResponse(status_code=500, content={"error": "Server misconfigured"})
 
     path = request.url.path
     if any(path.startswith(p) for p in _API_BYPASS_PATHS):
         return await call_next(request)
 
-    # Check header
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer ") and auth[7:] == WW_API_KEY:
+    provided = _extract_api_key(request)
+    if provided and provided == WW_API_KEY:
         return await call_next(request)
 
-    # Check query param
-    if request.query_params.get("api_key") == WW_API_KEY:
-        return await call_next(request)
-
-    from fastapi.responses import JSONResponse
     return JSONResponse(
-        status_code=401,
-        content={"error": "Unauthorized", "message": "Valid API key required. Set WW_API_KEY env var or pass ?api_key=<key>"},
-    )
+            status_code=401,
+            content={
+                "error": "Unauthorized",
+                "message": "Valid API key required. Pass X-API-Key header, Authorization Bearer token, or api_key query.",
+            },
+        )
 
 server = WorldwaveServer()
 
@@ -769,7 +856,12 @@ def get_status():
     # Add Dashboard-specific fields
     if ww:
         result["current_phase"] = ww.state.current_phase
-        result["current_spiral"] = ww.state.current_spiral
+        # Session-local spiral counter (process lifetime engine state) — not lifetime total
+        result["session_spiral"] = ww.state.current_spiral
+        result["current_spiral"] = ww.state.current_spiral  # back-compat
+        evo = (result.get("evolution") or {}).get("metrics") or {}
+        result["lifetime_spirals"] = evo.get("total_spirals", 0)
+        result["lifetime_tasks"] = evo.get("total_tasks", 0)
         result["running"] = ww.running
         result["steps_completed"] = getattr(ww, "_steps_completed", 0)
         result["steps_total"] = getattr(ww, "_steps_total", 0)
@@ -2310,11 +2402,10 @@ def plugins_install(req: dict):
     raise HTTPException(400, "Install failed")
 
 
-# ── Start ──
+# ── Start (lifespan — replaces deprecated on_event) ──
 
-@app.on_event("startup")
-def startup():
-    """scheduler auto-starts after server boot + register scheduled evolution task."""
+def _bootstrap_runtime():
+    """Background services after HTTP server is ready."""
     import threading
 
     # Propagate main LLM model info for Computer Use vision auto-detection
@@ -2326,8 +2417,16 @@ def startup():
     if provider:
         os.environ.setdefault("WW_MAIN_PROVIDER", provider)
 
+    # Surface insecure runtime flags early
+    if os.environ.get("WW_PAIRING_AUTO_APPROVE"):
+        logger.warning("WW_PAIRING_AUTO_APPROVE is set — DM pairing whitelist is bypassed")
+    if os.environ.get("WW_SKIP_AUTO_EVOLUTION"):
+        logger.info("WW_SKIP_AUTO_EVOLUTION set — auto evolution scheduler disabled")
+    if os.environ.get("WW_APPROVAL_MODE", "auto").lower() == "auto":
+        logger.info("Tool approval_mode=auto (set WW_APPROVAL_MODE=hitl for confirmation)")
+
     def _start_scheduler():
-        # Start gateway (Background thread) 
+        # Start gateway (Background thread)
         if server.gateway:
             try:
                 server.gateway.start_all()
@@ -2351,40 +2450,42 @@ def startup():
             server.contacts.start()
             logger.info("Contacts module started")
         except Exception as e:
-            logger.warning(f"Contacts start failed: {e}")
+            logger.warning("Contacts start failed: %s", e)
 
         # Start P2P network (global gossip + tracker bootstrap)
         try:
             server.p2p = server._init_p2p()
             if server.p2p:
-                logger.info("P2P network started: node=%s mode=%s peers=%d",
-                            server.p2p.node_id[:12],
-                            "public" if server.p2p.public_mode else "private",
-                            server.p2p.peer_count())
+                logger.info(
+                    "P2P network started: node=%s mode=%s peers=%d",
+                    server.p2p.node_id[:12],
+                    "public" if server.p2p.public_mode else "private",
+                    server.p2p.peer_count(),
+                )
         except Exception as e:
-            logger.warning(f"P2P network start failed: {e}")
+            logger.warning("P2P network start failed: %s", e)
 
-        time.sleep(3)  # etc WW Fully initialized
+        time.sleep(3)  # allow WW to settle
         try:
             if not server.ww:
                 return
-            # startscheduler
-            result = server.start_scheduler()
-            # Skip auto-evolution if env var set (for testing/debugging)
+            server.start_scheduler()
             if os.environ.get("WW_SKIP_AUTO_EVOLUTION"):
                 logger.info("Auto-evolution skipped (WW_SKIP_AUTO_EVOLUTION set)")
                 return
-            # check if already exists auto-evolution Task
             existing = server.ww.scheduler.list()
             has_evo = any(t.get("name") == "auto-evolution" for t in existing)
             if not has_evo:
                 server.ww.scheduler.add(
                     name="auto-evolution",
-                    goal="Self-audit and evolution: check system state, code issues, execute evolution cycle. Auto-fix improvement points when found.",
+                    goal=(
+                        "Self-audit and evolution: check system state, code issues, "
+                        "execute evolution cycle. Auto-fix improvement points when found."
+                    ),
                     schedule="0 * * * *",
                 )
         except Exception as e:
-            logger.warning(f"Auto-scheduler init failed: {e}")
+            logger.warning("Auto-scheduler init failed: %s", e)
 
     threading.Thread(target=_start_scheduler, daemon=True).start()
 
@@ -2394,26 +2495,26 @@ def startup():
         mascot_instance.start()
         logger.info("Mascot fat shark mascot started")
     except Exception as e:
-        logger.warning(f"Mascot init failed: {e}")
+        logger.warning("Mascot init failed: %s", e)
 
     # Windows: auto-start system tray
     def _launch_tray():
         time.sleep(5)
         try:
             import subprocess
-            script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                  "core", "mascot", "launcher.ps1")
+            script = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "core", "mascot", "launcher.ps1",
+            )
             if not os.path.exists(script):
                 return
 
             if os.name == "nt":
-                # Native Windows — launch PowerShell directly
                 subprocess.Popen([
                     "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
                     "-WindowStyle", "Hidden", "-File", script, "-Tray",
                 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             else:
-                # WSL — use /mnt/c/ path
                 ps = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
                 if not os.path.exists(ps):
                     return
@@ -2426,6 +2527,31 @@ def startup():
             pass
 
     threading.Thread(target=_launch_tray, daemon=True).start()
+
+
+def _shutdown_runtime():
+    try:
+        if server.gateway:
+            server.gateway.stop_all()
+            logger.info("Gateway adapters stopped")
+    except Exception as e:
+        logger.warning("Gateway stop failed: %s", e)
+
+
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    _bootstrap_runtime()
+    try:
+        yield
+    finally:
+        _shutdown_runtime()
+
+
+# Prefer lifespan over deprecated on_event("startup")
+app.router.lifespan_context = _app_lifespan
 
 
 # ── Entity Identity Endpoints (P0: Persistent Cognitive Entity) ──
