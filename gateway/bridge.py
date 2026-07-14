@@ -23,97 +23,131 @@ class TelegramGateway:
         poll_interval: float = 2.0,
         task_handler: Optional[Callable] = None,
     ):
-        print(f"[WW] TelegramGateway init: token={'***' if token else 'EMPTY'}, ws={workspace_id}", flush=True)
+        log.info("TelegramGateway init workspace=%s", workspace_id)
         from gateway.adapters.telegram import TelegramAdapter
-        
+
         # Wrap task_handler so it receives UnifiedMessage and extracts command + context
         async def _on_message(unified):
-            print(f"[BRIDGE] _on_message called with unified type={type(unified).__name__}", flush=True)
-            # Extract text from UnifiedMessage content
             text = ""
             chat_id = ""
+            user_id = ""
             sender_name = "?"
             platform = "telegram"
             photo_path = ""
             try:
-                if hasattr(unified, 'content') and unified.content:
-                    if hasattr(unified.content, 'text') and unified.content.text:
-                        text = getattr(unified.content.text, 'clean_text', '') or \
-                               getattr(unified.content.text, 'body', '') or ''
-                    # Extract photo_path from routing hints (set by TelegramAdapter)
-                    if hasattr(unified, 'routing') and unified.routing:
-                        photo_path = getattr(unified.routing, 'photo_path', '') or ''
-                if hasattr(unified, 'sender') and unified.sender:
-                    sender_name = getattr(unified.sender, 'display_name', '?')
-                    platform = getattr(unified, 'platform', 'telegram')
-                # session_key is "telegram:{user_id}:{chat_id}"
-                if hasattr(unified, 'session_key') and unified.session_key:
-                    parts = unified.session_key.split(':')
+                if hasattr(unified, "content") and unified.content:
+                    if hasattr(unified.content, "text") and unified.content.text:
+                        text = (
+                            getattr(unified.content.text, "clean_text", "")
+                            or getattr(unified.content.text, "body", "")
+                            or ""
+                        )
+                    if hasattr(unified, "routing") and unified.routing:
+                        photo_path = getattr(unified.routing, "photo_path", "") or ""
+                if hasattr(unified, "sender") and unified.sender:
+                    sender_name = getattr(unified.sender, "display_name", "?")
+                    user_id = (
+                        getattr(unified.sender, "user_id", "")
+                        or getattr(unified.sender, "id", "")
+                        or ""
+                    )
+                    platform = getattr(unified, "platform", "telegram") or "telegram"
+                # session_key is "telegram:{user_id}:{chat_id}" (or with tenant prefix)
+                if hasattr(unified, "session_key") and unified.session_key:
+                    parts = str(unified.session_key).split(":")
                     if len(parts) >= 3:
-                        chat_id = parts[2]  # third segment is chat_id
+                        # last two segments are usually user_id, chat_id
+                        user_id = user_id or parts[-2]
+                        chat_id = parts[-1]
+                    elif len(parts) == 2:
+                        user_id = user_id or parts[0]
+                        chat_id = parts[1]
 
                 if not chat_id:
-                    print(f"[BRIDGE] WARNING: No chat_id extracted, session_key={getattr(unified, 'session_key', 'N/A')}", flush=True)
+                    log.warning(
+                        "No chat_id extracted, session_key=%s",
+                        getattr(unified, "session_key", "N/A"),
+                    )
 
                 context = {
                     "platform": platform,
-                    "chat_id": chat_id,
+                    "chat_id": str(chat_id or ""),
+                    "user_id": str(user_id or chat_id or "default"),
                     "sender": sender_name,
                     "photo_path": photo_path,
+                    "session_key": getattr(unified, "session_key", "") or "",
                 }
-                
-                print(f"[BRIDGE] text={text[:80]!r} chat_id={chat_id} sender={sender_name}", flush=True)
-                
+
+                log.info(
+                    "gateway message chat=%s user=%s text=%r",
+                    chat_id,
+                    context["user_id"],
+                    (text or "")[:80],
+                )
+
                 if task_handler:
                     result = task_handler(text, context)
-                    print(f"[BRIDGE] task_handler returned: {result[:100] if result else 'None'!r}", flush=True)
-                    # Send back to the platform
                     if result and chat_id:
                         sent = self._adapter.send_message(chat_id, result)
-                        print(f"[BRIDGE] send_message({chat_id}, ...) -> {sent}", flush=True)
+                        log.info("send_message(%s) -> %s", chat_id, sent)
                     else:
-                        print(f"[BRIDGE] No reply sent: result={result!r} chat_id={chat_id!r}", flush=True)
+                        log.warning(
+                            "No reply sent: result=%r chat_id=%r",
+                            (result[:80] if result else result),
+                            chat_id,
+                        )
             except Exception as e:
-                import traceback
-                print(f"[BRIDGE] ERROR: {e}", flush=True)
-                traceback.print_exc()
-        
+                log.exception("BRIDGE handler error: %s", e)
+
         self._adapter = TelegramAdapter(
             token=token,
             workspace_id=workspace_id,
             poll_interval=poll_interval,
             on_message=_on_message,
         )
-        print(f"[WW] TelegramAdapter created, bot_username={self._adapter._bot_username}", flush=True)
+        self._started = False
 
     def start(self):
-        print("[WW] TelegramGateway.start() called", flush=True)
+        if self._started or (hasattr(self._adapter, "is_running") and self._adapter.is_running()):
+            log.info("TelegramGateway already running — skip start")
+            return
         self._adapter.start()
-        print(f"[WW] TelegramGateway.start() done, running={self._adapter.is_running()}", flush=True)
+        self._started = True
+        log.info(
+            "TelegramGateway started running=%s",
+            self._adapter.is_running() if hasattr(self._adapter, "is_running") else "?",
+        )
 
     def stop(self):
         self._adapter.stop()
+        self._started = False
 
     def is_running(self) -> bool:
-        return self._adapter.is_running()
+        return self._adapter.is_running() if hasattr(self._adapter, "is_running") else self._started
 
     def send_message(self, chat_id: str, text: str, **kwargs) -> bool:
         return self._adapter.send_message(chat_id, text, **kwargs)
 
     @property
     def bot_username(self) -> str:
-        return getattr(self._adapter, '_bot_username', '')
+        return getattr(self._adapter, "_bot_username", "")
 
 
 class GatewayManager:
-    """Simple registry for gateway adapters."""
+    """Simple registry for gateway adapters.
+
+    register() only stores adapters — start_all() starts them once.
+    This avoids double-start (register + startup) and import-time side effects.
+    """
 
     def __init__(self):
         self._adapters: list = []
+        self._started = False
 
-    def register(self, adapter):
+    def register(self, adapter, start: bool = False):
+        """Register adapter. Does NOT start by default (prevents double pollers)."""
         self._adapters.append(adapter)
-        if hasattr(adapter, 'start'):
+        if start and hasattr(adapter, "start"):
             adapter.start()
         log.info("Gateway registered: %s", type(adapter).__name__)
 
@@ -121,8 +155,8 @@ class GatewayManager:
         gateways = []
         for a in self._adapters:
             adapter_type = type(a).__name__
-            running = a.is_running() if hasattr(a, 'is_running') else False
-            configured = bool(a._token) if hasattr(a, '_token') else True
+            running = a.is_running() if hasattr(a, "is_running") else False
+            configured = bool(getattr(a, "_token", True))
             gateways.append({
                 "platform": adapter_type,
                 "running": running,
@@ -132,10 +166,21 @@ class GatewayManager:
 
     def stop_all(self):
         for a in self._adapters:
-            if hasattr(a, 'stop'):
-                a.stop()
+            if hasattr(a, "stop"):
+                try:
+                    a.stop()
+                except Exception as e:
+                    log.warning("Gateway stop failed: %s", e)
+        self._started = False
 
     def start_all(self):
+        """Idempotent start — safe to call from FastAPI startup only."""
         for a in self._adapters:
-            if hasattr(a, 'start'):
-                a.start()
+            try:
+                if hasattr(a, "is_running") and a.is_running():
+                    continue
+                if hasattr(a, "start"):
+                    a.start()
+            except Exception as e:
+                log.warning("Gateway start failed for %s: %s", type(a).__name__, e)
+        self._started = True

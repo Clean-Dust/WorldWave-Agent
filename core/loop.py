@@ -555,7 +555,8 @@ class Worldwave:
         }
 
     def run(self, goal: str, max_spirals: int = 3, image_path: str = "", reasoning_effort: str = "",
-            on_spiral_progress: Optional[Callable[[str, str, int], None]] = None) -> Dict[str, Any]:
+            on_spiral_progress: Optional[Callable[[str, str, int], None]] = None,
+            conversation_window: str = "") -> Dict[str, Any]:
         """
         Execute a goal-driven spiral cycle sequence.
 
@@ -566,6 +567,7 @@ class Worldwave:
             reasoning_effort: DeepSeek reasoning effort level (low/medium/high/xhigh)
             on_spiral_progress: Optional callback for streaming progress.
                 Called with (phase, message, progress_pct) at each phase transition.
+            conversation_window: Per-chat key for ConversationManager isolation.
         Returns:
             {status, spirals_completed, results, session_id, summary}
         """
@@ -588,6 +590,9 @@ class Worldwave:
         self._log("## Goal: " + goal)
         self.running = True
 
+        # Per-user/chat conversation window (do not share default session across users)
+        conv_window = conversation_window or self.state.session_id
+
         # ── Entity continuity injection ──
         entity_ctx = self._get_entity_context()
         if entity_ctx:
@@ -604,11 +609,46 @@ class Worldwave:
             if reflex_result is not None:
                 self._log(f"## Reflex arc complete: {reflex_result['summary']}")
                 self.running = False
+                # Record metrics + light memory so fast path does not starve learning
+                try:
+                    self.metrics.collect_from_task(reflex_result)
+                except Exception:
+                    pass
+                try:
+                    if self.memory and hasattr(self.memory, "store_text"):
+                        summary = reflex_result.get("summary", "reflex")
+                        snippet = ""
+                        results = reflex_result.get("results") or []
+                        if results:
+                            actions = results[0].get("actions") or []
+                            for a in actions:
+                                if a.get("tool") == "reflex_text":
+                                    snippet = (a.get("result") or {}).get("output", "")[:240]
+                                    break
+                        content = f"[reflex] user={goal[:160]} | reply={snippet or summary}"
+                        self.memory.store_text(content, source="reflex", entities=["reflex"])
+                except Exception:
+                    pass
+                try:
+                    self.conversation.add_message("user", goal, window_id=conv_window)
+                    # Persist assistant reply if present
+                    reply = ""
+                    results = reflex_result.get("results") or []
+                    if results:
+                        for a in (results[0].get("actions") or []):
+                            if a.get("tool") == "reflex_text":
+                                reply = (a.get("result") or {}).get("output", "")
+                                break
+                    if reply:
+                        self.conversation.add_message("assistant", reply, window_id=conv_window)
+                except Exception:
+                    pass
+                reflex_result["conversation_window"] = conv_window
                 return reflex_result
             self._log("## Reflex arc failed, falling through to full spiral...")
 
-        # Create context session
-        session_key = self.state.session_id
+        # Create context session (isolated by conversation_window)
+        session_key = conv_window
         self.conversation.add_message("user", goal, window_id=session_key)
 
         results = []
@@ -994,7 +1034,7 @@ class Worldwave:
                     self.conversation.add_message(
                         "assistant",
                         f"Spiral #{spiral.spiral_number} complete: {ctx_summary[:200]}",
-                        window_id=self.state.session_id,
+                        window_id=session_key,
                     )
 
                 # Complete spiral

@@ -174,6 +174,11 @@ class WorldwaveServer:
         self._autonomous_running = False
         self._last_result: Optional[Dict] = None
 
+        # Serialize runs against the shared Worldwave instance (state/conversation/llm).
+        # TaskQueue may have multiple workers; without this, concurrent Telegram/HTTP
+        # requests race on phase state and model swaps.
+        self._run_lock = threading.RLock()
+
         # History Record
         self._task_history: List[Dict] = []
 
@@ -194,14 +199,15 @@ class WorldwaveServer:
         self._init_ww()
         self._scheduler_goal = None  # Used for scheduler callback
 
-        # Telegram gateway (built-in Worldwave, not external patch)
+        # Telegram gateway (built-in Worldwave, not external patch).
+        # Adapters are REGISTERED only here; started once in FastAPI startup.
         try:
             from gateway import GatewayManager
             self.gateway = GatewayManager()
             self._init_gateway()
-            print("[WW] Gateway init: OK", flush=True)
+            logger.info("Gateway adapters registered (start deferred to startup)")
         except Exception as e:
-            print(f"[WW] Gateway init skipped: {e}", flush=True)
+            logger.warning("Gateway init skipped: %s", e)
             self.gateway = None
 
         # Agent gRPC server (Wavegate control plane interface)
@@ -248,9 +254,8 @@ class WorldwaveServer:
             logger.warning("MCP bridge skipped: %s", e)
 
     def _init_gateway(self):
-        """Initialize Telegram gateway (WW built-in)."""
+        """Register gateway adapters (do not start pollers yet)."""
         from gateway.bridge import TelegramGateway  # lazy import for scope
-        print("[WW] _init_gateway() called", flush=True)
         token = os.environ.get("TELEGRAM_WW_TOKEN", "")
         workspace_raw = os.environ.get("TELEGRAM_WW_WORKSPACE", "")
         if token and workspace_raw:
@@ -261,7 +266,8 @@ class WorldwaveServer:
                     poll_interval=2.0,
                     task_handler=self._gateway_task_handler,
                 )
-                self.gateway.register(tg)
+                # start=False: FastAPI startup calls start_all() once
+                self.gateway.register(tg, start=False)
                 logger.info("Telegram gateway registered (workspace=%s)", workspace_raw)
             except Exception as e:
                 logger.warning("Telegram gateway init failed: %s", e)
@@ -277,18 +283,18 @@ class WorldwaveServer:
                     token=discord_token,
                     task_handler=self._gateway_task_handler,
                 )
-                self.gateway.register(dg)
+                self.gateway.register(dg, start=False)
                 logger.info("Discord gateway registered")
             except ImportError:
                 logger.info("Discord adapter not yet available (gateway/adapters/discord.py)")
             except Exception as e:
                 logger.warning("Discord gateway init failed: %s", e)
 
-        # Webhook gateway (deprecated — use gateway/adapters/ instead)
+        # Webhook gateway (optional)
         try:
             from gateway.adapters.webhook import WebhookAdapter
             wh = WebhookAdapter(on_message=self._gateway_task_handler)
-            self.gateway.register(wh)
+            self.gateway.register(wh, start=False)
             logger.info("Webhook gateway registered")
         except ImportError:
             logger.info("Webhook adapter not yet available (gateway/adapters/webhook.py)")
@@ -355,47 +361,84 @@ class WorldwaveServer:
         return p2p
 
     def _gateway_task_handler(self, command: str, context: dict) -> str:
-        """Handle a task from the gateway (e.g. @mention)."""
-        logger.info("Gateway task: %s", command[:100])
+        """Handle a task from the gateway (e.g. @mention / DM).
+
+        Resolves platform identity → entity_id so multi-user chats do not
+        collapse onto the default entity / shared conversation window.
+        """
+        logger.info("Gateway task: %s", (command or "")[:100])
         if not self.ww:
             return "WW not initialized"
         try:
+            context = context or {}
             image_path = context.get("photo_path", "") or context.get("image_path", "")
-            result = self.run_task(command, max_spirals=3, image_path=image_path)
+            platform = (context.get("platform") or "telegram").strip() or "telegram"
+            user_id = (
+                str(context.get("user_id") or "").strip()
+                or str(context.get("chat_id") or "").strip()
+                or "default"
+            )
+            chat_id = str(context.get("chat_id") or user_id)
+            display_name = str(context.get("sender") or "User")
+
+            entity_id = ""
+            if self.identity_resolver:
+                try:
+                    entity_id = self.identity_resolver.resolve(
+                        platform=platform,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        display_name=display_name,
+                    )
+                except Exception as e:
+                    logger.warning("identity resolve failed: %s", e)
+
+            conversation_window = (
+                context.get("session_key")
+                or f"{platform}:{user_id}:{chat_id}"
+            )
+
+            result = self.run_task(
+                command,
+                max_spirals=3,
+                image_path=image_path,
+                entity_id=entity_id,
+                platform=platform,
+                conversation_window=conversation_window,
+            )
             status = result.get("status", "?")
-            spirals = result.get("spirals_completed", 0)
-            
+
             # Extract the actual response — check reflex arc first, then spiral
             response_text = ""
             spiral_results = result.get("results", [])
             if spiral_results:
                 last_spiral = spiral_results[-1]
                 actions = last_spiral.get("actions", [])
-                # Reflex arc: check reflex_text (direct LLM response) or tool outputs
                 for a in reversed(actions):
-                    if a.get("tool") == "reflex_text":
+                    if a.get("tool") in ("reflex_text", "respond"):
                         response_text = a.get("result", {}).get("output", "")
                         break
-                    if a.get("tool") == "respond":
-                        response_text = a.get("result", {}).get("output", "")
-                        break
-                # If reflex arc has tool calls but no text output, combine results
                 if not response_text and result.get("reflex"):
                     parts = []
                     for a in actions:
-                        out = a.get("result", {}).get("output", "") or a.get("result", {}).get("error", "")
+                        out = (
+                            a.get("result", {}).get("output", "")
+                            or a.get("result", {}).get("error", "")
+                        )
                         if out:
-                            parts.append(out)
+                            parts.append(str(out))
                     if parts:
                         response_text = "\n".join(parts)
-                # Fallback: check evaluation summary
                 if not response_text:
                     eval_result = last_spiral.get("evaluation", {})
-                    response_text = eval_result.get("summary", "") or eval_result.get("response", "")
-            
+                    response_text = (
+                        eval_result.get("summary", "")
+                        or eval_result.get("response", "")
+                        or eval_result.get("reason", "")
+                    )
+
             if response_text:
-                return response_text[:1500]
-            # Fallback to status if no response text extracted
+                return str(response_text)[:1500]
             return f"[{status}] {command[:200]}"
         except Exception as e:
             logger.error("Gateway task error: %s", e)
@@ -413,61 +456,79 @@ class WorldwaveServer:
     def run_task(self, goal: str, max_spirals: int = 10,
                  model: str = "", provider: str = "", image_path: str = "",
                  reasoning_effort: str = "", entity_id: str = "",
-                 platform: str = "http") -> Dict[str, Any]:
-        """Execute a task.
+                 platform: str = "http",
+                 conversation_window: str = "") -> Dict[str, Any]:
+        """Execute a task under a process-wide lock.
 
         Args:
             entity_id: Optional entity ID for cross-platform continuity.
                        If empty, uses the default entity (single-user mode).
             platform: Platform identifier for context (telegram, terminal, http, etc.)
+            conversation_window: Per-chat conversation key for ContextWindow isolation.
         """
-        # ── Entity continuity: resolve and set entity context ──
-        if not entity_id and self.identity_resolver:
-            # Single-user mode: use default entity
-            entities = self.identity_resolver.get_all_entities()
-            if entities:
-                entity_id = entities[0]["entity_id"]
-            else:
-                entity_id = self.identity_resolver.resolve(
-                    platform="http", user_id="default", display_name="User"
-                )
-        if entity_id:
-            self.ww.set_entity(entity_id, platform)
+        with self._run_lock:
+            # ── Entity continuity: resolve and set entity context ──
+            if not entity_id and self.identity_resolver:
+                entities = self.identity_resolver.get_all_entities()
+                if entities:
+                    entity_id = entities[0]["entity_id"]
+                else:
+                    entity_id = self.identity_resolver.resolve(
+                        platform=platform or "http",
+                        user_id="default",
+                        display_name="User",
+                    )
+            if entity_id:
+                self.ww.set_entity(entity_id, platform)
 
-        # Notify Mascot: Start thinking
-        try:
-            from core.mascot import mascot
-            mascot.on_task_start(goal)
-        except Exception:
-            pass
-
-        if model or provider:
+            # Notify Mascot: Start thinking
             try:
-                llm_config = {"model": model or self.config.get("model", "deepseek/deepseek-v4-flash")}
-                if provider:
-                    llm_config["provider"] = provider
-                self.ww.llm = self.ww.llm.__class__(llm_config)
-            except Exception as e:
-                logger.warning(f"Model switch failed: {e}")
+                from core.mascot import mascot
+                mascot.on_task_start(goal)
+            except Exception:
+                pass
 
-        self._last_result = self.ww.run(goal, max_spirals, image_path=image_path,
-                                        reasoning_effort=reasoning_effort)
-        self._task_history.append({
-            "goal": goal[:100],
-            "time": datetime.now(timezone.utc).isoformat(),
-            "status": self._last_result.get("status", "?"),
-            "spirals": self._last_result.get("spirals_completed", 0),
-        })
+            if model or provider:
+                try:
+                    llm_config = {
+                        "model": model or self.config.get("model", "deepseek/deepseek-v4-flash")
+                    }
+                    if provider:
+                        llm_config["provider"] = provider
+                    self.ww.llm = self.ww.llm.__class__(llm_config)
+                except Exception as e:
+                    logger.warning("Model switch failed: %s", e)
 
-        # Notify Mascot: Task completed
-        try:
-            from core.mascot import mascot
-            success = self._last_result.get("status") in ("completed", "success")
-            mascot.on_task_complete(success, str(self._last_result.get("result", ""))[:80])
-        except Exception:
-            pass
+            window = conversation_window or (
+                f"{platform}:{entity_id}" if entity_id else ""
+            )
+            self._last_result = self.ww.run(
+                goal,
+                max_spirals,
+                image_path=image_path,
+                reasoning_effort=reasoning_effort,
+                conversation_window=window,
+            )
+            self._task_history.append({
+                "goal": goal[:100],
+                "time": datetime.now(timezone.utc).isoformat(),
+                "status": self._last_result.get("status", "?"),
+                "spirals": self._last_result.get("spirals_completed", 0),
+                "entity_id": entity_id,
+                "platform": platform,
+                "window": window,
+            })
 
-        return self._last_result
+            try:
+                from core.mascot import mascot
+                success = self._last_result.get("status") in ("completed", "success")
+                mascot.on_task_complete(
+                    success, str(self._last_result.get("result", ""))[:80]
+                )
+            except Exception:
+                pass
+
+            return self._last_result
 
     def run_in_background(self, goal: str, max_spirals: int = 10) -> Dict:
         """Execute task via async task queue with tracking.
@@ -542,17 +603,48 @@ class WorldwaveServer:
     # ── Status ──
 
     def status(self) -> Dict[str, Any]:
-        """Current status."""
+        """Current status — uses in-process MemorySystem (not deleted external server)."""
         state = self.ww.state.summary() if self.ww else {"error": "not_initialized"}
 
-        memory_ok = False
-        try:
-            import urllib.request
-            req = urllib.request.Request(self.config.get("memory_url", "") + "/v2/health")
-            with urllib.request.urlopen(req, timeout=2) as resp:
-                memory_ok = resp.status == 200
-        except:
-            pass
+        memory_info: Dict[str, Any] = {"available": False}
+        mem = None
+        if self.ww and getattr(self.ww, "memory", None) is not None:
+            mem = self.ww.memory
+        elif getattr(self, "memory", None) is not None:
+            mem = self.memory
+        if mem is not None:
+            try:
+                stats = {}
+                if hasattr(mem, "overall_status"):
+                    stats = mem.overall_status() or {}
+                elif hasattr(mem, "get_stats"):
+                    stats = mem.get_stats() or {}
+                hippo = stats.get("hippocampus") if isinstance(stats, dict) else None
+                count = 0
+                capacity = 100
+                if isinstance(hippo, dict):
+                    count = hippo.get("count", hippo.get("size", 0)) or 0
+                    capacity = hippo.get("capacity", 100) or 100
+                elif hasattr(mem, "hippocampus"):
+                    try:
+                        count = len(mem.hippocampus)
+                    except Exception:
+                        count = 0
+                memory_info = {
+                    "available": True,
+                    "backend": "in_process",
+                    "atoms": count,
+                    "capacity": capacity,
+                    "sleep_cycles": stats.get("sleep_cycles") if isinstance(stats, dict) else None,
+                }
+            except Exception as e:
+                memory_info = {"available": True, "backend": "in_process", "error": str(e)[:120]}
+
+        model_name = ""
+        provider_name = ""
+        if self.ww and getattr(self.ww, "llm", None) is not None:
+            model_name = getattr(self.ww.llm, "model", "") or ""
+            provider_name = getattr(self.ww.llm, "provider", "") or ""
 
         return {
             "version": WW_VERSION,
@@ -561,10 +653,12 @@ class WorldwaveServer:
                 "running": self.ww.running if self.ww else False,
                 "tools_count": len(self.ww.tools.tool_names()) if self.ww else 0,
                 "tools_categories": self.ww.tools.category_counts() if self.ww else {},
+                "model": model_name,
+                "provider": provider_name,
             },
             "autonomous": {"running": self._autonomous_running},
             "scheduler": self.scheduler.info(),
-            "memory": {"available": memory_ok},
+            "memory": memory_info,
             "config_profile": self.config.active_profile(),
             "skills_count": len(self.skills.list()),
             "task_history_count": len(self._task_history),
@@ -680,17 +774,40 @@ def get_status():
         result["steps_completed"] = getattr(ww, "_steps_completed", 0)
         result["steps_total"] = getattr(ww, "_steps_total", 0)
         result["tool_count"] = len(ww.tools.tool_names())
-        result["model_count"] = len(ww.llm._models) if hasattr(ww.llm, "_models") and ww.llm._models else 0
+        # Prefer live LLM client fields over deleted internal _models list
+        model_name = getattr(ww.llm, "model", "") or ""
+        providers = []
+        try:
+            if hasattr(ww.llm, "available_providers"):
+                providers = list(ww.llm.available_providers() or [])
+        except Exception:
+            providers = []
+        result["model"] = model_name
+        result["model_count"] = 1 if model_name else 0
+        result["available_providers"] = providers
         result["tool_categories"] = ww.tools.category_counts()
 
-        # Memory System
+        # Memory System (in-process)
         if ww.memory:
             try:
-                stats = ww.memory.statistics() if hasattr(ww.memory, "statistics") else ww.memory.stats()
-                result["hippocampus_used"] = stats.get("hippocampus_count", stats.get("atoms", 0))
-                result["hippocampus_capacity"] = stats.get("hippocampus_capacity", stats.get("capacity", 100))
-                result["memory_count"] = stats.get("total_count", stats.get("atoms", 0))
-                result["last_sleep"] = stats.get("last_consolidation", stats.get("last_sleep", "-"))
+                if hasattr(ww.memory, "overall_status"):
+                    stats = ww.memory.overall_status()
+                elif hasattr(ww.memory, "get_stats"):
+                    stats = ww.memory.get_stats()
+                else:
+                    stats = {}
+                hippo = stats.get("hippocampus", {}) if isinstance(stats, dict) else {}
+                if isinstance(hippo, dict):
+                    result["hippocampus_used"] = hippo.get("count", hippo.get("size", 0))
+                    result["hippocampus_capacity"] = hippo.get("capacity", 100)
+                else:
+                    try:
+                        result["hippocampus_used"] = len(ww.memory.hippocampus)
+                    except Exception:
+                        result["hippocampus_used"] = 0
+                    result["hippocampus_capacity"] = 100
+                result["memory_count"] = result.get("hippocampus_used", 0)
+                result["last_sleep"] = stats.get("sleep_cycles", "-") if isinstance(stats, dict) else "-"
             except Exception:
                 pass
 

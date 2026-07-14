@@ -83,7 +83,11 @@ class ToolRegistry:
         self.guardrails = None
         self.approval_callback = None  # async: fn(tool_name, params) -> bool
         self._pending_approvals = {}  # {req_id: {tool_name, params, timestamp}}
-        self.approval_mode = "auto"   # auto= authorized silent execute, hitl=needs confirmation, deny=block all high risk
+        self.approval_mode = "auto"   # auto= silent execute, hitl=needs confirmation, deny=block all high risk
+        # Allow production override without code change
+        env_mode = os.environ.get("WW_APPROVAL_MODE", "").strip().lower()
+        if env_mode in ("auto", "hitl", "deny"):
+            self.approval_mode = env_mode
         self.suspend_callback = None  # fn(tool_name, params, cp_id) — save checkpoint arousal
 
     def register(self, tool: ToolDef):
@@ -1864,9 +1868,21 @@ def default_registry(guardrails=None) -> ToolRegistry:
                         examples=['self_heal_patch(path="core/llm.py", old="old_text", new="new_text")'])
 
     # ── Computer Use tool (Windows Desktop Control) ──
+    # Skip registration on headless hosts (no PowerShell / no display) to avoid
+    # flooding the tool schema and inflating tool failure rates.
     try:
-        from tools.computer_use import register_tools as register_cu_tools
-        register_cu_tools(r)
+        cu_ok = False
+        try:
+            from core.computer_use import check_available
+            cu_ok = bool(check_available())
+        except Exception:
+            cu_ok = False
+        force_cu = os.environ.get("WW_FORCE_COMPUTER_USE", "").lower() in ("1", "true", "yes")
+        if cu_ok or force_cu:
+            from tools.computer_use import register_tools as register_cu_tools
+            register_cu_tools(r)
+        else:
+            pass  # headless: omit CU tools
     except Exception:
         pass  # Computer Use is not mandatory, load failure does not affect other features
 
