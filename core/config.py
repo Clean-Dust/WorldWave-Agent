@@ -1,10 +1,10 @@
-"""ww/core/config.py — Worldwave layered configuration system v0.2
+"""ww/core/config.py — Worldwave layered configuration system v0.3
 
-Three-layer overlay (priority from low to high):
-  1. DEFAULT_CONFIG — Built-in default values in code
-  2. User Config     — ~/.ww/config.json
-  3. Profile Config  — ~/.ww/profiles/<name>.json
-  4. Environment variable — .env + os.environ (highest priority)
+Four-layer overlay (priority from low to high):
+  1. DEFAULT_CONFIG    — Built-in default values in code
+  2. User Config       — ~/.ww/config.json
+  3. Profile Config    — ~/.ww/profiles/<name>.json
+  4. Environment vars  — .env + os.environ (highest priority)
 
 usage:
     config = ConfigManager()
@@ -15,12 +15,19 @@ usage:
 """
 
 from __future__ import annotations
+
 import json
+import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from dotenv import dotenv_values
 
-# ── defaultvalue ────────────────────────────────────────────
+logger = logging.getLogger(__name__)
+
+
+# ── default values ────────────────────────────────────────────
 
 DEFAULT_CONFIG: Dict[str, Any] = {
     "model": "deepseek/deepseek-v4-flash",
@@ -55,86 +62,103 @@ ENV_PREFIX = "WW_"
 
 
 class ConfigManager:
-    """Hierarchical configuration management. Supports three-layer overlay + env var override."""
+    """Hierarchical configuration management. Supports four-layer overlay + env var override."""
 
     def __init__(self, home_dir: str = ""):
-        self._home_dir = home_dir or os.environ.get(
-            "WW_HOME", os.path.expanduser("~/worldwave")
+        self._home_dir = Path(
+            home_dir or os.environ.get("WW_HOME", os.path.expanduser("~/worldwave"))
         )
-        self._config_dir = os.environ.get(
-            "WW_CONFIG", os.path.expanduser("~/.ww")
+        self._config_dir = Path(
+            os.environ.get("WW_CONFIG", os.path.expanduser("~/.ww"))
         )
-        self._profiles_dir = os.path.join(self._config_dir, "profiles")
+        self._profiles_dir = self._config_dir / "profiles"
         self._env_loaded = False
         self._env_cache: Dict[str, str] = {}
         self._user_config: Dict[str, Any] = {}
         self._defaults = dict(DEFAULT_CONFIG)
 
         # Ensure directories exist
-        os.makedirs(self._profiles_dir, exist_ok=True)
+        self._profiles_dir.mkdir(parents=True, exist_ok=True)
 
         # Load layers
         self._load_env()
         self._load_user_config()
 
-    # ── environment variableload ─────────────────────────────────
+        # Log loaded sources
+        sources: List[str] = []
+        if self._env_cache:
+            sources.append("env")
+        if self._user_config:
+            sources.append(f"user config ({self._user_config_path()})")
+        profile = self._user_config.get("default_profile", "default")
+        if profile != "default":
+            sources.append(f"profile '{profile}'")
+        logger.info(
+            "Config loaded from: %s",
+            ", ".join(sources) if sources else "defaults only",
+        )
+
+    # ── environment variable load ─────────────────────────────────
 
     def _load_env(self):
-        """Load .env file and scan environment."""
+        """Load .env files via python-dotenv, then overlay os.environ."""
         if self._env_loaded:
             return
 
-        # Try .env in home dir
+        # Try .env files using python-dotenv for robust parsing
+        # (handles quotes, comments, multiline values correctly)
         env_paths = [
-            os.path.join(self._home_dir, ".env"),
-            os.path.join(os.path.expanduser("~"), ".ww", ".env"),
+            self._home_dir / ".env",
+            Path.home() / ".ww" / ".env",
         ]
         for env_path in env_paths:
-            if os.path.isfile(env_path):
+            if env_path.is_file():
                 try:
-                    with open(env_path) as f:
-                        for line in f:
-                            line = line.strip()
-                            if not line or line.startswith("#") or "=" not in line:
-                                continue
-                            key, _, val = line.partition("=")
-                            key = key.strip()
-                            val = val.strip().strip("\"'")
-                            self._env_cache[key] = val
-                except OSError:
-                    pass
+                    raw = dotenv_values(env_path, encoding="utf-8")
+                    values = {k: v for k, v in raw.items() if v is not None}
+                    self._env_cache.update(values)
+                except Exception:
+                    logger.warning(
+                        "Failed to load .env from %s", env_path, exc_info=True
+                    )
 
-        # OS environ overrides .env
-        self._env_cache.update({
-            k: v for k, v in os.environ.items()
-            if k.endswith("_API_KEY") or k.startswith("WW_") or k.startswith("TELEGRAM_")
-        })
+        # OS environ overrides .env (higher priority)
+        self._env_cache.update(
+            {
+                k: v
+                for k, v in os.environ.items()
+                if k.endswith("_API_KEY")
+                or k.startswith("WW_")
+                or k.startswith("TELEGRAM_")
+            }
+        )
         self._env_loaded = True
 
     # ── User Config (~/.ww/config.json) ───────────────
 
     def _user_config_path(self) -> str:
-        return os.path.join(self._config_dir, "config.json")
+        return str(self._config_dir / "config.json")
 
     def _load_user_config(self):
-        path = self._user_config_path()
-        if os.path.isfile(path):
-            try:
-                with open(path) as f:
-                    self._user_config = {k: v for k, v in json.load(f).items()}
-            except (json.JSONDecodeError, Exception):
-                pass
+        path = Path(self._user_config_path())
+        if not path.is_file():
+            return
+        try:
+            self._user_config = dict(json.loads(path.read_text()))
+        except json.JSONDecodeError:
+            logger.warning("Invalid JSON in user config: %s", path)
+        except OSError:
+            logger.warning("Failed to read user config: %s", path)
 
     def _save_user_config(self):
-        path = self._user_config_path()
-        os.makedirs(self._config_dir, exist_ok=True)
-        with open(path, "w") as f:
-            json.dump(self._user_config, f, indent=2)
+        path = Path(self._user_config_path())
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self._user_config, indent=2))
 
     # ── core API ─────────────────────────────────────
 
     def get(self, key: str, default: Any = None) -> Any:
-        """Read configuration value (three-layer overlay + env override).
+        """Read configuration value (four-layer overlay + env override).
 
         Priority: environment variable > Profile > User Config > DEFAULT_CONFIG
         """
@@ -155,10 +179,11 @@ class ConfigManager:
                     return prov
 
         # 2. Check profile config
-        profile = self._user_config.get("default_profile", "default")
-        profile_data = self.profile_get(profile) if profile != "default" else {}
-        if profile_data and key in profile_data:
-            return profile_data[key]
+        profile = self.active_profile()
+        if profile != "default":
+            profile_data = self.profile_get(profile) or {}
+            if key in profile_data:
+                return profile_data[key]
 
         # 3. Check user config
         if key in self._user_config:
@@ -190,7 +215,7 @@ class ConfigManager:
         merged.update(self._user_config)
 
         # Apply profile overrides
-        profile = self._user_config.get("default_profile", "default")
+        profile = self.active_profile()
         if profile != "default":
             profile_data = self.profile_get(profile) or {}
             merged.update(profile_data)
@@ -224,54 +249,54 @@ class ConfigManager:
     def profile_path(self, name: str) -> str:
         if not name.endswith(".json"):
             name += ".json"
-        return os.path.join(self._profiles_dir, name)
+        return str(self._profiles_dir / name)
 
     def profile_list(self) -> List[str]:
-        if not os.path.isdir(self._profiles_dir):
+        if not self._profiles_dir.is_dir():
             return []
-        return sorted([
-            f[:-5] for f in os.listdir(self._profiles_dir)
-            if f.endswith(".json")
-        ])
+        return sorted(
+            [p.stem for p in self._profiles_dir.iterdir() if p.suffix == ".json"]
+        )
 
     def profile_get(self, name: str) -> Optional[Dict[str, Any]]:
-        path = self.profile_path(name)
-        if not os.path.isfile(path):
+        path = Path(self.profile_path(name))
+        if not path.is_file():
             return None
         try:
-            with open(path) as f:
-                return json.load(f)
-        except Exception:
+            return json.loads(path.read_text())
+        except json.JSONDecodeError:
+            logger.warning("Invalid JSON in profile: %s", path)
+            return None
+        except OSError:
+            logger.warning("Failed to read profile: %s", path)
             return None
 
     def profile_set(self, name: str, data: Dict[str, Any]) -> bool:
-        os.makedirs(self._profiles_dir, exist_ok=True)
-        path = self.profile_path(name)
-        existing = {}
-        if os.path.isfile(path):
+        self._profiles_dir.mkdir(parents=True, exist_ok=True)
+        path = Path(self.profile_path(name))
+        existing: Dict[str, Any] = {}
+        if path.is_file():
             try:
-                with open(path) as f:
-                    existing = json.load(f)
-                existing.update(data)
-            except Exception:
-                existing = data
+                existing = json.loads(path.read_text())
+            except (json.JSONDecodeError, OSError):
+                logger.warning(
+                    "Could not read existing profile, starting fresh: %s", path
+                )
+            existing.update(data)
         else:
             existing = data
 
         # Ensure required fields
-        if "model" not in existing:
-            existing["model"] = self.get("model", "deepseek/deepseek-v4-flash")
-        if "provider" not in existing:
-            existing["provider"] = self.get("provider", "deepseek")
+        existing.setdefault("model", self.get("model", "deepseek/deepseek-v4-flash"))
+        existing.setdefault("provider", self.get("provider", "deepseek"))
 
-        with open(path, "w") as f:
-            json.dump(existing, f, indent=2)
+        path.write_text(json.dumps(existing, indent=2))
         return True
 
     def profile_delete(self, name: str) -> bool:
-        path = self.profile_path(name)
-        if os.path.isfile(path):
-            os.remove(path)
+        path = Path(self.profile_path(name))
+        if path.is_file():
+            path.unlink()
             if self._user_config.get("default_profile") == name:
                 self._user_config["default_profile"] = "default"
                 self._save_user_config()
@@ -305,10 +330,12 @@ class ConfigManager:
         return self._env_cache.get(key, default)
 
     def expand_path(self, path: str) -> str:
-        """Expand ~ and $WW_HOME in paths."""
-        path = path.replace("$WW_HOME", self._home_dir)
-        path = path.replace("${WW_HOME}", self._home_dir)
-        return os.path.expanduser(path)
+        """Expand ~, $HOME, $WW_HOME in paths."""
+        path = path.replace("$WW_HOME", str(self._home_dir))
+        path = path.replace("${WW_HOME}", str(self._home_dir))
+        path = path.replace("$HOME", str(Path.home()))
+        path = path.replace("${HOME}", str(Path.home()))
+        return str(Path(path).expanduser())
 
 
 def default_config() -> ConfigManager:
