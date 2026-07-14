@@ -1,32 +1,37 @@
 """
 ww/core/memory/atom.py — Memory atom + entity resolution + Fact Store
 
-MemoryAtom: Smallest memory unit, containing timestamp, entity link, confidence
-EntityResolver: Normalize multiple spellings, resolve pronouns, group synonyms
-FactStore: Fact-based query layer, supports entity detection, relational inference
+MemoryAtom: Smallest memory unit, containing timestamp, entity link, confidence.
+            Now a Pydantic BaseModel for type safety and auto-serialization.
+EntityResolver: Normalize multiple spellings, resolve pronouns, group synonyms.
+FactStore: Fact-based query layer, supports entity detection, relational inference.
 """
 
 from __future__ import annotations
+
 import json
 import logging
 import os
 import time
 import uuid
 from collections import defaultdict
+from pathlib import Path
 from typing import Dict, List, Optional, Set
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 logger = logging.getLogger("ww.memory.atom")
 
-_WW_CFG = os.environ.get("WW_CONFIG", os.path.expanduser("~/.ww"))
-MEMORY_DIR = os.path.join(_WW_CFG, "memory")
+_WW_CFG = Path(os.environ.get("WW_CONFIG", os.path.expanduser("~/.ww")))
+MEMORY_DIR = _WW_CFG / "memory"
 
 
 # ── Memory atom ──
 
 
-class MemoryAtom:
+class MemoryAtom(BaseModel):
     """
-    Smallest memory unit.
+    Smallest memory unit — a Pydantic model for type safety and serialization.
 
     Each atom represents an indivisible memory fragment:
     - A conversation summary
@@ -35,68 +40,49 @@ class MemoryAtom:
     - An error/exception experience
     """
 
-    def __init__(
-        self,
-        content: str,
-        atom_id: str = "",
-        atom_type: str = "episodic",  # episodic | semantic | procedural
-        entities: Optional[List[str]] = None,
-        emotion: float = 0.0,  # 0.0=neutral, negative=negative, positive=positive
-        importance: float = 0.5,  # 0.0-1.0
-        timestamp: float = 0,
-        source: str = "",  # "user", "system", "tool", "inference"
-        tags: Optional[List[str]] = None,
-        context_id: str = "",  # Belonging spiral ID
-        # ── Temporal validity (P1: Entity continuity) ──
-        valid_from: float = 0,  # When this fact became true (epoch)
-        valid_until: float = 0,  # When this fact stopped being true (0 = still valid)
-        superseded_by: str = "",  # atom_id that supersedes this one
-    ):
-        self.atom_id = atom_id or uuid.uuid4().hex[:16]
-        self.content = content
-        self.atom_type = atom_type
-        self.entities = entities or []
-        self.emotion = emotion
-        self.importance = importance
-        self.timestamp = timestamp or time.time()
-        self.source = source
-        self.tags = tags or []
-        self.context_id = context_id
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
-        # ── Temporal validity ──
-        self.valid_from = valid_from or self.timestamp
-        self.valid_until = valid_until  # 0 = still valid
-        self.superseded_by = superseded_by  # atom_id that replaces this
+    # ── Core identity ──
+    content: str
+    atom_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    atom_type: str = Field(default="episodic", description="episodic | semantic | procedural")
 
-        # Link trace (maintained by Amygdala/Sleep)
-        self.links: Dict[str, float] = {}  # target_atom_id -> link_strength
-        self.recall_count: int = 0
-        self.last_recalled: float = 0
-        self.stability: float = 1.0  # 1.0=just formed, higher=more stable (not easily pruned)
-        self.context_trace: List[Dict] = []  # Recall context trace (Reconsolidation write)
-        self.is_core: bool = False  # True=cannot be forgotten/overwritten/pruned
-        self.is_archived: bool = False  # True=semantically merged and archived, recall skips by default
-        self.is_immutable: bool = False  # True=code memory, NEVER pruned/abstracted/scored
+    # ── Metadata ──
+    entities: List[str] = Field(default_factory=list)
+    emotion: float = Field(default=0.0, ge=-1.0, le=1.0, description="Negative→neutral→positive")
+    importance: float = Field(default=0.5, ge=0.0, le=1.0)
+    timestamp: float = Field(default_factory=time.time)
+    source: str = Field(default="", description="user | system | tool | inference")
+    tags: List[str] = Field(default_factory=list)
+    context_id: str = Field(default="", description="Belonging spiral ID")
 
-        # ── Multimodal data ──
-        self.visual_data: Optional[Dict] = None
-        """Visual memory data. Structure:
-        {
-            "screenshot_path": str,      # screenshot path (if has)
-            "ui_elements": [              # Key UI elements
-                {"label": str, "bbox": [x1,y1,x2,y2], "tag": str},
-            ],
-            "region_of_interest": {       # Area of interest
-                "x": int, "y": int, "w": int, "h": int
-            },
-            "screen_size": {"w": int, "h": int},  # screen resolution
-        }
-        """
-        self.spatial_markers: Optional[List[Dict]] = None
-        """Spatial marker — non-compressible coordinate reference point.
-        [{"name": str, "x": int, "y": int, "context": str}, ...]
-        Example: [{"name": "Chrome address bar", "x": 300, "y": 50, "context": "browser_top"}]
-        """
+    # ── Temporal validity (entity continuity) ──
+    valid_from: float = Field(default=0.0, description="When this fact became true (epoch)")
+    valid_until: float = Field(default=0.0, description="When stopped being true (0 = still valid)")
+    superseded_by: str = Field(default="", description="atom_id that supersedes this one")
+
+    # ── Link trace (maintained by Amygdala/Sleep) ──
+    links: Dict[str, float] = Field(default_factory=dict)
+    recall_count: int = 0
+    last_recalled: float = 0.0
+    stability: float = Field(default=1.0, ge=0.0, description="Higher = harder to prune, more stable")
+    context_trace: List[Dict] = Field(default_factory=list, description="Recall context trace (reconsolidation)")
+    is_core: bool = Field(default=False, description="Cannot be forgotten/overwritten/pruned")
+    is_archived: bool = Field(default=False, description="Semantically merged, recall skips by default")
+    is_immutable: bool = Field(default=False, description="Code memory, NEVER pruned/abstracted/scored")
+
+    # ── Multimodal data ──
+    visual_data: Optional[Dict] = Field(default=None, description="Visual memory (screenshots, UI elements, regions)")
+    spatial_markers: Optional[List[Dict]] = Field(default=None, description="Non-compressible coordinate reference points")
+
+    @model_validator(mode="after")
+    def _normalize_timestamps(self):
+        """Use current time when timestamp/valid_from are unset (0)."""
+        if self.timestamp == 0.0:
+            self.timestamp = time.time()
+        if self.valid_from == 0.0:
+            self.valid_from = self.timestamp
+        return self
 
     @property
     def is_currently_valid(self) -> bool:
@@ -107,7 +93,14 @@ class MemoryAtom:
             return False
         return True
 
+    # ── Serialization (backward-compatible) ──
+
     def to_dict(self) -> dict:
+        """Serialize to dict (backward-compatible wrapper around model_dump).
+
+        Preserves existing behavior: content truncated to 500 chars, floats rounded to 4dp.
+        context_trace intentionally excluded from serialization.
+        """
         return {
             "atom_id": self.atom_id,
             "content": self.content[:500],
@@ -119,7 +112,6 @@ class MemoryAtom:
             "source": self.source,
             "tags": self.tags,
             "context_id": self.context_id,
-            # Temporal validity
             "valid_from": self.valid_from,
             "valid_until": self.valid_until,
             "superseded_by": self.superseded_by,
@@ -134,12 +126,48 @@ class MemoryAtom:
             "spatial_markers": self.spatial_markers,
         }
 
-    def set_visual_memory(self, screenshot_path: str = "",
-                          ui_elements: Optional[List[Dict]] = None,
-                          region: Optional[Dict] = None,
-                          screen_size: Optional[Dict] = None):
+    @classmethod
+    def from_dict(cls, d: dict) -> "MemoryAtom":
+        """Deserialize from dict (backward-compatible wrapper around model_validate).
+
+        Pre-fills defaults so old serialized data with missing fields loads cleanly.
+        """
+        defaults: dict = {
+            "content": "",
+            "atom_type": "episodic",
+            "entities": [],
+            "emotion": 0.0,
+            "importance": 0.5,
+            "timestamp": time.time(),
+            "source": "",
+            "tags": [],
+            "context_id": "",
+            "valid_from": 0.0,
+            "valid_until": 0.0,
+            "superseded_by": "",
+            "links": {},
+            "recall_count": 0,
+            "last_recalled": 0.0,
+            "stability": 1.0,
+            "context_trace": [],
+            "is_core": False,
+            "is_archived": False,
+            "is_immutable": False,
+        }
+        merged = {**defaults, **d}
+        return cls.model_validate(merged)
+
+    # ── Visual / spatial helpers ──
+
+    def set_visual_memory(
+        self,
+        screenshot_path: str = "",
+        ui_elements: Optional[List[Dict]] = None,
+        region: Optional[Dict] = None,
+        screen_size: Optional[Dict] = None,
+    ):
         """Store visual memory data (dedicated for Computer Use Vision Loop)."""
-        data = {}
+        data: dict = {}
         if screenshot_path:
             data["screenshot_path"] = screenshot_path
         if ui_elements:
@@ -150,8 +178,7 @@ class MemoryAtom:
             data["screen_size"] = screen_size
         self.visual_data = data if data else None
 
-    def add_spatial_marker(self, name: str, x: int, y: int,
-                           context: str = ""):
+    def add_spatial_marker(self, name: str, x: int, y: int, context: str = ""):
         """Add spatial marker (mouse anchor point / button coordinates)."""
         if self.spatial_markers is None:
             self.spatial_markers = []
@@ -162,51 +189,44 @@ class MemoryAtom:
         if len(self.spatial_markers) > 20:
             self.spatial_markers = self.spatial_markers[-20:]
 
-    @classmethod
-    def from_dict(cls, d: dict) -> "MemoryAtom":
-        atom = cls(
-            content=d.get("content", ""),
-            atom_id=d.get("atom_id", ""),
-            atom_type=d.get("atom_type", "episodic"),
-            entities=d.get("entities", []),
-            emotion=d.get("emotion", 0.0),
-            importance=d.get("importance", 0.5),
-            timestamp=d.get("timestamp", 0),
-            source=d.get("source", ""),
-            tags=d.get("tags", []),
-            context_id=d.get("context_id", ""),
-            valid_from=d.get("valid_from", 0),
-            valid_until=d.get("valid_until", 0),
-            superseded_by=d.get("superseded_by", ""),
+    # ── Debug ──
+
+    def summary(self) -> str:
+        """One-line summary for debugging and log output."""
+        preview = self.content[:80].replace("\n", " ")
+        status = (
+            "archived" if self.is_archived
+            else "superseded" if self.superseded_by
+            else "valid" if self.is_currently_valid
+            else "expired"
         )
-        atom.links = d.get("links", {})
-        atom.recall_count = d.get("recall_count", 0)
-        atom.last_recalled = d.get("last_recalled", 0)
-        atom.stability = d.get("stability", 1.0)
-        atom.context_trace = d.get("context_trace", [])
-        atom.is_core = d.get("is_core", False)
-        atom.is_archived = d.get("is_archived", False)
-        atom.is_immutable = d.get("is_immutable", False)
-        atom.visual_data = d.get("visual_data")
-        atom.spatial_markers = d.get("spatial_markers")
-        return atom
+        return (
+            f"MemoryAtom(id={self.atom_id[:12]}, "
+            f"type={self.atom_type}, "
+            f"status={status}, "
+            f"imp={self.importance:.2f}, "
+            f"content='{preview}…')"
+        )
+
+    def __repr__(self) -> str:
+        return self.summary()
 
 
-# ── entityresolve  ──
+# ── entity resolve ──
 
 
 class EntityResolver:
     """
-    entityresolve . 
+    Entity resolver for normalizing and classifying entities.
 
-    process: 
+    Handles:
     - Normalize multiple spellings ("FastAPI" == "fastapi" == "Fast Api")
-    - pronoun resolve (simple rule)
-    - synonym grouping
-    - entitytypeclassification
+    - Pronoun resolution (simple rule)
+    - Synonym grouping
+    - Entity type classification
     """
 
-    # common technical term normalization mapping
+    # Common technical term normalization mapping
     NORMALIZE_MAP = {
         "fast api": "fastapi",
         "fastapi": "fastapi",
@@ -221,7 +241,7 @@ class EntityResolver:
         "python3": "python",
     }
 
-    # entity type keywords
+    # Entity type keywords
     TYPE_KEYWORDS: Dict[str, Set[str]] = {
         "library": {"fastapi", "flask", "django", "sqlite", "postgresql",
                      "redis", "pandas", "numpy", "pytorch", "tensorflow"},
@@ -236,12 +256,12 @@ class EntityResolver:
         self._entity_types: Dict[str, str] = {}    # standard name -> type
 
     def normalize(self, raw: str) -> str:
-        """normalizeentityname. """
+        """Normalize entity name to canonical form."""
         key = raw.strip().lower()
         return self.NORMALIZE_MAP.get(key, key)
 
     def classify(self, entity: str) -> str:
-        """classificationentitytype. """
+        """Classify entity type (library, language, tool, concept, unknown)."""
         norm = self.normalize(entity)
         if norm in self._entity_types:
             return self._entity_types[norm]
@@ -252,8 +272,7 @@ class EntityResolver:
         return "unknown"
 
     def extract(self, text: str) -> List[Dict[str, str]]:
-        """
-        extract entities from text.
+        """Extract entities from text.
 
         Returns:
             [{"name": "FastAPI", "type": "library", "normalized": "fastapi"}, ...]
@@ -281,42 +300,42 @@ class EntityResolver:
 
 class FactStore:
     """
-    fact save + entity trust score.
+    Fact storage with entity indexing and trust scoring.
 
-    similar to a lightweight knowledge graph:
-    - each fact  has  content, entities, trust_score
-    - supports entity detection (find all facts about a certain entity)
-    - supports relational inference (which facts share a certain entity)
+    Lightweight knowledge graph:
+    - Each fact has content, entities, trust_score
+    - Entity detection: find all facts about a certain entity
+    - Relational inference: which facts share a certain entity
     - trust_score auto-adjusts with number of validations
     """
 
     def __init__(self, data_dir: str = ""):
-        self.data_dir = data_dir or MEMORY_DIR
-        self._facts: Dict[int, dict] = {}  # fact_id -> fact
-        self._entity_index: Dict[str, Set[int]] = defaultdict(set)  # entity -> fact_ids
+        self.data_dir = Path(data_dir) if data_dir else MEMORY_DIR
+        self._facts: Dict[int, dict] = {}
+        self._entity_index: Dict[str, Set[int]] = defaultdict(set)
         self._next_id: int = 0
         self._loaded = False
 
     def _ensure_dir(self):
-        os.makedirs(self.data_dir, exist_ok=True)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
 
-    def _path(self) -> str:
-        return os.path.join(self.data_dir, "facts.json")
+    def _path(self) -> Path:
+        return self.data_dir / "facts.json"
 
     def load(self):
         if self._loaded:
             return
         self._ensure_dir()
-        if os.path.exists(self._path()):
+        path = self._path()
+        if path.is_file():
             try:
-                with open(self._path()) as f:
-                    data = json.load(f)
-                    self._facts = {int(k): v for k, v in data.get("facts", {}).items()}
-                    self._next_id = data.get("next_id", len(self._facts))
-                    self._rebuild_index()
-                    logger.info(f"FactStore loaded: {len(self._facts)} facts")
+                data = json.loads(path.read_text())
+                self._facts = {int(k): v for k, v in data.get("facts", {}).items()}
+                self._next_id = data.get("next_id", len(self._facts))
+                self._rebuild_index()
+                logger.info("FactStore loaded: %d facts", len(self._facts))
             except (json.JSONDecodeError, OSError) as e:
-                logger.warning(f"FactStore load failed: {e}")
+                logger.warning("FactStore load failed: %s", e)
         self._loaded = True
 
     def save(self):
@@ -325,8 +344,7 @@ class FactStore:
             "next_id": self._next_id,
             "facts": self._facts,
         }
-        with open(self._path(), "w") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        self._path().write_text(json.dumps(data, indent=2, ensure_ascii=False))
 
     def _rebuild_index(self):
         self._entity_index.clear()
@@ -334,8 +352,13 @@ class FactStore:
             for ent in fact.get("entities", []):
                 self._entity_index[ent].add(fid)
 
-    def add(self, content: str, entities: Optional[List[str]] = None,
-            category: str = "general", tags: Optional[List[str]] = None) -> int:
+    def add(
+        self,
+        content: str,
+        entities: Optional[List[str]] = None,
+        category: str = "general",
+        tags: Optional[List[str]] = None,
+    ) -> int:
         """Add a new fact."""
         self.load()
         fid = self._next_id
@@ -346,7 +369,7 @@ class FactStore:
             "entities": entities or [],
             "category": category,
             "tags": tags or [],
-            "trust_score": 0.5,  # default value
+            "trust_score": 0.5,
             "created_at": time.time(),
             "last_accessed": time.time(),
             "access_count": 0,
@@ -357,18 +380,21 @@ class FactStore:
         self.save()
         return fid
 
-    def probe(self, entity: str, min_trust: float = 0.3,
-              include_archived: bool = False) -> List[dict]:
-        """
-        Detect entity: find all facts about a certain entity.
+    def probe(
+        self,
+        entity: str,
+        min_trust: float = 0.3,
+        include_archived: bool = False,
+    ) -> List[dict]:
+        """Find all facts about a given entity.
 
         Args:
-            entity: entityname
-            min_trust: minimum trust filter
-            include_archived: whether to include archived facts
+            entity: Entity name.
+            min_trust: Minimum trust filter.
+            include_archived: Whether to include archived facts.
 
         Returns:
-            fact list matching conditions
+            Matching facts sorted by trust_score descending.
         """
         self.load()
         fids = self._entity_index.get(entity, set())
@@ -386,15 +412,14 @@ class FactStore:
         return sorted(results, key=lambda f: f["trust_score"], reverse=True)
 
     def reason(self, entities: List[str], min_trust: float = 0.3) -> List[dict]:
-        """
-        Inference: find facts involving the same and multiple entities.
+        """Find facts involving all of the given entities (intersection).
 
         Args:
-            entities: entitylist
-            min_trust: minimum trust filter
+            entities: Entity list.
+            min_trust: Minimum trust filter.
 
         Returns:
-            intersection facts
+            Intersection facts sorted by trust_score descending.
         """
         if not entities:
             return []
@@ -409,7 +434,7 @@ class FactStore:
         return sorted(results, key=lambda f: f["trust_score"], reverse=True)
 
     def search(self, query: str, limit: int = 10) -> List[dict]:
-        """Search facts by keywords."""
+        """Search facts by keyword (content or entity name)."""
         self.load()
         q = query.lower()
         results = []
@@ -422,7 +447,7 @@ class FactStore:
         return results[:limit]
 
     def update_trust(self, fact_id: int, delta: float):
-        """Adjust fact trust score."""
+        """Adjust fact trust score by delta (clamped to [0, 1])."""
         self.load()
         fact = self._facts.get(fact_id)
         if fact:
@@ -430,7 +455,7 @@ class FactStore:
             self.save()
 
     def set_archived(self, fact_id: int, archived: bool = True):
-        """Mark fact as archived (semantic merging, prevent reprocessing or retrieval)."""
+        """Mark fact as archived (semantic merging, prevents reprocessing)."""
         self.load()
         fact = self._facts.get(fact_id)
         if fact:
@@ -438,6 +463,7 @@ class FactStore:
             self.save()
 
     def stats(self) -> dict:
+        """Return summary statistics."""
         self.load()
         by_category = defaultdict(int)
         for fact in self._facts.values():
