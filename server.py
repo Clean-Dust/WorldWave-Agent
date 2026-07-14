@@ -166,7 +166,7 @@ class WorldwaveServer:
         # ── Entity continuity (P0: Persistent Cognitive Entity) ──
         from core.entity_state import EntityStateManager
         from wavegate.identity import IdentityResolver
-        self.entity_mgr = EntityStateManager()
+        self.entity_mgr = EntityStateManager(config=self.config)
         self.identity_resolver = IdentityResolver()
 
         # Autonomous Loop Control
