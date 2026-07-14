@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -212,6 +213,9 @@ class WeChatAdapter(BaseAdapter):
     def _handle_xml(self, body: str) -> str:
         """Parse WeChat XML message and return passive reply XML."""
         try:
+            # Reject XML with DOCTYPE to prevent XXE
+            if "DOCTYPE" in body.upper():
+                raise ValueError("DOCTYPE not allowed")
             root = ET.fromstring(body)
             msg_type = _xml_text(root, "MsgType")
             from_user = _xml_text(root, "FromUserName")

@@ -17,6 +17,7 @@ New user onboarding flow:
 
 import json
 import os
+import re
 import sys
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -310,7 +311,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
             # writetransaction temporary file (periodically scanned and committed by real node)
             tx_dir = os.path.expanduser("~/worldwave/data/subconscious/blockchain/pending_txs")
             os.makedirs(tx_dir, exist_ok=True)
-            tx_file = os.path.join(tx_dir, f"tx_{int(time.time() * 1000)}_{data.get('sender', 'anon')[:8]}.json")
+            sender_raw = data.get('sender', 'anon')
+            sender_safe = re.sub(r'[\\/.]', '_', sender_raw)[:8]
+            tx_file = os.path.join(tx_dir, f"tx_{int(time.time() * 1000)}_{sender_safe}.json")
             with open(tx_file, "w") as f:
                 json.dump(data, f)
             tx_hash = data.get("signature", "")[:16] or "pending"

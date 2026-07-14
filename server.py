@@ -973,8 +973,8 @@ def gateway_send(req: GatewayMessage):
             capture_output=True, text=True, timeout=5,
         )
         return {"success": result.returncode == 0}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
+    except Exception:
+        return {"success": False, "error": "MQTT publish failed"}
 
 
 # ── Telegram Endpoint (Direct Bot API, No MQTT) ──
@@ -2024,8 +2024,8 @@ async def stream_tokens(req: dict):
 
             yield _sse({"done": True, "status": "completed"})
 
-        except Exception as e:
-            yield _sse({"error": str(e), "done": True})
+        except Exception:
+            yield _sse({"error": "stream processing failed", "done": True})
 
     return StreamingResponse(
         _token_stream(),
