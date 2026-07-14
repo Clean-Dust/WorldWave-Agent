@@ -1,14 +1,19 @@
 [Unit]
 Description=Worldwave AI Agent Server
 After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=%h/worldwave/scripts/start-ww.sh
 WorkingDirectory=%h/worldwave
+EnvironmentFile=-%h/worldwave/.env
+# Prefer venv python + server.py (honors WW_HOST / WW_PORT from .env)
+ExecStart=%h/worldwave/.venv/bin/python %h/worldwave/server.py
 Restart=always
 RestartSec=10
-EnvironmentFile=%h/worldwave/.env
+MemoryMax=2G
+TimeoutStopSec=30
 
 [Install]
 WantedBy=default.target
+

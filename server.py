@@ -29,11 +29,32 @@ except ImportError:
     pass
 import sys
 import json
+import hmac
 import time
 import threading
 import logging
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List
+
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    """Parse common env bool forms. Empty/unset uses default.
+
+    True: 1, true, yes, on (case-insensitive)
+    False: 0, false, no, off, empty string when key is present as ''
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    val = str(raw).strip().lower()
+    if val in ("",):
+        return False
+    if val in ("1", "true", "yes", "on", "y"):
+        return True
+    if val in ("0", "false", "no", "off", "n"):
+        return False
+    # Unknown non-empty value: treat as true (legacy) but log once via caller
+    return True
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, StreamingResponse, Response
@@ -729,9 +750,10 @@ class WorldwaveServer:
                     "weak" if len(str(globals().get("WW_API_KEY") or os.environ.get("WW_API_KEY") or "")) < 16
                     else "ok"
                 ),
-                "pairing_auto_approve": bool(os.environ.get("WW_PAIRING_AUTO_APPROVE")),
-                "skip_auto_evolution": bool(os.environ.get("WW_SKIP_AUTO_EVOLUTION")),
+                "pairing_auto_approve": _env_truthy("WW_PAIRING_AUTO_APPROVE"),
+                "skip_auto_evolution": _env_truthy("WW_SKIP_AUTO_EVOLUTION"),
                 "approval_mode": os.environ.get("WW_APPROVAL_MODE", "auto"),
+                "bind_host": os.environ.get("WW_HOST", "0.0.0.0"),
             },
             "evolution": {
                 "metrics": self.ww.metrics.summary() if self.ww else {},
@@ -769,7 +791,8 @@ if WW_API_KEY and len(WW_API_KEY) < 16:
         len(WW_API_KEY),
     )
 
-_API_BYPASS_PATHS = {"/ww/health", "/docs", "/openapi.json", "/redoc", "/ww/webui", "/ww/webui/", "/ww/mascot/state"}
+# Public unauthenticated paths only. OpenAPI/docs/redoc require a valid API key.
+_API_BYPASS_PREFIXES = ("/ww/health", "/ww/webui", "/ww/mascot/state")
 
 
 def _extract_api_key(request: Request) -> str:
@@ -785,6 +808,16 @@ def _extract_api_key(request: Request) -> str:
     return (q or "").strip()
 
 
+def _api_key_matches(provided: str, expected: str) -> bool:
+    """Constant-time API key compare (handles length mismatch safely)."""
+    if not provided or not expected:
+        return False
+    try:
+        return hmac.compare_digest(provided.encode("utf-8"), expected.encode("utf-8"))
+    except Exception:
+        return False
+
+
 @app.middleware("http")
 async def api_auth_middleware(request: Request, call_next):
     """API Key verification middleware.
@@ -797,11 +830,11 @@ async def api_auth_middleware(request: Request, call_next):
         return JSONResponse(status_code=500, content={"error": "Server misconfigured"})
 
     path = request.url.path
-    if any(path.startswith(p) for p in _API_BYPASS_PATHS):
+    if any(path == p or path.startswith(p + "/") for p in _API_BYPASS_PREFIXES):
         return await call_next(request)
 
     provided = _extract_api_key(request)
-    if provided and provided == WW_API_KEY:
+    if _api_key_matches(provided, WW_API_KEY):
         return await call_next(request)
 
     return JSONResponse(
@@ -2418,9 +2451,9 @@ def _bootstrap_runtime():
         os.environ.setdefault("WW_MAIN_PROVIDER", provider)
 
     # Surface insecure runtime flags early
-    if os.environ.get("WW_PAIRING_AUTO_APPROVE"):
+    if _env_truthy("WW_PAIRING_AUTO_APPROVE"):
         logger.warning("WW_PAIRING_AUTO_APPROVE is set — DM pairing whitelist is bypassed")
-    if os.environ.get("WW_SKIP_AUTO_EVOLUTION"):
+    if _env_truthy("WW_SKIP_AUTO_EVOLUTION"):
         logger.info("WW_SKIP_AUTO_EVOLUTION set — auto evolution scheduler disabled")
     if os.environ.get("WW_APPROVAL_MODE", "auto").lower() == "auto":
         logger.info("Tool approval_mode=auto (set WW_APPROVAL_MODE=hitl for confirmation)")
@@ -2604,5 +2637,6 @@ def entity_state_set(entity_id: str, req: dict):
 
 if __name__ == "__main__":
     port = int(os.environ.get("WW_PORT", 9300))
-    logger.info(f" Worldwave v0.3 API @ http://0.0.0.0:{port}")
-    uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning", access_log=False)
+    host = os.environ.get("WW_HOST", "0.0.0.0").strip() or "0.0.0.0"
+    logger.info("Worldwave v0.3 API @ http://%s:%s", host, port)
+    uvicorn.run(app, host=host, port=port, log_level="warning", access_log=False)

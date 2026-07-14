@@ -17,11 +17,19 @@ else
 fi
 
 export WW_PORT="${WW_PORT:-9300}"
+export WW_HOST="${WW_HOST:-0.0.0.0}"
 export WW_MEMORY_URL="${WW_MEMORY_URL:-http://localhost:9200}"
+
+# Prefer project venv when present
+if [ -x "$WW_ROOT/.venv/bin/python" ]; then
+    PYTHON="$WW_ROOT/.venv/bin/python"
+else
+    PYTHON="/usr/bin/python3"
+fi
 
 # Crash recovery check (non-blocking)
 cd "$WW_ROOT"
-PYTHONPATH="$WW_ROOT" python3 -c "
+PYTHONPATH="$WW_ROOT" "$PYTHON" -c "
 from core.persistence import SessionPersistence
 sp = SessionPersistence()
 rec = sp.recovery_check()
@@ -29,4 +37,5 @@ if rec['needs_recovery']:
     print(chr(0x1f504) + ' Recovery: ' + rec.get('message',''))
 " 2>/dev/null || true
 
-exec /usr/bin/python3 -m uvicorn server:app --host 0.0.0.0 --port $WW_PORT --log-level info --timeout-keep-alive 300
+# Prefer direct server.py so WW_HOST and lifespan match production process
+exec "$PYTHON" "$WW_ROOT/server.py"

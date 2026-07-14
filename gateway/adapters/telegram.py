@@ -857,7 +857,9 @@ class TelegramAdapter(BaseAdapter):
 
                 # ── DM Pairing: whitelist check ──────────────
                 if not self._pairing.is_allowed("telegram", user_id):
-                    if os.environ.get("WW_PAIRING_AUTO_APPROVE"):
+                    # Only true/1/yes/on auto-whitelist. "false" must not approve.
+                    _auto = str(os.environ.get("WW_PAIRING_AUTO_APPROVE", "")).strip().lower()
+                    if _auto in ("1", "true", "yes", "on", "y"):
                         self._pairing.add_to_whitelist("telegram", user_id, display_name)
                         log.info("Auto-approved user %s (%s)", display_name, user_id)
                     else:

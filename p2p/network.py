@@ -863,11 +863,20 @@ class GlobalP2PNetwork:
                 self.remove_peer(peer.node_id)
             return None
 
+    def _tracker_headers(self) -> dict:
+        """Headers for bootstrap tracker calls (optional shared secret)."""
+        headers = {"User-Agent": self._http_ua}
+        token = (os.environ.get("WW_TRACKER_TOKEN") or os.environ.get("TRACKER_TOKEN") or "").strip()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+            headers["X-Tracker-Token"] = token
+        return headers
+
     def _http_get_url(self, url: str) -> Optional[dict]:
         """GET a raw URL (not a PeerInfo). Returns parsed JSON or None."""
         try:
             import requests
-            resp = requests.get(url, timeout=5, headers={"User-Agent": self._http_ua})
+            resp = requests.get(url, timeout=5, headers=self._tracker_headers())
             resp.raise_for_status()
             return resp.json()
         except Exception:
@@ -877,7 +886,7 @@ class GlobalP2PNetwork:
         """POST to a raw URL. Returns parsed JSON or None."""
         try:
             import requests
-            resp = requests.post(url, json=data, timeout=5, headers={"User-Agent": self._http_ua})
+            resp = requests.post(url, json=data, timeout=5, headers=self._tracker_headers())
             resp.raise_for_status()
             return resp.json()
         except Exception:
