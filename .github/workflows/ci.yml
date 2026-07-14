@@ -38,6 +38,28 @@ jobs:
       run: |
         pip install fastapi uvicorn pydantic httpx requests pytest cryptography grpcio protobuf python-dotenv
 
+    - name: Secret scan
+      run: |
+        echo "Scanning for hardcoded secrets..."
+        if grep -rPn --include='*.py' --include='*.sh' --include='*.js' --include='*.ts' \
+          --include='*.json' --include='*.yml' --include='*.yaml' --include='*.toml' \
+          --include='*.md' --include='*.txt' \
+          -e 'sk-[a-zA-Z0-9]{20,}' \
+          -e 'sk-or-[a-zA-Z0-9]{20,}' \
+          -e 'sk-ant-[a-zA-Z0-9]{20,}' \
+          -e '[0-9]{8,10}:[a-zA-Z0-9_-]{35,}' \
+          -e 'ghp_[a-zA-Z0-9]{36}' \
+          . \
+          --exclude-dir='.git' --exclude-dir='.venv' --exclude-dir='__pycache__' \
+          --exclude-dir='tests' --exclude-dir='.mypy_cache' \
+          | grep -vE '(DEEPSEEK_API_KEY|OPENAI_API_KEY|OPENROUTER_API_KEY|ANTHROPIC_API_KEY|TELEGRAM.*TOKEN|\.env\.example|\.secrets\.baseline)'; then
+          echo ""
+          echo "⛔ SECRETS DETECTED — commit blocked"
+          echo "   Use environment variables (.env) instead."
+          exit 1
+        fi
+        echo "✓ No secrets found"
+
     - name: Test
       run: |
         python -m pytest tests/ -v --tb=short
