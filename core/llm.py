@@ -1,5 +1,5 @@
 """
-ww/core/llm.py — Worldwave multi-LLM client v0.4
+ww/core/llm.py — Worldwave multi-LLM client v0.5
 
 Based on Transport abstraction layer, new LLM client:
 - TransportRegistry managementall  provider
@@ -11,6 +11,7 @@ Based on Transport abstraction layer, new LLM client:
 
 from __future__ import annotations
 import json
+import logging
 from typing import Any, Dict, List, Optional
 
 from core.transports import (
@@ -20,6 +21,8 @@ from core.transports import (
     infer_provider,
     find_available_providers,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # ── defaultvalue ──
@@ -123,13 +126,13 @@ PHASE_TEMPERATURES = {
     "act": 0.7,
     "evaluate": 0.5,
     "learn": 0.6,
-    "consolidate": 0.5,
+    "consolidate": 0.2,
 }
 
 
 class LLMClient:
     """
-    Worldwave multi LLM client v0.4
+    Worldwave multi LLM client v0.5
 
     use Transport abstraction layer, supports:
     - multi provider autoroute
@@ -312,6 +315,8 @@ class LLMClient:
 
         # Inject phase system prompt
         msgs = self._inject_phase_prompt(messages, phase)
+        if phase:
+            logger.debug("Phase=%s temperature=%.2f model=%s", phase, temp, active_model)
 
         # Build OpenAI-format tools
         openai_tools = None
