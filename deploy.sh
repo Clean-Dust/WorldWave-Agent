@@ -15,6 +15,29 @@
 # ============================================================
 set -euo pipefail
 
+# ── Helpers (shared by subcommands + install) ──
+# True if env or .env has a non-empty LLM API key.
+ww_has_llm_key() {
+    local env_file="${1:-}"
+    local var key val
+    for var in DEEPSEEK_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY CUSTOM_API_KEY; do
+        # bash indirect expansion
+        if [ -n "${!var:-}" ]; then
+            return 0
+        fi
+    done
+    if [ -n "$env_file" ] && [ -f "$env_file" ]; then
+        for key in DEEPSEEK_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY CUSTOM_API_KEY; do
+            val=$(grep "^${key}=" "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//')
+            # Treat empty / placeholder values as missing
+            if [ -n "$val" ] && [ "$val" != "sk-your-deepseek-key-here" ] && [ "$val" != "your-key-here" ]; then
+                return 0
+            fi
+        done
+    fi
+    return 1
+}
+
 # ── Subcommands ──
 CMD="${1:-start}"
 if [ "$CMD" = "update" ]; then
@@ -35,15 +58,46 @@ if [ "$CMD" = "update" ]; then
     mkdir -p "$LOCAL_BIN"
     cp "$INSTALL_DIR/bin/ww" "$LOCAL_BIN/ww" 2>/dev/null || true
     chmod +x "$LOCAL_BIN/ww" 2>/dev/null || true
-    # Restart: kill old server, start new
-    pkill -f "python.*server.py" 2>/dev/null || true
-    sleep 1
+    # Ensure ~/.local/bin is on PATH hint
+    if ! echo "$PATH" | grep -q "$LOCAL_BIN"; then
+        echo "   ℹ Add to PATH: export PATH=\"$LOCAL_BIN:\$PATH\""
+    fi
+
     ENV_FILE="$INSTALL_DIR/.env"
-    ENV=""
-    [ -f "$ENV_FILE" ] && ENV="$(grep -v '^#' "$ENV_FILE" | tr '\n' ' ')"
-    ENV="$ENV WW_PORT=${WW_PORT:-9300}"
-    echo "   ✓ Restarting..."
-    exec env $ENV "$VENV_DIR/bin/python" server.py
+    ENV="WW_PORT=${WW_PORT:-9300}"
+    if [ -f "$ENV_FILE" ]; then
+        # Load KEY=VAL lines only (skip comments/blank); do not print secrets
+        while IFS= read -r line || [ -n "$line" ]; do
+            case "$line" in
+                \#*|"") continue ;;
+                *=*) ENV="$ENV $line" ;;
+            esac
+        done < "$ENV_FILE"
+    fi
+
+    # Restart server only if already running — always background, never foreground logs
+    SERVER_WAS_RUNNING=false
+    if systemctl --user is-active --quiet ww.service 2>/dev/null; then
+        SERVER_WAS_RUNNING=true
+        systemctl --user restart ww.service 2>/dev/null || true
+        echo "   ✓ Server restarted (systemd --user)"
+    elif pgrep -f "python.*server\.py" >/dev/null 2>&1; then
+        SERVER_WAS_RUNNING=true
+        pkill -f "python.*server\.py" 2>/dev/null || true
+        sleep 1
+        # shellcheck disable=SC2086
+        nohup env $ENV "$VENV_DIR/bin/python" server.py \
+            >>"$INSTALL_DIR/server.log" 2>&1 &
+        disown 2>/dev/null || true
+        echo "   ✓ Server restarted in background (log: $INSTALL_DIR/server.log)"
+    fi
+
+    if [ "$SERVER_WAS_RUNNING" = false ]; then
+        echo "   ✓ Code updated (server was not running)"
+    fi
+    echo ""
+    echo "Updated. Run: ww"
+    exit 0
 fi
 
 if [ "$CMD" = "key" ]; then
@@ -69,24 +123,31 @@ if [ "$CMD" = "key" ]; then
             if [ -f "$ENV_FILE" ] && grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
                 # Update existing key
                 if [ "$(uname -s)" = "Darwin" ]; then
-                    sed -i '' "s/^DEEPSEEK_API_KEY=.*/DEEPSEEK_API_KEY=$NEW_KEY/" "$ENV_FILE"
+                    sed -i '' "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$NEW_KEY|" "$ENV_FILE"
                 else
-                    sed -i "s/^DEEPSEEK_API_KEY=.*/DEEPSEEK_API_KEY=$NEW_KEY/" "$ENV_FILE"
+                    sed -i "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$NEW_KEY|" "$ENV_FILE"
                 fi
                 echo "✓ Key updated in $ENV_FILE"
             else
                 echo "DEEPSEEK_API_KEY=$NEW_KEY" >> "$ENV_FILE"
                 echo "✓ Key saved to $ENV_FILE"
             fi
-            echo "  Run 'ww update' to apply."
+            # Chat loads .env via dotenv — no server restart / ww update needed
+            echo "  Ready. Type: ww"
             exit 0
             ;;
         show)
             if [ -f "$ENV_FILE" ] && grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
                 KEY_LINE=$(grep "^DEEPSEEK_API_KEY=" "$ENV_FILE" | head -1)
-                KEY_VAL=$(echo "$KEY_LINE" | cut -d= -f2-)
-                MASKED="$(echo "$KEY_VAL" | head -c 8)...$(echo "$KEY_VAL" | tail -c 5)"
-                echo "🔑 Current key: $MASKED"
+                KEY_VAL=$(echo "$KEY_LINE" | cut -d= -f2- | tr -d '\r')
+                if [ -z "$KEY_VAL" ]; then
+                    echo "⚠️  No key configured (empty DEEPSEEK_API_KEY in .env)."
+                    echo "   Set one: ww key set sk-xxx"
+                    echo "   Get a free key: https://platform.deepseek.com"
+                else
+                    MASKED="$(echo "$KEY_VAL" | head -c 8)...$(echo "$KEY_VAL" | tail -c 5)"
+                    echo "🔑 Current key: $MASKED"
+                fi
             else
                 echo "⚠️  No key configured."
                 echo "   Set one: ww key set sk-xxx"
@@ -99,14 +160,20 @@ if [ "$CMD" = "key" ]; then
                 echo "⚠️  No key configured. Set one first: ww key set sk-xxx"
                 exit 1
             fi
-            KEY_VAL=$(grep "^DEEPSEEK_API_KEY=" "$ENV_FILE" | head -1 | cut -d= -f2-)
+            # Read raw key; do NOT redacted — Authorization must be the real token
+            KEY_VAL=$(grep "^DEEPSEEK_API_KEY=" "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//')
+            if [ -z "$KEY_VAL" ]; then
+                echo "⚠️  DEEPSEEK_API_KEY is empty. Set one: ww key set sk-xxx"
+                exit 1
+            fi
             echo "🔍 Testing DeepSeek API..."
-            RESP=$(curl -s --connect-timeout 10 \
-                -H "Authorization: Bearer $KEY_VAL" \
+            # Pass real key in Authorization (do not redact to *** — that breaks the request)
+            RESP=$(curl -sS --connect-timeout 10 \
+                -H "Authorization: Bearer ${KEY_VAL}" \
                 "https://api.deepseek.com/v1/models" 2>&1 || echo "NETWORK_ERROR")
             if echo "$RESP" | grep -q '"id"'; then
                 echo "✅ Key is valid — API reachable"
-            elif [ "$RESP" = "NETWORK_ERROR" ]; then
+            elif echo "$RESP" | grep -q "NETWORK_ERROR"; then
                 echo "❌ Network error — check internet connection"
             else
                 echo "❌ Key invalid or API error:"
@@ -359,50 +426,38 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════
-#  6. Start Node
+#  6. Finish install → chat (not foreground server logs)
 # ═══════════════════════════════════════════════════════════
-step "6/6  Starting Worldwave P2P Node"
+step "6/6  Ready for chat"
 
 echo -e "  ${BOLD}Install:${NC}  $INSTALL_DIR"
 echo -e "  ${BOLD}Venv:${NC}     $VENV_DIR"
-echo -e "  ${BOLD}Port:${NC}     $WW_PORT (API) / $P2P_PORT (P2P)"
-echo -e "  ${BOLD}Tracker:${NC}  $BOOTSTRAP_URLS"
+echo -e "  ${BOLD}Port:${NC}     $WW_PORT (API auto-starts with ww)"
 echo ""
 
-# Build env
-ENV="WW_BOOTSTRAP_URLS=$BOOTSTRAP_URLS"
-ENV="$ENV WW_PORT=$WW_PORT"
-[ -n "$DHT_SEEDS" ] && ENV="$ENV WW_DHT_BOOTSTRAP_NODES=$DHT_SEEDS"
+ENV_FILE="$INSTALL_DIR/.env"
 
 # Auto-detect LLM API key from environment and persist to .env
-ENV_FILE="$INSTALL_DIR/.env"
 if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
-    ENV="$ENV DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY"
     mkdir -p "$(dirname "$ENV_FILE")"
     if [ ! -f "$ENV_FILE" ]; then
         echo "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" > "$ENV_FILE"
     elif ! grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
         echo "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" >> "$ENV_FILE"
+    else
+        # Replace empty/placeholder key line with env value
+        if [ "$(uname -s)" = "Darwin" ]; then
+            sed -i '' "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY|" "$ENV_FILE"
+        else
+            sed -i "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY|" "$ENV_FILE"
+        fi
     fi
     ok "DEEPSEEK_API_KEY detected from environment"
-else
-    # Check if .env already has it
-    if [ -f "$ENV_FILE" ] && grep -q "^DEEPSEEK_API_KEY=sk-" "$ENV_FILE" 2>/dev/null; then
-        KEY_VAL=$(grep "^DEEPSEEK_API_KEY=sk-" "$ENV_FILE" | head -1)
-        ENV="$ENV $KEY_VAL"
-        ok "DEEPSEEK_API_KEY loaded from $ENV_FILE"
-    fi
+elif [ -f "$ENV_FILE" ] && grep -qE "^DEEPSEEK_API_KEY=.+" "$ENV_FILE" 2>/dev/null; then
+    ok "DEEPSEEK_API_KEY loaded from $ENV_FILE"
 fi
 
-info "Launching server..."
-echo ""
-echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo -e "  ${DIM}  Logs below. Press Ctrl+C to stop.${NC}"
-echo -e "  ${DIM}  Health check: curl http://localhost:$WW_PORT/health${NC}"
-echo -e "  ${DIM}  P2P peers:   curl http://localhost:$P2P_PORT/p2p/peers/all${NC}"
-echo ""
-
-# Show node ID (pre-generate if needed)
+# Node ID (quiet — one line)
 NODE_ID_FILE="$HOME/.ww_data/node_id.txt"
 if [ -f "$NODE_ID_FILE" ]; then
     NID=$(cat "$NODE_ID_FILE")
@@ -411,35 +466,7 @@ else
     mkdir -p "$(dirname "$NODE_ID_FILE")"
     echo "$NID" > "$NODE_ID_FILE"
 fi
-echo -e "  ${BOLD}${GREEN}🆔 Your Node ID: ${CYAN}$NID${NC}"
-echo -e "  ${DIM}  Share this with the network admin so they can find you.${NC}"
-echo -e "  ${DIM}  Verify: curl http://tracker.dse-5-star-star.org/p2p/whois/$NID${NC}"
-echo -e "  ${DIM}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
-echo ""
-
-# LLM API Key — prompt on first install
-if [ -z "${DEEPSEEK_API_KEY:-}" ] && [ ! -f "$ENV_FILE" ]; then
-    echo ""
-    echo -e "  ${BOLD}🔑  Before we start — paste your DeepSeek API key:${NC}"
-    echo -e "  ${DIM}     (get one: https://platform.deepseek.com — free)${NC}"
-    echo ""
-    printf "  ${CYAN}→ ${NC}"
-    read -r USER_KEY
-    if [ -n "$USER_KEY" ]; then
-        mkdir -p "$(dirname "$ENV_FILE")"
-        echo "DEEPSEEK_API_KEY=$USER_KEY" > "$ENV_FILE"
-        DEEPSEEK_API_KEY="$USER_KEY"
-        ENV="$ENV DEEPSEEK_API_KEY=$USER_KEY"
-        echo ""
-        ok "Key saved — change anytime: ww key set sk-xxx"
-        echo ""
-    else
-        echo ""
-        warn "No key entered — starting in P2P-only mode (no chat)"
-        echo -e "  ${DIM}  Set later: ww key set sk-xxx${NC}"
-        echo ""
-    fi
-fi
+ok "Node ID: $NID"
 
 # Install ww CLI to PATH
 LOCAL_BIN="$HOME/.local/bin"
@@ -452,8 +479,68 @@ if ! echo "$PATH" | grep -q "$LOCAL_BIN"; then
         echo "export PATH=\"$LOCAL_BIN:\$PATH\"" >> "$HOME/.bashrc"
     fi
     export PATH="$LOCAL_BIN:$PATH"
+    warn "Added $LOCAL_BIN to PATH (new shells pick it up from ~/.bashrc)"
 fi
-ok "ww command ready — use: ww update, ww key set, ww key test"
+ok "ww command ready → $LOCAL_BIN/ww"
+
+# LLM key: prompt when missing/empty/partial .env (not only when .env is absent)
+if ! ww_has_llm_key "$ENV_FILE"; then
+    if [ -t 0 ]; then
+        echo ""
+        echo -e "  ${BOLD}🔑  Paste your DeepSeek API key to chat:${NC}"
+        echo -e "  ${DIM}     Free key: https://platform.deepseek.com${NC}"
+        echo ""
+        printf "  ${CYAN}→ ${NC}"
+        read -r USER_KEY || USER_KEY=""
+        USER_KEY=$(echo "$USER_KEY" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ -n "$USER_KEY" ]; then
+            mkdir -p "$(dirname "$ENV_FILE")"
+            if [ -f "$ENV_FILE" ] && grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
+                if [ "$(uname -s)" = "Darwin" ]; then
+                    sed -i '' "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$USER_KEY|" "$ENV_FILE"
+                else
+                    sed -i "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$USER_KEY|" "$ENV_FILE"
+                fi
+            else
+                echo "DEEPSEEK_API_KEY=$USER_KEY" >> "$ENV_FILE"
+            fi
+            export DEEPSEEK_API_KEY="$USER_KEY"
+            echo ""
+            ok "Key saved — change anytime: ww key set sk-xxx"
+        else
+            echo ""
+            warn "No key entered — chat needs a key first"
+            echo -e "  ${DIM}  Later: ww key set sk-xxx${NC}"
+            echo -e "  ${DIM}  Get one: https://platform.deepseek.com${NC}"
+        fi
+    else
+        # Non-TTY (curl | bash, CI): install done, do not hang on prompt or server
+        echo ""
+        warn "No LLM API key configured (non-interactive install)"
+        echo "  Set a key, then chat:"
+        echo "    ww key set sk-xxx"
+        echo "    ww"
+        echo "  Free key: https://platform.deepseek.com"
+        echo ""
+        ok "Install complete"
+        exit 0
+    fi
+fi
+
+echo ""
+echo -e "  ${BOLD}${GREEN}═══ Worldwave ready ═══${NC}"
+echo -e "  ${DIM}Server starts automatically when you chat (no log spam).${NC}"
+echo ""
 
 cd "$INSTALL_DIR"
-exec env $ENV "$VENV_DIR/bin/python" server.py
+# Interactive default: enter chat. Server is auto-started by ww_cli (background).
+# Never attach foreground server.py as the end state of first install.
+if [ -t 0 ] && [ -t 1 ] && ww_has_llm_key "$ENV_FILE"; then
+    echo -e "  Starting interactive chat…  (${DIM}Ctrl+C or /exit to leave${NC})"
+    echo ""
+    exec "$LOCAL_BIN/ww"
+fi
+
+echo "  Ready. Type: ww"
+echo ""
+exit 0

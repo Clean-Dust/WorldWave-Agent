@@ -242,14 +242,27 @@ def auto_start_server() -> bool:
             print(f"{Colors.green('✓')} Server started (port {WW_PORT})")
             return True
 
-    print(f"{Colors.red('✗')} Server start timeout")
+    print(f"{Colors.red('✗')} Server failed to start on port {WW_PORT}")
+    print(f"  Check port:  ss -tlnp | grep {WW_PORT}   (or: lsof -i :{WW_PORT})")
+    print(f"  Or run:      ww server start")
     return False
 
 
 def check_llm_api_key() -> Optional[str]:
-    """Check all possible LLM API key env vars, return first provider found or None."""
+    """Check all possible LLM API key env vars, return first provider found or None.
+
+    Empty strings and common placeholders count as missing.
+    """
+    _placeholders = {
+        "",
+        "sk-your-deepseek-key-here",
+        "your-key-here",
+        "sk-xxx",
+        "changeme",
+    }
     for provider in ("DEEPSEEK", "OPENAI", "ANTHROPIC", "OPENROUTER", "CUSTOM"):
-        if os.environ.get(f"{provider}_API_KEY"):
+        val = (os.environ.get(f"{provider}_API_KEY") or "").strip()
+        if val and val not in _placeholders:
             return provider.lower()
     return None
 
@@ -445,13 +458,9 @@ def cmd_run(args):
     # LLM API key pre-check — fail fast before starting server
     llm_provider = check_llm_api_key()
     if not llm_provider:
-        ww_home_env = os.environ.get("WW_HOME", os.path.expanduser("~/worldwave"))
-        print(f"\n  {Colors.yellow('⚠')} No LLM API key detected")
-        print("  Set an API key via environment or .env file:")
-        print(f"    {Colors.dim('export DEEPSEEK_API_KEY=sk-...')}")
-        print(f"    {Colors.dim('  — OR edit .env: nano ' + os.path.join(ww_home_env, '.env'))}")
-        print(f"  Get a free key: {Colors.dim('platform.deepseek.com → API Keys')}")
-        print(f"  Supported: DEEPSEEK_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, OPENROUTER_API_KEY, CUSTOM_API_KEY")
+        print(f"\n  {Colors.yellow('⚠')} No LLM API key found")
+        print(f"  Fix:  {Colors.cyan('ww key set sk-xxx')}")
+        print(f"  Free: https://platform.deepseek.com")
         print()
         return
 
@@ -461,6 +470,7 @@ def cmd_run(args):
     # Ensure server is running
     if not auto_start_server():
         print(f"{Colors.red('✗')} Cannot start WW server")
+        print(f"  Port {WW_PORT} may be busy, or check: ww server start")
         return
 
     # ── Interactive mode (no goal provided) ──
