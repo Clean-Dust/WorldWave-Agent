@@ -140,7 +140,7 @@ def compose(w: int, h: int, out_path: Path) -> None:
         "Persistent autonomy",
         "Persistent session",
     ]
-    sub_size = max(16, int(h * 0.040))
+    sub_size = max(20, int(h * 0.055))
     sub_font = font(REG, sub_size)
     while sub_size >= 12:
         sub_font = font(REG, sub_size)
