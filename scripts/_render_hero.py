@@ -110,69 +110,72 @@ def render_title(text: str, max_w: int, max_h: int) -> tuple[Image.Image, int, i
 
 def compose(w: int, h: int, out_path: Path) -> None:
     bg = make_bg(w, h)
+    draw = ImageDraw.Draw(bg)
 
-    # Shark left
+    # Shared vertical center so mascot + type sit on one horizontal band
+    band_cy = int(h * 0.48)
+
+    # Shark left — raised (centered on band, not glued to bottom)
     sh = shark_src.copy()
-    target_h = int(h * 0.78)
+    target_h = int(h * 0.70)
     ratio = target_h / sh.height
     sh = sh.resize((max(1, int(sh.width * ratio)), target_h), Image.Resampling.LANCZOS)
     sx = int(w * 0.03)
-    sy = h - sh.height - int(h * 0.02)
+    sy = band_cy - sh.height // 2
+    sy = max(int(h * 0.04), min(sy, h - sh.height - int(h * 0.06)))
     bg.paste(sh, (sx, sy), sh)
     shark_right = sx + sh.width
 
-    draw = ImageDraw.Draw(bg)
-
-    # WORLDWAVE — right of shark
+    # WORLDWAVE + promos as one column, centered on same band_cy
     margin_r = int(w * 0.04)
     text_left = shark_right + int(w * 0.03)
     max_title_w = w - text_left - margin_r
     max_title_h = int(h * 0.28)
     title_layer, tw, th, pad = render_title("WORLDWAVE", max_title_w, max_title_h)
-    # center title block in the right column
     col_w = max_title_w
     title_x = text_left + (col_w - title_layer.width) // 2
-    title_y = int(h * 0.22)
-    bg.paste(title_layer, (title_x, title_y), title_layer)
 
-    # glyph box of title (without pad)
-    glyph_left = title_x + (title_layer.width - tw) // 2
-    glyph_right = glyph_left + tw
-    glyph_cx = (glyph_left + glyph_right) // 2
-    glyph_bottom = title_y + (title_layer.height + th) // 2
-
-    # Three promo lines: stacked, NORMAL tracking, CENTER under WORLDWAVE, TIGHT gap
     lines = [
         "Persistent memory",
         "Persistent autonomy",
         "Persistent session",
     ]
-    # font ~ 0.038 of height, readable but secondary
     sub_size = max(16, int(h * 0.040))
     sub_font = font(REG, sub_size)
-    # ensure longest line fits in right column
     while sub_size >= 12:
         sub_font = font(REG, sub_size)
         if max(text_size(sub_font, ln)[0] for ln in lines) <= col_w:
             break
         sub_size -= 1
         sub_font = font(REG, sub_size)
-
     lh = text_size(sub_font, "Hg")[1]
     gap = max(4, int(lh * 0.22))
-    # TIGHT under title
-    y = glyph_bottom + int(h * 0.028)
+    sub_block_h = 3 * lh + 2 * gap
+    title_to_sub = int(h * 0.028)
+    # total text column height ≈ title_layer + gap + sub block
+    text_block_h = title_layer.height + title_to_sub + sub_block_h
+    title_y = band_cy - text_block_h // 2
+    title_y = max(int(h * 0.06), min(title_y, h - text_block_h - int(h * 0.06)))
+
+    bg.paste(title_layer, (title_x, title_y), title_layer)
+
+    glyph_left = title_x + (title_layer.width - tw) // 2
+    glyph_right = glyph_left + tw
+    glyph_cx = (glyph_left + glyph_right) // 2
+    glyph_bottom = title_y + (title_layer.height + th) // 2
+
+    y = glyph_bottom + title_to_sub
     for line in lines:
         lw, _ = text_size(sub_font, line)
-        x = glyph_cx - lw // 2  # center under WORLDWAVE
+        x = glyph_cx - lw // 2
         draw.text((x, y), line, font=sub_font, fill=SUB_FILL)
         y += lh + gap
 
     out = bg.convert("RGB")
     out.save(out_path, "PNG", optimize=True)
     print(
-        f"wrote {out_path} title@{title_x},{title_y} tw={tw} "
-        f"sub_size={sub_size} first_line_y={glyph_bottom + int(h * 0.028)}"
+        f"wrote {out_path} shark_y={sy} title_y={title_y} band_cy={band_cy} "
+        f"shark_mid={sy + sh.height//2} title_mid={title_y + text_block_h//2}"
     )
 
 
