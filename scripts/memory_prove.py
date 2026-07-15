@@ -2,7 +2,7 @@
 """WW Memory prove harness — mechanism + product modes.
 
 Modes:
-  --mechanism   L0 unit tests + L1 capacity/GC/promote + B3/B4 WM + B5 tiebreak
+  --mechanism   L0 unit tests + L1 capacity/GC/promote + B3/B4 WM + B5 tiebreak + B6 recency
   --product     A1–A4 natural write/read on live server (no harness cheating)
   --all         mechanism then product (default if no flags)
 
@@ -682,7 +682,8 @@ def run_b5_wm_tiebreak_switch(report: Report) -> None:
             "EntityStateManager WM tiebreak",
         )
 
-        # --- ON: same kind/access; higher protect stays even if older ---
+        # --- ON: same kind/access/age; higher protect stays ---
+        # Equalize updated_at so primary score (kind×access×recency) ties.
         protect = {"keep": 9.0, "drop": 0.0}
 
         def tb(entity_id, key, meta):
@@ -690,9 +691,18 @@ def run_b5_wm_tiebreak_switch(report: Report) -> None:
 
         esm.set_wm_tiebreak_fn(tb)
         eid_on = "ent_b5_on"
+        esm.working_memory_capacity = 2
         esm.set_working_memory(eid_on, "keep", "v-keep", kind="outcome")
-        time.sleep(0.02)
         esm.set_working_memory(eid_on, "drop", "v-drop", kind="outcome")
+        st_on = esm.get(eid_on)
+        t0 = 1_700_000_000.0
+        for k in ("keep", "drop"):
+            st_on.working_memory_meta[k]["updated_at"] = t0
+            st_on.working_memory_meta[k]["access_count"] = 0
+        esm.save(st_on)
+        esm.working_memory_capacity = 1
+        esm._enforce_wm_capacity(st_on, now=t0 + 5.0)
+        esm.save(st_on)
         st_on = esm.get(eid_on)
         on_ok = (
             "keep" in st_on.working_memory
@@ -708,6 +718,7 @@ def run_b5_wm_tiebreak_switch(report: Report) -> None:
 
         # --- ON still cannot override commitment > rationale ---
         esm.set_wm_tiebreak_fn(lambda e, k, m: 1e9 if k == "rat" else 0.0)
+        esm.working_memory_capacity = 1
         eid_kind = "ent_b5_kind"
         esm.set_working_memory(eid_kind, "cmt", "decide", kind="commitment")
         time.sleep(0.01)
@@ -731,6 +742,153 @@ def run_b5_wm_tiebreak_switch(report: Report) -> None:
         shutil.rmtree(td, ignore_errors=True)
 
 
+def run_b6_wm_recency(report: Report) -> None:
+    """B6: WM recency decay as multiplicative importance (on vs off, fixed clock)."""
+    from unittest.mock import MagicMock
+
+    from core.entity_state import (
+        EntityStateManager,
+        ROLE_WEIGHT,
+        wm_eviction_score,
+        wm_recency_factor,
+    )
+
+    td = tempfile.mkdtemp(prefix="ww-mem-b6-")
+    prev = {
+        k: os.environ.get(k)
+        for k in (
+            "WW_WM_RECENCY_ENABLED",
+            "WW_WM_RECENCY_HALF_LIFE_S",
+            "WW_WM_RECENCY_FLOOR",
+            "WW_WORKING_MEMORY_CAPACITY",
+        )
+    }
+    try:
+        os.environ["WW_WM_RECENCY_HALF_LIFE_S"] = "3600"
+        os.environ["WW_WM_RECENCY_FLOOR"] = "0.4"
+        os.environ["WW_WORKING_MEMORY_CAPACITY"] = "2"
+
+        cfg = MagicMock()
+        cfg.get = MagicMock(return_value=None)
+        cfg.expand_path = MagicMock(side_effect=lambda p: os.path.expanduser(p))
+        esm = EntityStateManager(config=cfg, data_dir=td)
+        esm.working_memory_capacity = 2
+
+        # --- Formula lock: multiplicative, fixed ages ---
+        s_new = wm_eviction_score(
+            "outcome", 0, age_seconds=0.0, recency_enabled=True
+        )
+        s_old = wm_eviction_score(
+            "outcome", 0, age_seconds=3600.0, recency_enabled=True
+        )
+        factor_ok = (
+            s_new > s_old
+            and abs(s_new - ROLE_WEIGHT["outcome"] * 1.0) < 1e-9
+            and abs(
+                s_old
+                - ROLE_WEIGHT["outcome"]
+                * wm_recency_factor(3600.0, half_life_s=3600.0, floor=0.4)
+            )
+            < 1e-9
+        )
+
+        # Role still beats pure newness
+        s_cmt = wm_eviction_score(
+            "commitment",
+            5,
+            age_seconds=10 * 3600.0,
+            recency_enabled=True,
+            half_life_s=3600.0,
+            floor=0.4,
+        )
+        s_rat = wm_eviction_score(
+            "rationale",
+            0,
+            age_seconds=0.0,
+            recency_enabled=True,
+            half_life_s=3600.0,
+            floor=0.4,
+        )
+        role_ok = s_cmt > s_rat
+
+        # --- ON: capacity pressure, older same-kind loses first ---
+        os.environ["WW_WM_RECENCY_ENABLED"] = "1"
+        eid_on = "ent_b6_on"
+        esm.set_working_memory(eid_on, "fresh", "new-fact", kind="outcome")
+        esm.set_working_memory(eid_on, "stale", "old-fact", kind="outcome")
+        st = esm.get(eid_on)
+        now = 1_700_000_000.0
+        st.working_memory_meta["fresh"]["updated_at"] = now
+        st.working_memory_meta["fresh"]["access_count"] = 0
+        st.working_memory_meta["stale"]["updated_at"] = now - 7200.0
+        st.working_memory_meta["stale"]["access_count"] = 0
+        esm.save(st)
+        esm.working_memory_capacity = 1
+        esm._enforce_wm_capacity(st, now=now)
+        esm.save(st)
+        st = esm.get(eid_on)
+        on_ok = "fresh" in st.working_memory and "stale" not in st.working_memory
+
+        # --- OFF: same fixtures → base scores equal → tertiary updated_at ---
+        os.environ["WW_WM_RECENCY_ENABLED"] = "0"
+        esm.working_memory_capacity = 2
+        eid_off = "ent_b6_off"
+        esm.set_working_memory(eid_off, "a", "va", kind="outcome")
+        esm.set_working_memory(eid_off, "b", "vb", kind="outcome")
+        st_off = esm.get(eid_off)
+        t0 = 1_700_000_100.0
+        st_off.working_memory_meta["a"]["updated_at"] = t0
+        st_off.working_memory_meta["a"]["access_count"] = 0
+        st_off.working_memory_meta["b"]["updated_at"] = t0 + 50.0
+        st_off.working_memory_meta["b"]["access_count"] = 0
+        esm.save(st_off)
+        # Base scores equal when recency off
+        base_eq = abs(
+            wm_eviction_score("outcome", 0, age_seconds=100.0, recency_enabled=False)
+            - wm_eviction_score("outcome", 0, age_seconds=0.0, recency_enabled=False)
+        ) < 1e-12
+        esm.working_memory_capacity = 1
+        esm._enforce_wm_capacity(st_off, now=t0 + 100.0)
+        esm.save(st_off)
+        st_off = esm.get(eid_off)
+        off_ok = (
+            base_eq
+            and "b" in st_off.working_memory
+            and "a" not in st_off.working_memory
+        )
+
+        # No protect_last_n in module surface
+        import core.entity_state as es_mod
+
+        no_pin = "protect_last_n(" not in Path(es_mod.__file__).read_text(
+            encoding="utf-8"
+        )
+
+        ok = factor_ok and role_ok and on_ok and off_ok and no_pin
+        report.add(
+            "B6 WM recency decay (on vs off, fixed clock)",
+            ok,
+            f"factor={factor_ok} role={role_ok} on={on_ok} off={off_ok} "
+            f"no_pin={no_pin} s_new={s_new:.4f} s_old={s_old:.4f} "
+            f"s_cmt={s_cmt:.4f} s_rat={s_rat:.4f}",
+            "EntityStateManager WM recency",
+        )
+    except Exception as e:
+        report.add(
+            "B6 WM recency decay (on vs off, fixed clock)",
+            False,
+            f"error: {e}",
+            "EntityStateManager WM recency",
+        )
+    finally:
+        for k, v in prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(td, ignore_errors=True)
+
+
 def run_mechanism(report: Report) -> None:
     run_l0(report)
     run_b1_capacity(report)
@@ -739,6 +897,7 @@ def run_mechanism(report: Report) -> None:
     run_b3_working_memory(report)
     run_b4_wm_kind_eviction(report)
     run_b5_wm_tiebreak_switch(report)
+    run_b6_wm_recency(report)
 
 
 def _live_client() -> LiveClient:

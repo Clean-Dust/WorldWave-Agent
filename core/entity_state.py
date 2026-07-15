@@ -7,14 +7,19 @@ server restarts. This replaces the old "session" concept — there is no
 
 Working Memory (entity RAM):
   Fixed-capacity online fact buffer (default 32). Full buffer → evict
-  by role-weighted score then oldest keys (numeric only; no keyword
-  importance). Memory roles (kind): commitment (decisions, highest
-  protect), outcome (results, high), rationale (process, easiest to
-  squeeze). Kind is set only via explicit remember(kind=...)/set_working_memory;
-  never inferred from content keywords. Important evictions promote via
-  on_wm_evict (MemorySystem) and/or archive to
-  ~/.ww/entities/<id>/wm_evicted.jsonl. Does not promise an infinite LLM
-  prompt — only the current RAM set is injected into context.
+  by multi-signal score (numeric only; no keyword importance, no
+  protect_last_n):
+    score = ROLE_WEIGHT[kind] * (1 + access_count) * recency_factor(age)
+  Recency is continuous exponential decay from meta.updated_at (default
+  half-life 3600s, floor 0.4); disable with WW_WM_RECENCY_ENABLED=0 to
+  restore kind×access only (updated_at remains tertiary tie-break).
+  Memory roles (kind): commitment (decisions, highest protect), outcome
+  (results, high), rationale (process, easiest to squeeze). Kind is set
+  only via explicit remember(kind=...)/set_working_memory; never inferred
+  from content keywords. Important evictions promote via on_wm_evict
+  (MemorySystem) and/or archive to ~/.ww/entities/<id>/wm_evicted.jsonl.
+  Does not promise an infinite LLM prompt — only the current RAM set is
+  injected into context.
 
 Memory stack (three layers):
   Working Memory (entity RAM, this module)
@@ -69,12 +74,17 @@ WM_PROMOTE_LONG_VALUE_LEN = int(os.environ.get("WW_WM_PROMOTE_LONG_LEN", "80"))
 WM_KINDS = frozenset({"commitment", "rationale", "outcome"})
 DEFAULT_WM_KIND = "outcome"
 # Eviction protection weights: higher score stays longer.
-# score = ROLE_WEIGHT[kind] * (1 + access_count); lowest score evicted first.
+# base = ROLE_WEIGHT[kind] * (1 + access_count); lowest score evicted first.
 ROLE_WEIGHT: Dict[str, float] = {
     "commitment": float(os.environ.get("WW_WM_WEIGHT_COMMITMENT", "3.0")),
     "outcome": float(os.environ.get("WW_WM_WEIGHT_OUTCOME", "2.0")),
     "rationale": float(os.environ.get("WW_WM_WEIGHT_RATIONALE", "1.0")),
 }
+
+# Recency decay (multiplicative importance dimension; not protect_last_n).
+# Defaults documented here and in resolve helpers below.
+DEFAULT_WM_RECENCY_HALF_LIFE_S = 3600.0  # 1 hour
+DEFAULT_WM_RECENCY_FLOOR = 0.4
 
 # Callback: (entity_id, key, value) -> None; optional 4th meta dict may be passed
 OnWmEvict = Callable[..., None]
@@ -104,12 +114,101 @@ def wm_role_weight(kind: Optional[str] = None) -> float:
     return float(ROLE_WEIGHT.get(normalize_wm_kind(kind), ROLE_WEIGHT[DEFAULT_WM_KIND]))
 
 
-def wm_eviction_score(kind: Optional[str] = None, access_count: int = 0) -> float:
-    """Pure numeric eviction score; lower is evicted first.
+def _env_truthy(raw: Optional[str], default: bool = True) -> bool:
+    """Parse WW-style env flag: 1/true/yes/on → True; 0/false/no/off → False."""
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() not in ("0", "false", "no", "off", "disabled")
 
-    score = role_weight * (1 + access_count)
+
+def resolve_wm_recency_enabled() -> bool:
+    """Master switch WW_WM_RECENCY_ENABLED (default on)."""
+    return _env_truthy(os.environ.get("WW_WM_RECENCY_ENABLED"), default=True)
+
+
+def resolve_wm_recency_half_life_s() -> float:
+    """Half-life seconds for exponential recency decay (default 3600).
+
+    HALF_LIFE_S <= 0 is treated as disabled (factor always 1.0).
     """
-    return wm_role_weight(kind) * (1.0 + max(0, int(access_count or 0)))
+    raw = os.environ.get("WW_WM_RECENCY_HALF_LIFE_S")
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_WM_RECENCY_HALF_LIFE_S
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_WM_RECENCY_HALF_LIFE_S
+
+
+def resolve_wm_recency_floor() -> float:
+    """Decay floor in (0, 1]; default 0.4. Invalid values fall back to default."""
+    raw = os.environ.get("WW_WM_RECENCY_FLOOR")
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_WM_RECENCY_FLOOR
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_WM_RECENCY_FLOOR
+    if v <= 0.0 or v > 1.0:
+        return DEFAULT_WM_RECENCY_FLOOR
+    return v
+
+
+def wm_now() -> float:
+    """Clock used for WM recency age. Override/monkeypatch in tests."""
+    return time.time()
+
+
+def wm_recency_factor(
+    age_seconds: float,
+    half_life_s: Optional[float] = None,
+    floor: Optional[float] = None,
+) -> float:
+    """Continuous recency multiplier from age; deterministic, no LLM/keywords.
+
+    recency_factor(age) = FLOOR + (1 - FLOOR) * 0.5 ** (age / HALF_LIFE_S)
+
+    New items ≈ 1.0; decays toward FLOOR as age grows. age is clamped to >= 0.
+    HALF_LIFE_S <= 0 → factor 1.0 (recency effectively disabled).
+    """
+    hl = resolve_wm_recency_half_life_s() if half_life_s is None else float(half_life_s)
+    fl = resolve_wm_recency_floor() if floor is None else float(floor)
+    if fl <= 0.0 or fl > 1.0:
+        fl = DEFAULT_WM_RECENCY_FLOOR
+    if hl <= 0.0:
+        return 1.0
+    age = max(0.0, float(age_seconds or 0.0))
+    return fl + (1.0 - fl) * (0.5 ** (age / hl))
+
+
+def wm_eviction_score(
+    kind: Optional[str] = None,
+    access_count: int = 0,
+    *,
+    age_seconds: Optional[float] = None,
+    recency_enabled: Optional[bool] = None,
+    half_life_s: Optional[float] = None,
+    floor: Optional[float] = None,
+) -> float:
+    """Pure numeric eviction score; higher stays longer, lower evicted first.
+
+    base = role_weight * (1 + access_count)
+    score = base * recency_factor(age) when recency enabled and age given;
+    otherwise score = base (baseline kind×access; updated_at is tertiary).
+
+    No protect_last_n. Pass age_seconds + flags for fixed-clock tests.
+    """
+    base = wm_role_weight(kind) * (1.0 + max(0, int(access_count or 0)))
+    enabled = (
+        resolve_wm_recency_enabled()
+        if recency_enabled is None
+        else bool(recency_enabled)
+    )
+    if not enabled or age_seconds is None:
+        return base
+    return base * wm_recency_factor(
+        age_seconds, half_life_s=half_life_s, floor=floor
+    )
 
 
 def resolve_working_memory_capacity(config: Optional["ConfigManager"] = None) -> int:
@@ -152,7 +251,7 @@ class EntityState(BaseModel):
     are always restored.
 
     Working memory is a fixed-capacity RAM buffer. Overflow evicts by
-    role-weighted score (kind) then older keys; core keys
+    kind × access × recency score (no protect_last_n); core keys
     (working_memory_core) are retained. Meta (updated_at, access_count,
     kind) is persisted with the state. Missing kind defaults to outcome.
     """
@@ -303,13 +402,14 @@ class EntityStateManager:
     Thread-safe. Uses SQLite (WAL mode) for persistence, in-memory dict for active entities.
 
     Working memory writes enforce a fixed capacity (default 32). Overflow
-    evicts keys with lowest role-weighted score
-    (ROLE_WEIGHT[kind] * (1 + access_count)), then optional subconscious
-    tie-break (higher protect first when scores equal), then oldest
-    updated_at. Core keys and preference keys are not auto-evicted.
-    On promote-worthy eviction, optional on_wm_evict callback runs; all
-    evictions are archived to entities/<id>/wm_evicted.jsonl for recovery.
-    Without a tie-break hook, eviction matches kind+access+updated only.
+    evicts keys with lowest multi-signal score:
+      ROLE_WEIGHT[kind] * (1 + access_count) * recency_factor(age)
+    (recency off → kind×access only), then optional subconscious
+    tie-break (higher protect first when primary scores equal), then
+    oldest updated_at. No protect_last_n. Core keys and preference keys
+    are not auto-evicted. On promote-worthy eviction, optional
+    on_wm_evict callback runs; all evictions are archived to
+    entities/<id>/wm_evicted.jsonl for recovery.
 
     Usage:
         esm = EntityStateManager(config=config)
@@ -346,8 +446,9 @@ class EntityStateManager:
         """Optional eviction tie-break: (entity_id, key, meta) -> float.
 
         Higher return value = more protect (evicted later). Compared only
-        when primary score (kind weight × access) is equal. Pass None to
-        clear (same behavior as no hook / 640846e).
+        when primary score (kind × access × recency) is equal. Pass None
+        to clear (same behavior as no hook / 640846e). Cannot override
+        different primary scores (e.g. commitment > rationale).
         Alias: set_on_wm_score.
         """
         self._wm_tiebreak_fn = fn
@@ -474,9 +575,9 @@ class EntityStateManager:
     ):
         """Set a working memory key (called by remember tool).
 
-        Enforces capacity: if over capacity, evict lowest role-weighted score
-        then oldest non-core keys. is_core marks the key so it is not
-        auto-evicted.
+        Enforces capacity: if over capacity, evict lowest multi-signal score
+        (kind × access × recency) then oldest non-core keys. is_core marks
+        the key so it is not auto-evicted.
 
         kind: optional memory role — commitment | rationale | outcome.
         Explicit only (no keyword inference). Empty/illegal/unknown → outcome.
@@ -551,23 +652,27 @@ class EntityStateManager:
             return True
         return False
 
-    def _wm_eviction_key(self, state: EntityState, key: str):
+    def _wm_eviction_key(
+        self, state: EntityState, key: str, now: Optional[float] = None
+    ):
         """Sort key for eviction: lower tuple = evicted first (min victim).
 
-        1) score = ROLE_WEIGHT[kind] * (1 + access_count)  (primary)
+        1) score = ROLE_WEIGHT[kind] * (1+access) * recency_factor(age)
+           (recency off → base only; primary)
         2) tiebreak  (optional; higher = more protect = larger = later)
         3) updated_at (oldest first when still tied)
 
         When primary scores differ (e.g. commitment vs rationale), tiebreak
-        cannot reorder them. Missing kind → outcome.
+        cannot reorder them. Missing kind → outcome. No protect_last_n.
 
-        Note: second component is +tiebreak (not negated) so higher protect
-        sorts after lower protect under min().
+        Pass ``now`` for deterministic tests; defaults to wm_now().
         """
         meta = state.working_memory_meta.get(key) or {}
         access = int(meta.get("access_count", 0) or 0)
         updated = float(meta.get("updated_at", 0.0) or 0.0)
-        score = wm_eviction_score(meta.get("kind"), access)
+        clock = float(now) if now is not None else wm_now()
+        age = max(0.0, clock - updated)
+        score = wm_eviction_score(meta.get("kind"), access, age_seconds=age)
         tiebreak = 0.0
         if self._wm_tiebreak_fn is not None:
             try:
@@ -633,16 +738,19 @@ class EntityStateManager:
                 "on_wm_evict failed for %s key=%s: %s", entity_id[:12], key, e
             )
 
-    def _enforce_wm_capacity(self, state: EntityState) -> List[str]:
+    def _enforce_wm_capacity(
+        self, state: EntityState, now: Optional[float] = None
+    ) -> List[str]:
         """Evict until len(working_memory) <= capacity. Returns evicted keys.
 
         Strategy (numeric only): among non-protected keys, prefer lowest
-        score = ROLE_WEIGHT[kind]*(1+access_count), then lowest optional
-        subconscious tie-break protect, then oldest updated_at.
-        If all remaining are protected, stop (may exceed capacity — same
-        spirit as hippocampus protect).
+        score = kind×access×recency (recency off → kind×access), then
+        lowest optional subconscious tie-break protect, then oldest
+        updated_at. No protect_last_n. If all remaining are protected,
+        stop (may exceed capacity — same spirit as hippocampus protect).
         """
         cap = self.working_memory_capacity
+        clock = float(now) if now is not None else wm_now()
         evicted: List[str] = []
         while len(state.working_memory) > cap:
             candidates = [
@@ -655,19 +763,32 @@ class EntityStateManager:
                     cap,
                 )
                 break
-            victim = min(candidates, key=lambda k: self._wm_eviction_key(state, k))
+            victim = min(
+                candidates, key=lambda k: self._wm_eviction_key(state, k, now=clock)
+            )
             value = state.working_memory.pop(victim)
             meta = dict(state.working_memory_meta.pop(victim, {}) or {})
             state.wm_evicted_total = int(state.wm_evicted_total) + 1
             evicted.append(victim)
+            access = int(meta.get("access_count", 0) or 0)
+            updated = float(meta.get("updated_at", 0.0) or 0.0)
+            age = max(0.0, clock - updated)
+            effective = wm_eviction_score(meta.get("kind"), access, age_seconds=age)
+            factor = (
+                wm_recency_factor(age)
+                if resolve_wm_recency_enabled()
+                else 1.0
+            )
             log.info(
-                "WM evict entity=%s key=%s kind=%s access=%s score=%.2f "
-                "(size→%d cap=%d)",
+                "WM evict entity=%s key=%s kind=%s access=%s score=%.4f "
+                "age=%.1fs factor=%.4f (size→%d cap=%d)",
                 state.entity_id[:12],
                 victim,
                 normalize_wm_kind(meta.get("kind")),
-                meta.get("access_count", 0),
-                wm_eviction_score(meta.get("kind"), int(meta.get("access_count", 0) or 0)),
+                access,
+                effective,
+                age,
+                factor,
                 len(state.working_memory),
                 cap,
             )

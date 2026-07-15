@@ -9,6 +9,7 @@ Offline only (no network). Covers:
 - is_core / preferences protected from eviction
 - context injection only contains current RAM set
 - Memory roles (kind): commitment / rationale / outcome weighted eviction
+- Recency decay as multiplicative importance (no protect_last_n)
 """
 
 from __future__ import annotations
@@ -23,12 +24,15 @@ import pytest
 
 from core.entity_state import (
     DEFAULT_WM_KIND,
+    DEFAULT_WM_RECENCY_FLOOR,
+    DEFAULT_WM_RECENCY_HALF_LIFE_S,
     DEFAULT_WORKING_MEMORY_CAPACITY,
     ROLE_WEIGHT,
     EntityStateManager,
     normalize_wm_kind,
     resolve_working_memory_capacity,
     wm_eviction_score,
+    wm_recency_factor,
 )
 
 
@@ -353,8 +357,7 @@ def test_illegal_kind_normalized_to_outcome(esm):
 
 
 def test_wm_tiebreak_decides_when_kind_and_access_equal(esm):
-    """Same kind + same access: higher tiebreak protect stays, lower leaves."""
-    esm.working_memory_capacity = 1
+    """Same kind + same access + same age: higher tiebreak protect stays."""
     scores = {"keep": 10.0, "drop": 1.0}
 
     def tb(entity_id, key, meta):
@@ -362,10 +365,19 @@ def test_wm_tiebreak_decides_when_kind_and_access_equal(esm):
 
     esm.set_wm_tiebreak_fn(tb)
     eid = "ent_tb"
+    # Seed under capacity=2, equalize ages so primary scores tie, then squeeze
+    esm.working_memory_capacity = 2
     esm.set_working_memory(eid, "keep", "v-keep", kind="outcome")
-    time.sleep(0.02)
     esm.set_working_memory(eid, "drop", "v-drop", kind="outcome")
-    # Both outcome/access=0 → primary score ties; drop has lower protect → victim
+    state = esm.get(eid)
+    t0 = 1_700_000_000.0
+    for k in ("keep", "drop"):
+        state.working_memory_meta[k]["updated_at"] = t0
+        state.working_memory_meta[k]["access_count"] = 0
+    esm.save(state)
+    esm.working_memory_capacity = 1
+    esm._enforce_wm_capacity(state, now=t0 + 10.0)
+    esm.save(state)
     state = esm.get(eid)
     assert "keep" in state.working_memory
     assert "drop" not in state.working_memory
@@ -434,3 +446,247 @@ def test_context_injection_includes_kind_tag(esm):
     assert "[commitment]" in text
     assert "decision" in text
     assert "ship it" in text
+
+
+# ── Recency decay (importance dimension; no protect_last_n) ───────
+
+
+def test_recency_factor_defaults_and_shape():
+    """Deterministic half-life formula; floor + decay toward floor."""
+    assert DEFAULT_WM_RECENCY_HALF_LIFE_S == 3600.0
+    assert DEFAULT_WM_RECENCY_FLOOR == 0.4
+    assert wm_recency_factor(0.0, half_life_s=3600.0, floor=0.4) == pytest.approx(1.0)
+    mid = wm_recency_factor(3600.0, half_life_s=3600.0, floor=0.4)
+    assert mid == pytest.approx(0.4 + 0.6 * 0.5)
+    old = wm_recency_factor(10_000.0, half_life_s=3600.0, floor=0.4)
+    assert old < mid
+    assert old >= 0.4
+    # HALF_LIFE_S <= 0 → factor 1.0 (disabled)
+    assert wm_recency_factor(9999.0, half_life_s=0.0, floor=0.4) == 1.0
+    assert wm_recency_factor(9999.0, half_life_s=-1.0, floor=0.4) == 1.0
+    # age clamp
+    assert wm_recency_factor(-100.0, half_life_s=3600.0, floor=0.4) == pytest.approx(1.0)
+
+
+def test_recency_on_later_updated_higher_score(monkeypatch):
+    """L0-1: same kind, same access → later updated_at has higher score."""
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "1")
+    monkeypatch.setenv("WW_WM_RECENCY_HALF_LIFE_S", "3600")
+    monkeypatch.setenv("WW_WM_RECENCY_FLOOR", "0.4")
+    now = 1_700_000_000.0
+    s_old = wm_eviction_score(
+        "outcome", 0, age_seconds=3600.0, recency_enabled=True
+    )
+    s_new = wm_eviction_score(
+        "outcome", 0, age_seconds=0.0, recency_enabled=True
+    )
+    assert s_new > s_old
+    # Sort / eviction key order via manager with fixed clock
+    assert s_new == pytest.approx(
+        ROLE_WEIGHT["outcome"] * 1.0 * 1.0
+    )
+    assert s_old == pytest.approx(
+        ROLE_WEIGHT["outcome"] * 1.0 * wm_recency_factor(3600.0)
+    )
+    _ = now  # fixed clock used via age_seconds only
+
+
+def test_recency_on_fresh_outcome_access0_sort_order(esm, monkeypatch):
+    """L0-2: fresh outcome access=0 not senselessly preferred-against (fixed clock)."""
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "1")
+    monkeypatch.setenv("WW_WM_RECENCY_HALF_LIFE_S", "3600")
+    monkeypatch.setenv("WW_WM_RECENCY_FLOOR", "0.4")
+    esm.working_memory_capacity = 3
+    eid = "ent_rec_sort"
+    esm.set_working_memory(eid, "fresh", "just-in", kind="outcome")
+    esm.set_working_memory(eid, "stale", "old-one", kind="outcome")
+    esm.set_working_memory(eid, "mid", "mid-one", kind="outcome")
+    state = esm.get(eid)
+    now = 1_700_000_000.0
+    # Fixed ages: fresh=0s, mid=600s, stale=7200s; all access=0 outcome
+    state.working_memory_meta["fresh"]["updated_at"] = now
+    state.working_memory_meta["fresh"]["access_count"] = 0
+    state.working_memory_meta["mid"]["updated_at"] = now - 600.0
+    state.working_memory_meta["mid"]["access_count"] = 0
+    state.working_memory_meta["stale"]["updated_at"] = now - 7200.0
+    state.working_memory_meta["stale"]["access_count"] = 0
+    esm.save(state)
+
+    keys_by_score = sorted(
+        state.working_memory.keys(),
+        key=lambda k: esm._wm_eviction_key(state, k, now=now),
+    )
+    # Lowest score first = first victim: stale < mid < fresh
+    assert keys_by_score[0] == "stale"
+    assert keys_by_score[-1] == "fresh"
+    # Fresh access=0 is not the first victim solely due to access=0
+    assert keys_by_score[0] != "fresh"
+
+    # Squeeze one: stale must leave
+    esm.working_memory_capacity = 2
+    esm._enforce_wm_capacity(state, now=now)
+    assert "stale" not in state.working_memory
+    assert "fresh" in state.working_memory
+    assert "mid" in state.working_memory
+
+
+def test_old_commitment_high_access_beats_new_rationale(monkeypatch):
+    """L0-3: role still dominates pure newness — old hot commitment > new rationale."""
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "1")
+    # Old commitment access=5, age=10h; new rationale access=0, age=0
+    s_cmt = wm_eviction_score(
+        "commitment",
+        5,
+        age_seconds=10 * 3600.0,
+        recency_enabled=True,
+        half_life_s=3600.0,
+        floor=0.4,
+    )
+    s_rat = wm_eviction_score(
+        "rationale",
+        0,
+        age_seconds=0.0,
+        recency_enabled=True,
+        half_life_s=3600.0,
+        floor=0.4,
+    )
+    assert s_cmt > s_rat
+
+
+def test_recency_disabled_matches_baseline_base_only(monkeypatch):
+    """L0-4: WW_WM_RECENCY_ENABLED=0 → score == old formula (base only)."""
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "0")
+    base_c = ROLE_WEIGHT["commitment"] * (1 + 2)
+    base_r = ROLE_WEIGHT["rationale"] * (1 + 0)
+    assert wm_eviction_score("commitment", 2, age_seconds=9999.0) == pytest.approx(
+        base_c
+    )
+    assert wm_eviction_score("rationale", 0, age_seconds=0.0) == pytest.approx(base_r)
+    # Explicit recency_enabled=False ignores age
+    assert wm_eviction_score(
+        "outcome", 3, age_seconds=1e9, recency_enabled=False
+    ) == pytest.approx(ROLE_WEIGHT["outcome"] * 4.0)
+    # age_seconds=None → base even when env on
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "1")
+    assert wm_eviction_score("outcome", 1) == pytest.approx(ROLE_WEIGHT["outcome"] * 2.0)
+
+
+def test_recency_disabled_eviction_order_baseline(esm, monkeypatch):
+    """L0-4b: ENABLED=0 sort/eviction uses base score + tertiary updated_at."""
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "0")
+    esm.working_memory_capacity = 2
+    eid = "ent_rec_off"
+    esm.set_working_memory(eid, "a", "va", kind="outcome")
+    esm.set_working_memory(eid, "b", "vb", kind="outcome")
+    state = esm.get(eid)
+    t0 = 1_700_000_000.0
+    state.working_memory_meta["a"]["updated_at"] = t0
+    state.working_memory_meta["a"]["access_count"] = 0
+    state.working_memory_meta["b"]["updated_at"] = t0 + 100.0
+    state.working_memory_meta["b"]["access_count"] = 0
+    esm.save(state)
+    # Same base score; older a loses via tertiary updated_at
+    esm.working_memory_capacity = 1
+    esm._enforce_wm_capacity(state, now=t0 + 200.0)
+    assert "b" in state.working_memory
+    assert "a" not in state.working_memory
+
+
+def test_core_and_preferences_never_auto_evicted_with_recency(esm, monkeypatch):
+    """L0-5: core / preferences hard-protect even with recency on."""
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "1")
+    esm.working_memory_capacity = 1
+    eid = "ent_rec_prot"
+    esm.set_working_memory(eid, "core_fact", "stay", is_core=True)
+    esm.set_working_memory(eid, "junk", "go", kind="rationale")
+    state = esm.get(eid)
+    assert "core_fact" in state.working_memory
+    assert "core_fact" in state.working_memory_core
+
+    state.preferences["lang"] = "zh"
+    esm.save(state)
+    esm.set_working_memory(eid, "lang", "zh-TW", kind="rationale")
+    esm.set_working_memory(eid, "temp", "x", kind="rationale")
+    state = esm.get(eid)
+    assert "lang" in state.working_memory
+
+
+def test_illegal_kind_outcome_no_keyword_with_recency(esm, monkeypatch):
+    """L0-6: illegal kind → outcome; no content keyword path."""
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "1")
+    esm.set_working_memory("ent_bad_r", "k", "must commit forever", kind="not-a-role")
+    state = esm.get("ent_bad_r")
+    assert state.working_memory_meta["k"]["kind"] == "outcome"
+    assert normalize_wm_kind("garbage") == "outcome"
+    # Value text must not change kind
+    esm.set_working_memory(
+        "ent_bad_r", "k2", "important commitment decision", kind="unknown"
+    )
+    state = esm.get("ent_bad_r")
+    assert state.working_memory_meta["k2"]["kind"] == "outcome"
+
+
+def test_over_capacity_jsonl_and_promote_numeric(esm, tmp_path, monkeypatch):
+    """L0-7: over capacity → jsonl archive; promote still numeric thresholds."""
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "1")
+    esm.working_memory_capacity = 1
+    esm._promote_min_access = 2
+    promoted = []
+    esm.set_on_wm_evict(lambda e, k, v, m=None: promoted.append(k))
+    eid = "ent_rec_promo"
+    esm.set_working_memory(eid, "hot", "v1", kind="outcome")
+    state = esm.get(eid)
+    state.bump_wm_access(["hot"])
+    state.bump_wm_access(["hot"])
+    esm.save(state)
+    esm.set_working_memory(eid, "core_slot", "protected", is_core=True)
+    assert "hot" not in esm.get(eid).working_memory
+    assert "hot" in promoted
+    archive = Path(tmp_path) / "entities" / eid / "wm_evicted.jsonl"
+    assert archive.exists()
+    lines = [json.loads(x) for x in archive.read_text().splitlines() if x.strip()]
+    assert any(r["key"] == "hot" for r in lines)
+
+
+def test_tiebreak_only_on_primary_score_ties_after_recency(esm, monkeypatch):
+    """L0-8: subconscious tie-break only on ties; cannot reorder different scores."""
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "1")
+    monkeypatch.setenv("WW_WM_RECENCY_HALF_LIFE_S", "3600")
+    # Different primary scores: commitment vs rationale — huge tiebreak on rationale loses
+    esm.set_wm_tiebreak_fn(lambda e, k, m: 1e9 if k == "rat" else 0.0)
+    esm.working_memory_capacity = 1
+    eid = "ent_tb_rec"
+    esm.set_working_memory(eid, "cmt", "decide", kind="commitment")
+    esm.set_working_memory(eid, "rat", "process", kind="rationale")
+    state = esm.get(eid)
+    assert "cmt" in state.working_memory
+    assert "rat" not in state.working_memory
+
+    # Equal primary scores (same kind/access/age): tiebreak decides
+    esm.set_wm_tiebreak_fn(lambda e, k, m: 10.0 if k == "keep" else 0.0)
+    eid2 = "ent_tb_rec2"
+    esm.working_memory_capacity = 2
+    esm.set_working_memory(eid2, "keep", "a", kind="outcome")
+    esm.set_working_memory(eid2, "drop", "b", kind="outcome")
+    state2 = esm.get(eid2)
+    t0 = 1_700_000_100.0
+    for k in ("keep", "drop"):
+        state2.working_memory_meta[k]["updated_at"] = t0
+        state2.working_memory_meta[k]["access_count"] = 0
+    esm.save(state2)
+    esm.working_memory_capacity = 1
+    esm._enforce_wm_capacity(state2, now=t0)
+    assert "keep" in state2.working_memory
+    assert "drop" not in state2.working_memory
+
+
+def test_no_protect_last_n_symbol(monkeypatch):
+    """Hard boundary: no protect_last_n API/path in eviction score surface."""
+    import core.entity_state as es
+
+    assert not hasattr(es, "protect_last_n")
+    src = Path(es.__file__).read_text(encoding="utf-8")
+    # Mentions only as forbidden documentation, never as implementation
+    assert "protect_last_n" not in src or "no protect_last_n" in src.lower() or "No protect_last_n" in src
+    # Ensure we do not call a protect-last-n helper
+    assert "protect_last_n(" not in src
