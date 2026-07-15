@@ -143,6 +143,7 @@ ww_infer_provider_from_key() {
 }
 
 # Normalize provider label (accept aliases). Empty if unknown.
+# Number map (TTY menu): 1 DeepSeek, 2 OpenAI, 3 Anthropic, 4 OpenRouter, 5 custom
 ww_normalize_provider() {
     local p
     p=$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
@@ -154,8 +155,8 @@ ww_normalize_provider() {
         custom|local|ollama)   echo "custom" ;;
         1) echo "deepseek" ;;
         2) echo "openai" ;;
-        3) echo "openrouter" ;;
-        4) echo "anthropic" ;;
+        3) echo "anthropic" ;;
+        4) echo "openrouter" ;;
         5) echo "custom" ;;
         *) echo "" ;;
     esac
@@ -192,21 +193,23 @@ ww_load_primary_key() {
     return 1
 }
 
-# Ask TTY which provider for ambiguous sk-* keys. Prints provider (stdout) or empty.
-# Prompts go to stderr so capture via $(...) stays clean.
+# Ask TTY which provider (first-install, or ambiguous sk-* on CLI).
+# Prints provider (stdout) or empty. Prompts go to stderr so $(...) stays clean.
 ww_ask_provider_tty() {
     echo "  Which provider?" >&2
     echo "    1) DeepSeek" >&2
     echo "    2) OpenAI" >&2
-    echo "    3) OpenRouter" >&2
+    echo "    3) Anthropic" >&2
+    echo "    4) OpenRouter" >&2
     printf "  → " >&2
     local choice=""
     read -r choice || choice=""
     choice=$(echo "$choice" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     case "$choice" in
-        1|deepseek|DeepSeek|ds) echo "deepseek" ;;
-        2|openai|OpenAI)        echo "openai" ;;
-        3|openrouter|OpenRouter) echo "openrouter" ;;
+        1|deepseek|DeepSeek|ds)   echo "deepseek" ;;
+        2|openai|OpenAI)          echo "openai" ;;
+        3|anthropic|Anthropic|claude|Claude) echo "anthropic" ;;
+        4|openrouter|OpenRouter)  echo "openrouter" ;;
         *)
             local n
             n=$(ww_normalize_provider "$choice")
@@ -217,11 +220,13 @@ ww_ask_provider_tty() {
 
 # Save LLM key + optional default model. Args: key [provider] [env_file]
 # Returns 0 on success, 1 on validation failure, 2 if provider needed but unavailable (non-TTY).
+# When force_provider is set and key shape clearly infers a different provider, warn and use
+# the inferred one (safer). Ambiguous sk-* (empty inference) keeps the chosen provider.
 ww_save_llm_key() {
     local key="${1:-}"
     local force_provider="${2:-}"
     local env_file="${3:-}"
-    local provider env_var model
+    local provider env_var model inferred
 
     key=$(echo "$key" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     if ! ww_key_value_ok "$key"; then
@@ -234,19 +239,26 @@ ww_save_llm_key() {
     fi
 
     provider=$(ww_normalize_provider "${force_provider:-${WW_PROVIDER:-}}")
-    if [ -z "$provider" ]; then
-        provider=$(ww_infer_provider_from_key "$key")
+    inferred=$(ww_infer_provider_from_key "$key")
+    if [ -n "$provider" ]; then
+        # Chosen/forced provider: prefer clear key-shape inference when it conflicts
+        if [ -n "$inferred" ] && [ "$inferred" != "$provider" ]; then
+            echo "⚠️  Key shape looks like $inferred (not $provider) — saving as $inferred"
+            provider="$inferred"
+        fi
+    else
+        provider="$inferred"
     fi
     if [ -z "$provider" ]; then
-        # Ambiguous sk-*
+        # Ambiguous sk-* (CLI one-liner without provider)
         if [ -t 0 ]; then
             provider=$(ww_ask_provider_tty)
         fi
     fi
     if [ -z "$provider" ]; then
         echo "⚠️  Ambiguous key prefix (sk-*). Specify a provider:"
-        echo "   ww key set <key> deepseek|openai|openrouter"
-        echo "   Or set WW_PROVIDER=deepseek|openai|openrouter"
+        echo "   ww key set <key> deepseek|openai|anthropic|openrouter"
+        echo "   Or set WW_PROVIDER=deepseek|openai|anthropic|openrouter"
         return 2
     fi
 
@@ -802,27 +814,41 @@ fi
 ok "ww command ready → $LOCAL_BIN/ww"
 
 # LLM key: prompt when missing/empty/partial .env (not only when .env is absent)
+# First-install TTY: ask provider FIRST, then paste key (avoids post-paste sk-* re-ask).
 if ! ww_has_llm_key "$ENV_FILE"; then
     if [ -t 0 ]; then
         echo ""
-        echo -e "  ${BOLD}🔑  Paste your LLM API key to chat:${NC}"
+        echo -e "  ${BOLD}🔑  LLM API key needed to chat${NC}"
         echo -e "  ${DIM}     DeepSeek · OpenAI · Anthropic · OpenRouter${NC}"
-        echo -e "  ${DIM}     (or later: ww key set <key>)${NC}"
-        printf "  ${CYAN}→ ${NC}"
-        read -r USER_KEY || USER_KEY=""
-        USER_KEY=$(echo "$USER_KEY" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        if [ -n "$USER_KEY" ]; then
+        echo ""
+        # Prefer WW_PROVIDER if already set; otherwise always ask before paste
+        USER_PROVIDER=$(ww_normalize_provider "${WW_PROVIDER:-}")
+        if [ -z "$USER_PROVIDER" ]; then
+            USER_PROVIDER=$(ww_ask_provider_tty)
+        fi
+        if [ -z "$USER_PROVIDER" ]; then
             echo ""
-            if ww_save_llm_key "$USER_KEY" "${WW_PROVIDER:-}" "$ENV_FILE"; then
-                ok "Key saved — change anytime: ww key set <key> [provider]"
-            else
-                # Ambiguous or invalid: install still continues; chat may need key later
-                warn "Key not saved — set later: ww key set <key> [provider]"
-            fi
+            warn "No provider selected — chat needs a key first"
+            echo -e "  ${DIM}  Later: ww key set <key> [deepseek|openai|anthropic|openrouter]${NC}"
         else
             echo ""
-            warn "No key entered — chat needs a key first"
-            echo -e "  ${DIM}  Later: ww key set <key> [deepseek|openai|anthropic|openrouter]${NC}"
+            echo -e "  ${BOLD}Paste your API key:${NC}"
+            printf "  ${CYAN}→ ${NC}"
+            read -r USER_KEY || USER_KEY=""
+            USER_KEY=$(echo "$USER_KEY" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [ -n "$USER_KEY" ]; then
+                echo ""
+                if ww_save_llm_key "$USER_KEY" "$USER_PROVIDER" "$ENV_FILE"; then
+                    ok "Key saved — change anytime: ww key set <key> [provider]"
+                else
+                    # Invalid key: install still continues; chat may need key later
+                    warn "Key not saved — set later: ww key set <key> [provider]"
+                fi
+            else
+                echo ""
+                warn "No key entered — chat needs a key first"
+                echo -e "  ${DIM}  Later: ww key set <key> [deepseek|openai|anthropic|openrouter]${NC}"
+            fi
         fi
     else
         # Non-TTY (curl | bash, CI): install done, do not hang on prompt or server
