@@ -108,6 +108,11 @@ class TaskRequest(BaseModel):
     provider: Optional[str] = None
     image_path: Optional[str] = None
     reasoning_effort: Optional[str] = None  # DeepSeek: low/medium/high/xhigh
+    # Optional channel identity for multi-platform continuity tests
+    platform: Optional[str] = None  # http | terminal | telegram | ...
+    user_id: Optional[str] = None
+    chat_id: Optional[str] = None
+    entity_id: Optional[str] = None
 
 class AutonomousRequest(BaseModel):
     interval: int = Field(300, ge=30, le=86400)
@@ -1054,8 +1059,40 @@ def root():
 
 @app.post("/ww/run")
 def run(req: TaskRequest):
-    return server.run_task(req.goal, req.max_spirals, req.model or "", req.provider or "",
-                           req.image_path or "", req.reasoning_effort or "")
+    platform = (req.platform or "http").strip() or "http"
+    entity_id = (req.entity_id or "").strip()
+    conversation_window = ""
+    if not entity_id and server.identity_resolver and (req.user_id or platform != "http"):
+        try:
+            uid = (req.user_id or "default").strip() or "default"
+            cid = (req.chat_id or uid).strip() or uid
+            entity_id = server.identity_resolver.resolve(
+                platform=platform,
+                user_id=uid,
+                chat_id=cid,
+                display_name="User",
+            )
+            entity_id = server.identity_resolver.ensure_owner_link(
+                platform=platform,
+                user_id=uid,
+                chat_id=cid,
+                entity_id=entity_id,
+                display_name="User",
+            )
+            conversation_window = f"{platform}:{uid}:{cid}"
+        except Exception:
+            entity_id = entity_id or ""
+    return server.run_task(
+        req.goal,
+        req.max_spirals,
+        req.model or "",
+        req.provider or "",
+        req.image_path or "",
+        req.reasoning_effort or "",
+        entity_id=entity_id,
+        platform=platform,
+        conversation_window=conversation_window,
+    )
 
 
 @app.post("/ww/run/background")

@@ -498,16 +498,306 @@ def run_mechanism(report: Report) -> None:
     run_promote(report)
 
 
+def _live_client() -> LiveClient:
+    base = os.environ.get("WW_PROVE_URL", "").rstrip("/")
+    key = os.environ.get("WW_API_KEY", "")
+    if not base or not key:
+        raise RuntimeError("set WW_PROVE_URL and WW_API_KEY")
+    return LiveClient(base, key, product_mode=True)
+
+
+def run_restart(report: Report) -> None:
+    """Product write → restart ww.service → natural read (no re-plant)."""
+    if os.environ.get("WW_PROVE_ALLOW_RESTART") != "1":
+        report.add(
+            "R1 restart persistence",
+            False,
+            "set WW_PROVE_ALLOW_RESTART=1 to enable (restarts ww.service)",
+            "n/a",
+        )
+        return
+    try:
+        client = _live_client()
+    except Exception as e:
+        report.add("R1 restart persistence", False, str(e))
+        return
+
+    key_name = "prove_restart_code"
+    value = f"RESTART-MEM-{int(time.time())}"
+    try:
+        plant = client.request(
+            "POST",
+            "/ww/run",
+            {
+                "goal": (
+                    f"Call remember tool: key={key_name} value={value}. "
+                    f"Reply REMEMBERED:{value} after success."
+                ),
+                "max_spirals": 5,
+            },
+            timeout=240,
+        )
+        plant_ok = value in str(plant.get("response") or "")
+        # restart service
+        r = subprocess.run(
+            ["systemctl", "--user", "restart", "ww.service"],
+            capture_output=True,
+            text=True,
+        )
+        if r.returncode != 0:
+            report.add(
+                "R1 restart persistence",
+                False,
+                f"systemctl restart failed: {r.stderr[:120]}",
+            )
+            return
+        # wait health
+        base = os.environ["WW_PROVE_URL"].rstrip("/")
+        key = os.environ["WW_API_KEY"]
+        healthy = False
+        for _ in range(30):
+            try:
+                req = urllib.request.Request(
+                    base + "/ww/health",
+                    headers={"X-API-Key": key},
+                )
+                with urllib.request.urlopen(req, timeout=3) as resp:
+                    if resp.status == 200:
+                        healthy = True
+                        break
+            except Exception:
+                time.sleep(1)
+        if not healthy:
+            report.add("R1 restart persistence", False, "service not healthy after restart")
+            return
+        # re-create client (same URL)
+        client2 = LiveClient(base, key, product_mode=True)
+        ask = client2.request(
+            "POST",
+            "/ww/run",
+            {
+                "goal": f"What is {key_name}? Reply ONLY the value.",
+                "max_spirals": 3,
+            },
+            timeout=180,
+        )
+        resp = str(ask.get("response") or "")
+        ok = plant_ok and value in resp
+        report.add(
+            "R1 restart persistence",
+            ok,
+            f"plant_ok={plant_ok} after_restart={resp[:80]!r}",
+            "dialogue+service",
+        )
+        # atoms after restart
+        search = client2.request(
+            "POST",
+            "/ww/memory",
+            {"action": "search", "query": value, "limit": 5},
+        )
+        report.add(
+            "R1 atom survives restart",
+            value in json.dumps(search),
+            f"search_hit={value in json.dumps(search)}",
+            "MemorySystem atoms",
+        )
+    except Exception as e:
+        report.add("R1 restart persistence", False, f"error: {e}")
+
+
+def run_narrative(report: Report) -> None:
+    """Multi-turn script: set preference, distract, recall."""
+    try:
+        client = _live_client()
+    except Exception as e:
+        report.add("N1 multi-turn narrative", False, str(e))
+        return
+
+    fav = f"NARR-{int(time.time()) % 100000}"
+    try:
+        t1 = client.request(
+            "POST",
+            "/ww/run",
+            {
+                "goal": (
+                    f"Remember my favorite color code is {fav} using the remember tool "
+                    f"with key=favorite_color_code. Confirm with REMEMBERED:{fav}."
+                ),
+                "max_spirals": 5,
+            },
+            timeout=240,
+        )
+        t2 = client.request(
+            "POST",
+            "/ww/run",
+            {
+                "goal": "What is 17*19? Reply with only the number.",
+                "max_spirals": 2,
+            },
+            timeout=120,
+        )
+        t3 = client.request(
+            "POST",
+            "/ww/run",
+            {
+                "goal": (
+                    "What is my favorite_color_code? Reply ONLY the code value."
+                ),
+                "max_spirals": 3,
+            },
+            timeout=180,
+        )
+        r1 = str(t1.get("response") or "")
+        r3 = str(t3.get("response") or "")
+        ok = fav in r1 and fav in r3
+        report.add(
+            "N1 multi-turn narrative",
+            ok,
+            f"t1={r1[:50]!r} t2={str(t2.get('response'))[:30]!r} t3={r3[:50]!r}",
+            "dialogue multi-turn",
+        )
+        search = client.request(
+            "POST",
+            "/ww/memory",
+            {"action": "search", "query": fav, "limit": 5},
+        )
+        report.add(
+            "N1 narrative atom present",
+            fav in json.dumps(search),
+            f"atom_hit={fav in json.dumps(search)}",
+            "MemorySystem atoms",
+        )
+    except Exception as e:
+        report.add("N1 multi-turn narrative", False, f"error: {e}")
+
+
+def run_telegram_channel(report: Report) -> None:
+    """Simulate Telegram owner channel via /ww/run platform=telegram (same identity path)."""
+    owner = os.environ.get("WW_OWNER_TELEGRAM_ID", "").strip()
+    if not owner:
+        report.add(
+            "T1 telegram identity path",
+            False,
+            "set WW_OWNER_TELEGRAM_ID for telegram channel prove",
+            "n/a",
+        )
+        return
+    try:
+        client = _live_client()
+    except Exception as e:
+        report.add("T1 telegram identity path", False, str(e))
+        return
+
+    key_name = "prove_tg_code"
+    value = f"TG-MEM-{int(time.time())}"
+    try:
+        plant = client.request(
+            "POST",
+            "/ww/run",
+            {
+                "goal": (
+                    f"Call remember: key={key_name} value={value}. "
+                    f"Reply REMEMBERED:{value}."
+                ),
+                "max_spirals": 5,
+                "platform": "telegram",
+                "user_id": owner,
+                "chat_id": owner,
+            },
+            timeout=240,
+        )
+        ask = client.request(
+            "POST",
+            "/ww/run",
+            {
+                "goal": f"What is {key_name}? Reply ONLY the value.",
+                "max_spirals": 3,
+                "platform": "telegram",
+                "user_id": owner,
+                "chat_id": owner,
+            },
+            timeout=180,
+        )
+        # cross-check via http primary (same owner entity under single-user)
+        ask_http = client.request(
+            "POST",
+            "/ww/run",
+            {
+                "goal": f"What is {key_name}? Reply ONLY the value.",
+                "max_spirals": 3,
+                "platform": "http",
+            },
+            timeout=180,
+        )
+        pr = str(plant.get("response") or "")
+        ar = str(ask.get("response") or "")
+        hr = str(ask_http.get("response") or "")
+        ok_tg = value in pr and value in ar
+        ok_cross = value in hr
+        report.add(
+            "T1 telegram identity path",
+            ok_tg,
+            f"plant={pr[:40]!r} ask={ar[:40]!r} entity={ask.get('entity_id')}",
+            "telegram platform",
+        )
+        report.add(
+            "T1 telegram→http same timeline",
+            ok_cross,
+            f"http_ask={hr[:40]!r}",
+            "cross-entry",
+        )
+        search = client.request(
+            "POST",
+            "/ww/memory",
+            {"action": "search", "query": value, "limit": 5},
+        )
+        report.add(
+            "T1 telegram atom present",
+            value in json.dumps(search),
+            f"atom_hit={value in json.dumps(search)}",
+            "MemorySystem atoms",
+        )
+    except Exception as e:
+        report.add("T1 telegram identity path", False, f"error: {e}")
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="WW Memory prove harness")
     ap.add_argument("--mechanism", action="store_true", help="L0 + B1 + B2 + promote")
     ap.add_argument("--product", action="store_true", help="A1–A4 live product path")
-    ap.add_argument("--all", action="store_true", help="mechanism + product")
+    ap.add_argument("--restart", action="store_true", help="write → restart service → read")
+    ap.add_argument("--narrative", action="store_true", help="multi-turn distraction recall")
+    ap.add_argument("--telegram", action="store_true", help="telegram platform identity path")
+    ap.add_argument(
+        "--all",
+        action="store_true",
+        help="mechanism + product (+ restart/narrative/telegram if env allows)",
+    )
+    ap.add_argument(
+        "--auto",
+        action="store_true",
+        help="all automated suites: mechanism, product, narrative, telegram; restart if ALLOW",
+    )
     args = ap.parse_args(argv)
 
-    if not args.mechanism and not args.product and not args.all:
-        args.all = True
-    if args.all:
+    if args.auto:
+        args.mechanism = True
+        args.product = True
+        args.narrative = True
+        args.telegram = True
+        args.restart = True
+    elif args.all:
+        args.mechanism = True
+        args.product = True
+    elif not any(
+        [
+            args.mechanism,
+            args.product,
+            args.restart,
+            args.narrative,
+            args.telegram,
+        ]
+    ):
         args.mechanism = True
         args.product = True
 
@@ -517,6 +807,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         run_mechanism(report)
     if args.product:
         run_product(report)
+    if args.narrative:
+        run_narrative(report)
+    if args.telegram:
+        run_telegram_channel(report)
+    if args.restart:
+        run_restart(report)
 
     print(report.table())
     print()
