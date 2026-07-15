@@ -172,15 +172,6 @@ The agent remembered because `remember()` stored the facts in entity state, and 
 - **Entity-first.** The framework models a persistent identity, not a disposable chat session.
 - **Agent manages its own memory.** The agent calls `remember()` / `forget()` as tools — it decides what to retain, not a background heuristic.
 
-### Roadmap
-
-| Version | Focus | Status |
-|---------|-------|--------|
-| v0.8 | Persistent cognitive entity, self-editing memory, temporal KG | ✓ Done |
-| v0.9 | Multi-agent orchestration, skill evolution, autonomous scheduling, observability, approval gating, user modeling | ✓ Done |
-| v1.0 | Multi-node P2P auto-discovery end-to-end tested, production deployment guide, benchmark suite | Planned |
-| v1.5 | Public benchmarks vs OpenClaw / Claude Code / Codex, plugin registry, Windows native launcher | Planned |
-
 ### Working alongside Claude Code & Codex
 
 **Claude Code and Codex** are great at what they do. But every session starts from zero — close the window, lose everything. Open a new chat, explain your project all over again.
@@ -366,15 +357,6 @@ $ ww run "是个管理 Docker 容器的 CLI 工具"
 - **单一执行路径。** `ww run` 与 `ww chat` 走同一代码路径——无双重模式复杂性。
 - **实体优先。** 框架建模的是持久身份，而非一次性聊天线程。
 - **代理自主管理记忆。** 代理通过 `remember()` / `forget()` 工具自行决定保留什么——而非背景启发式规则。
-
-### 路线图
-
-| 版本 | 重点 | 状态 |
-|------|------|------|
-| v0.8 | 持久认知主体、自主记忆编辑、时态知识图谱 | ✓ 已完成 |
-| v0.9 | 多智能体协作、技能演化、自主排程、可观测性、审批门控、用户建模 | ✓ 已完成 |
-| v1.0 | 多节点 P2P 自动发现端到端测试、生产部署指南、基准测试套件 | 计划中 |
-| v1.5 | 公开基准测试对比 OpenClaw / Claude Code / Codex、插件注册表、Windows 原生启动器 | 计划中 |
 
 ### 与 Claude Code 和 Codex 协同工作
 

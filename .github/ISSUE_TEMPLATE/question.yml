@@ -1,0 +1,17 @@
+name: Question
+description: Ask a usage or architecture question
+title: "[Question] "
+labels: ["question"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What would you like to know?
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What you already tried, relevant logs, environment.
