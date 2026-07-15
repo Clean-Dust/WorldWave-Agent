@@ -58,13 +58,56 @@ def make_bg(w: int, h: int) -> Image.Image:
             px[x, y] = (r, g, b)
     base = img.convert("RGBA")
     draw = ImageDraw.Draw(base, "RGBA")
+    crest_lines = []  # remember top wave ridges for foam
     for phase, alpha, amp in [(0, 55, 20), (1.3, 40, 14), (2.5, 28, 10)]:
         pts = []
+        ridge = []
         for x in range(0, w + 8, 8):
             yy = h - 70 + amp * math.sin(x / 100 + phase) + phase * 8
             pts.append((x, yy))
+            ridge.append((x, yy))
         pts += [(w, h), (0, h)]
         draw.polygon(pts, fill=(*WAVE, alpha))
+        crest_lines.append(ridge)
+
+    # White sea foam along wave crests
+    foam = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    fd = ImageDraw.Draw(foam)
+    for i, ridge in enumerate(crest_lines):
+        # soft white ribbon hugging the crest
+        ribbon = []
+        for x, yy in ridge:
+            ribbon.append((x, yy - 1))
+        # go back lower for a thin band
+        for x, yy in reversed(ridge):
+            ribbon.append((x, yy + 4 + i))
+        a = 70 - i * 12
+        fd.polygon(ribbon, fill=(255, 255, 255, max(28, a)))
+        # crest highlight line
+        if len(ridge) >= 2:
+            fd.line(ridge, fill=(255, 255, 255, 110 - i * 20), width=2)
+        # scattered whitecap dots / flecks along crest
+        step = 18 + i * 6
+        for j in range(0, len(ridge), max(1, step // 8)):
+            x, yy = ridge[j]
+            # only near local crests (high points)
+            if j > 0 and j < len(ridge) - 1:
+                prev_y = ridge[j - 1][1]
+                next_y = ridge[j + 1][1]
+                if yy <= prev_y and yy <= next_y:
+                    r = 2 + (j % 3)
+                    fd.ellipse(
+                        [x - r, yy - r - 1, x + r + 2, yy + r],
+                        fill=(255, 255, 255, 150),
+                    )
+                    # tiny spray
+                    fd.ellipse(
+                        [x + 4, yy - 5, x + 7, yy - 2],
+                        fill=(255, 255, 255, 90),
+                    )
+    foam = foam.filter(ImageFilter.GaussianBlur(0.8))
+    base = Image.alpha_composite(base, foam)
+
     glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     gd = ImageDraw.Draw(glow)
     for rad, a in [(180, 30), (110, 42), (70, 52)]:
