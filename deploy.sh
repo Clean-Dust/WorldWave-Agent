@@ -16,26 +16,296 @@
 set -euo pipefail
 
 # ── Helpers (shared by subcommands + install) ──
+# LLM env vars supported by core (transports + ww_has_llm_key).
+WW_LLM_KEY_VARS="DEEPSEEK_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY CUSTOM_API_KEY"
+
+# True if value looks like a real key (not empty / placeholder).
+ww_key_value_ok() {
+    local val="${1:-}"
+    [ -z "$val" ] && return 1
+    case "$val" in
+        sk-your-deepseek-key-here|your-key-here|sk-xxx|xxx|changeme|placeholder|none|null)
+            return 1 ;;
+    esac
+    return 0
+}
+
 # True if env or .env has a non-empty LLM API key.
 ww_has_llm_key() {
     local env_file="${1:-}"
     local var key val
-    for var in DEEPSEEK_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY CUSTOM_API_KEY; do
+    for var in $WW_LLM_KEY_VARS; do
         # bash indirect expansion
-        if [ -n "${!var:-}" ]; then
+        if [ -n "${!var:-}" ] && ww_key_value_ok "${!var}"; then
             return 0
         fi
     done
     if [ -n "$env_file" ] && [ -f "$env_file" ]; then
-        for key in DEEPSEEK_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY CUSTOM_API_KEY; do
+        for key in $WW_LLM_KEY_VARS; do
             val=$(grep "^${key}=" "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//')
-            # Treat empty / placeholder values as missing
-            if [ -n "$val" ] && [ "$val" != "sk-your-deepseek-key-here" ] && [ "$val" != "your-key-here" ]; then
+            if ww_key_value_ok "$val"; then
                 return 0
             fi
         done
     fi
     return 1
+}
+
+# Upsert KEY=VALUE in .env (Darwin/Linux sed). Creates file if missing.
+ww_upsert_env() {
+    local key="$1"
+    local value="$2"
+    local env_file="${3:-}"
+    if [ -z "$key" ] || [ -z "$env_file" ]; then
+        return 1
+    fi
+    mkdir -p "$(dirname "$env_file")"
+    if [ ! -f "$env_file" ]; then
+        printf '%s=%s\n' "$key" "$value" > "$env_file"
+        return 0
+    fi
+    if grep -q "^${key}=" "$env_file" 2>/dev/null; then
+        if [ "$(uname -s)" = "Darwin" ]; then
+            sed -i '' "s|^${key}=.*|${key}=${value}|" "$env_file"
+        else
+            sed -i "s|^${key}=.*|${key}=${value}|" "$env_file"
+        fi
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$env_file"
+    fi
+}
+
+# Map provider name → env var for API key.
+ww_env_var_for_provider() {
+    case "${1:-}" in
+        deepseek)   echo "DEEPSEEK_API_KEY" ;;
+        openai)     echo "OPENAI_API_KEY" ;;
+        anthropic)  echo "ANTHROPIC_API_KEY" ;;
+        openrouter) echo "OPENROUTER_API_KEY" ;;
+        custom)     echo "CUSTOM_API_KEY" ;;
+        *)          echo "" ;;
+    esac
+}
+
+# Map env var → provider name.
+ww_provider_for_env_var() {
+    case "${1:-}" in
+        DEEPSEEK_API_KEY)   echo "deepseek" ;;
+        OPENAI_API_KEY)     echo "openai" ;;
+        ANTHROPIC_API_KEY)  echo "anthropic" ;;
+        OPENROUTER_API_KEY) echo "openrouter" ;;
+        CUSTOM_API_KEY)     echo "custom" ;;
+        *)                  echo "" ;;
+    esac
+}
+
+# Default model per provider (matches core/transports infer_provider + registry).
+ww_default_model_for_provider() {
+    case "${1:-}" in
+        deepseek)   echo "deepseek/deepseek-v4-flash" ;;
+        openai)     echo "gpt-4o-mini" ;;
+        anthropic)  echo "claude-sonnet-4" ;;
+        openrouter) echo "google/gemini-2.0-flash" ;;
+        custom)     echo "custom/default" ;;
+        *)          echo "deepseek/deepseek-v4-flash" ;;
+    esac
+}
+
+# Infer provider from key shape. Empty string = ambiguous sk-* (need ask).
+# Prints: deepseek|openai|anthropic|openrouter|custom|""
+ww_infer_provider_from_key() {
+    local key="${1:-}"
+    case "$key" in
+        sk-ant-*|sk-ant*) echo "anthropic" ;;
+        sk-or-*|sk-or*)   echo "openrouter" ;;
+        sk-proj-*)        echo "openai" ;;
+        sk-*)             echo "" ;;  # DeepSeek / OpenAI / OpenRouter classic — ambiguous
+        *)                echo "custom" ;;
+    esac
+}
+
+# Normalize provider label (accept aliases). Empty if unknown.
+ww_normalize_provider() {
+    local p
+    p=$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
+    case "$p" in
+        deepseek|ds)           echo "deepseek" ;;
+        openai|oai)            echo "openai" ;;
+        anthropic|claude)      echo "anthropic" ;;
+        openrouter|or)         echo "openrouter" ;;
+        custom|local|ollama)   echo "custom" ;;
+        1) echo "deepseek" ;;
+        2) echo "openai" ;;
+        3) echo "openrouter" ;;
+        4) echo "anthropic" ;;
+        5) echo "custom" ;;
+        *) echo "" ;;
+    esac
+}
+
+# Read first non-empty LLM key from env/.env. Sets globals:
+#   WW_PRIMARY_KEY_VAR, WW_PRIMARY_KEY_VAL, WW_PRIMARY_PROVIDER
+ww_load_primary_key() {
+    local env_file="${1:-}"
+    local var val
+    WW_PRIMARY_KEY_VAR=""
+    WW_PRIMARY_KEY_VAL=""
+    WW_PRIMARY_PROVIDER=""
+    for var in $WW_LLM_KEY_VARS; do
+        val="${!var:-}"
+        if ww_key_value_ok "$val"; then
+            WW_PRIMARY_KEY_VAR="$var"
+            WW_PRIMARY_KEY_VAL="$val"
+            WW_PRIMARY_PROVIDER="$(ww_provider_for_env_var "$var")"
+            return 0
+        fi
+    done
+    if [ -n "$env_file" ] && [ -f "$env_file" ]; then
+        for var in $WW_LLM_KEY_VARS; do
+            val=$(grep "^${var}=" "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//')
+            if ww_key_value_ok "$val"; then
+                WW_PRIMARY_KEY_VAR="$var"
+                WW_PRIMARY_KEY_VAL="$val"
+                WW_PRIMARY_PROVIDER="$(ww_provider_for_env_var "$var")"
+                return 0
+            fi
+        done
+    fi
+    return 1
+}
+
+# Ask TTY which provider for ambiguous sk-* keys. Prints provider (stdout) or empty.
+# Prompts go to stderr so capture via $(...) stays clean.
+ww_ask_provider_tty() {
+    echo "  Which provider?" >&2
+    echo "    1) DeepSeek" >&2
+    echo "    2) OpenAI" >&2
+    echo "    3) OpenRouter" >&2
+    printf "  → " >&2
+    local choice=""
+    read -r choice || choice=""
+    choice=$(echo "$choice" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    case "$choice" in
+        1|deepseek|DeepSeek|ds) echo "deepseek" ;;
+        2|openai|OpenAI)        echo "openai" ;;
+        3|openrouter|OpenRouter) echo "openrouter" ;;
+        *)
+            local n
+            n=$(ww_normalize_provider "$choice")
+            echo "${n}"
+            ;;
+    esac
+}
+
+# Save LLM key + optional default model. Args: key [provider] [env_file]
+# Returns 0 on success, 1 on validation failure, 2 if provider needed but unavailable (non-TTY).
+ww_save_llm_key() {
+    local key="${1:-}"
+    local force_provider="${2:-}"
+    local env_file="${3:-}"
+    local provider env_var model
+
+    key=$(echo "$key" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if ! ww_key_value_ok "$key"; then
+        echo "⚠️  Empty or placeholder key — not saved."
+        return 1
+    fi
+    if [ -z "$env_file" ]; then
+        echo "⚠️  No .env path for key save."
+        return 1
+    fi
+
+    provider=$(ww_normalize_provider "${force_provider:-${WW_PROVIDER:-}}")
+    if [ -z "$provider" ]; then
+        provider=$(ww_infer_provider_from_key "$key")
+    fi
+    if [ -z "$provider" ]; then
+        # Ambiguous sk-*
+        if [ -t 0 ]; then
+            provider=$(ww_ask_provider_tty)
+        fi
+    fi
+    if [ -z "$provider" ]; then
+        echo "⚠️  Ambiguous key prefix (sk-*). Specify a provider:"
+        echo "   ww key set <key> deepseek|openai|openrouter"
+        echo "   Or set WW_PROVIDER=deepseek|openai|openrouter"
+        return 2
+    fi
+
+    env_var=$(ww_env_var_for_provider "$provider")
+    if [ -z "$env_var" ]; then
+        echo "⚠️  Unknown provider: $provider"
+        return 1
+    fi
+
+    ww_upsert_env "$env_var" "$key" "$env_file"
+    # Export for current process (safe for special chars in key)
+    printf -v "$env_var" '%s' "$key"
+    export "$env_var"
+
+    # Set WW_MODEL so chat matches provider (ConfigManager ENV_PREFIX=WW_)
+    model=$(ww_default_model_for_provider "$provider")
+    if [ "$provider" != "deepseek" ]; then
+        ww_upsert_env "WW_MODEL" "$model" "$env_file"
+        export WW_MODEL="$model"
+        echo "✓ Saved $env_var ($provider) in $env_file"
+        echo "  Default model: $model  (override: WW_MODEL=...)"
+    else
+        # Leave existing WW_MODEL unless unset — default config is deepseek-v4-flash
+        echo "✓ Saved $env_var ($provider) in $env_file"
+    fi
+    return 0
+}
+
+# Test primary configured key against its provider API.
+ww_test_llm_key() {
+    local env_file="${1:-}"
+    local key_val provider url resp headers
+    if ! ww_load_primary_key "$env_file"; then
+        echo "⚠️  No key configured. Set one: ww key set <key> [provider]"
+        return 1
+    fi
+    key_val="$WW_PRIMARY_KEY_VAL"
+    provider="$WW_PRIMARY_PROVIDER"
+    echo "🔍 Testing $provider API ($WW_PRIMARY_KEY_VAR)..."
+    case "$provider" in
+        anthropic)
+            resp=$(curl -sS --connect-timeout 10 \
+                -H "x-api-key: ${key_val}" \
+                -H "anthropic-version: 2023-06-01" \
+                "https://api.anthropic.com/v1/models" 2>&1 || echo "NETWORK_ERROR")
+            ;;
+        openai)
+            resp=$(curl -sS --connect-timeout 10 \
+                -H "Authorization: Bearer ${key_val}" \
+                "https://api.openai.com/v1/models" 2>&1 || echo "NETWORK_ERROR")
+            ;;
+        openrouter)
+            resp=$(curl -sS --connect-timeout 10 \
+                -H "Authorization: Bearer ${key_val}" \
+                "https://openrouter.ai/api/v1/models" 2>&1 || echo "NETWORK_ERROR")
+            ;;
+        custom)
+            echo "⚠️  custom provider — no fixed public test URL. Key is present."
+            return 0
+            ;;
+        deepseek|*)
+            resp=$(curl -sS --connect-timeout 10 \
+                -H "Authorization: Bearer ${key_val}" \
+                "https://api.deepseek.com/v1/models" 2>&1 || echo "NETWORK_ERROR")
+            ;;
+    esac
+    if echo "$resp" | grep -qE '"id"|"data"'; then
+        echo "✅ Key is valid — API reachable"
+        return 0
+    elif echo "$resp" | grep -q "NETWORK_ERROR"; then
+        echo "❌ Network error — check internet connection"
+        return 1
+    else
+        echo "❌ Key invalid or API error:"
+        echo "$resp" | head -3
+        return 1
+    fi
 }
 
 # ── Subcommands ──
@@ -111,90 +381,66 @@ if [ "$CMD" = "key" ]; then
     ENV_FILE="$INSTALL_DIR/.env"
     KEY_ACTION="${2:-show}"
     NEW_KEY="${3:-}"
+    KEY_PROVIDER="${4:-${WW_PROVIDER:-}}"
 
     case "$KEY_ACTION" in
         set)
             if [ -z "$NEW_KEY" ]; then
-                echo "⚠️  Usage: ww key set sk-xxx"
-                echo "   Get a free key: https://platform.deepseek.com"
+                echo "⚠️  Usage: ww key set <key> [deepseek|openai|anthropic|openrouter|custom]"
+                echo "   Providers: DeepSeek · OpenAI · Anthropic · OpenRouter · custom"
                 exit 1
             fi
-            # Validate key format
-            if ! echo "$NEW_KEY" | grep -q "^sk-"; then
-                echo "⚠️  Invalid key format. DeepSeek keys start with 'sk-'"
+            # Non-empty validation only (Anthropic/custom may not use sk-*)
+            if ! ww_key_value_ok "$NEW_KEY"; then
+                echo "⚠️  Empty or placeholder key — not saved."
                 exit 1
             fi
-            mkdir -p "$(dirname "$ENV_FILE")"
-            # Write/update DEEPSEEK_API_KEY in .env
-            if [ -f "$ENV_FILE" ] && grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
-                # Update existing key
-                if [ "$(uname -s)" = "Darwin" ]; then
-                    sed -i '' "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$NEW_KEY|" "$ENV_FILE"
-                else
-                    sed -i "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$NEW_KEY|" "$ENV_FILE"
-                fi
-                echo "✓ Key updated in $ENV_FILE"
-            else
-                echo "DEEPSEEK_API_KEY=$NEW_KEY" >> "$ENV_FILE"
-                echo "✓ Key saved to $ENV_FILE"
+            set +e
+            ww_save_llm_key "$NEW_KEY" "$KEY_PROVIDER" "$ENV_FILE"
+            _save_rc=$?
+            set -e
+            if [ "$_save_rc" -eq 0 ]; then
+                echo "  Ready. Type: ww"
+                exit 0
             fi
-            # Chat loads .env via dotenv — no server restart / ww update needed
-            echo "  Ready. Type: ww"
-            exit 0
+            exit "$_save_rc"
             ;;
         show)
-            if [ -f "$ENV_FILE" ] && grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
-                KEY_LINE=$(grep "^DEEPSEEK_API_KEY=" "$ENV_FILE" | head -1)
-                KEY_VAL=$(echo "$KEY_LINE" | cut -d= -f2- | tr -d '\r')
-                if [ -z "$KEY_VAL" ]; then
-                    echo "⚠️  No key configured (empty DEEPSEEK_API_KEY in .env)."
-                    echo "   Set one: ww key set sk-xxx"
-                    echo "   Get a free key: https://platform.deepseek.com"
-                else
-                    MASKED="$(echo "$KEY_VAL" | head -c 8)...$(echo "$KEY_VAL" | tail -c 5)"
-                    echo "🔑 Current key: $MASKED"
+            FOUND=0
+            for _kv in $WW_LLM_KEY_VARS; do
+                _val=""
+                if [ -n "${!_kv:-}" ] && ww_key_value_ok "${!_kv}"; then
+                    _val="${!_kv}"
+                elif [ -f "$ENV_FILE" ]; then
+                    _val=$(grep "^${_kv}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//')
                 fi
-            else
+                if ww_key_value_ok "${_val:-}"; then
+                    FOUND=1
+                    _prov=$(ww_provider_for_env_var "$_kv")
+                    MASKED="$(echo "$_val" | head -c 8)...$(echo "$_val" | tail -c 5)"
+                    echo "🔑 ${_kv} (${_prov}): $MASKED"
+                fi
+            done
+            if [ "$FOUND" -eq 0 ]; then
                 echo "⚠️  No key configured."
-                echo "   Set one: ww key set sk-xxx"
-                echo "   Get a free key: https://platform.deepseek.com"
+                echo "   Set one: ww key set <key> [deepseek|openai|anthropic|openrouter|custom]"
             fi
             exit 0
             ;;
         test)
-            if [ ! -f "$ENV_FILE" ] || ! grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
-                echo "⚠️  No key configured. Set one first: ww key set sk-xxx"
-                exit 1
-            fi
-            # Read raw key; do NOT redacted — Authorization must be the real token
-            KEY_VAL=$(grep "^DEEPSEEK_API_KEY=" "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//')
-            if [ -z "$KEY_VAL" ]; then
-                echo "⚠️  DEEPSEEK_API_KEY is empty. Set one: ww key set sk-xxx"
-                exit 1
-            fi
-            echo "🔍 Testing DeepSeek API..."
-            # Pass real key in Authorization (do not redact to *** — that breaks the request)
-            RESP=$(curl -sS --connect-timeout 10 \
-                -H "Authorization: Bearer ${KEY_VAL}" \
-                "https://api.deepseek.com/v1/models" 2>&1 || echo "NETWORK_ERROR")
-            if echo "$RESP" | grep -q '"id"'; then
-                echo "✅ Key is valid — API reachable"
-            elif echo "$RESP" | grep -q "NETWORK_ERROR"; then
-                echo "❌ Network error — check internet connection"
-            else
-                echo "❌ Key invalid or API error:"
-                echo "$RESP" | head -3
-            fi
-            exit 0
+            ww_test_llm_key "$ENV_FILE"
+            exit $?
             ;;
         *)
-            echo "🌊 ww key — manage DeepSeek API key"
+            echo "🌊 ww key — manage LLM API keys (multi-provider)"
             echo ""
-            echo "  ww key set sk-xxx   Save/update API key"
-            echo "  ww key show         Show current key (masked)"
-            echo "  ww key test         Test key against DeepSeek API"
+            echo "  ww key set <key> [provider]   Save/update API key"
+            echo "  ww key show                   Show configured keys (masked)"
+            echo "  ww key test                   Test primary key against its provider API"
             echo ""
-            echo "  Get a free key: https://platform.deepseek.com"
+            echo "  Providers: deepseek · openai · anthropic · openrouter · custom"
+            echo "  Key shape is auto-detected when possible (sk-ant-*, sk-or-*, sk-proj-*)."
+            echo "  Ambiguous sk-* keys need a provider: ww key set <key> openai"
             exit 0
             ;;
     esac
@@ -221,6 +467,15 @@ WW_PORT="${WW_PORT:-9300}"
 # ── Colors ──
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'
 BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+# Brand cyan/blue #31D1F7 (public hero) — truecolor with basic CYAN fallback
+if [ -n "${NO_COLOR:-}" ]; then
+    BRAND=""
+elif [ "${TERM:-}" = "dumb" ]; then
+    BRAND="${BOLD}${CYAN}"
+else
+    BRAND=$'\033[1;38;2;49;209;247m'  # bold + #31D1F7
+    # Some old terminals ignore truecolor; CYAN is still fine as soft fallback for other UI
+fi
 info()  { echo -e "${BLUE}  ➤${NC} $1"; }
 ok()    { echo -e "${GREEN}  ✓${NC} $1"; }
 warn()  { echo -e "${YELLOW}  ⚠${NC} $1"; }
@@ -235,18 +490,20 @@ case "$(uname -s)" in
     *)      OS="unknown" ;;
 esac
 
-# ── Banner ──
+# ── Banner (WORLDWAVE art in brand cyan/blue; subtitle dim) ──
+echo ""
+printf '%b' "${BRAND:-${BOLD}${CYAN}}"
 cat << 'BANNER'
-
    ██╗    ██╗ ██████╗ ██████╗ ██╗     ██████╗ ██╗    ██╗ █████╗ ██╗   ██╗███████╗
    ██║    ██║██╔═══██╗██╔══██╗██║     ██╔══██╗██║    ██║██╔══██╗██║   ██║██╔════╝
    ██║ █╗ ██║██║   ██║██████╔╝██║     ██║  ██║██║ █╗ ██║███████║██║   ██║█████╗  
    ██║███╗██║██║   ██║██╔══██╗██║     ██║  ██║██║███╗██║██╔══██║╚██╗ ██╔╝██╔══╝  
    ╚███╔███╔╝╚██████╔╝██║  ██║███████╗██████╔╝╚███╔███╔╝██║  ██║ ╚████╔╝ ███████╗
     ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═════╝  ╚══╝╚══╝ ╚═╝  ╚═╝  ╚═══╝  ╚══════╝
-                                                                                   
-                      Decentralized P2P Node — Every Node is a Tracker
 BANNER
+printf '%b\n' "${NC}"
+printf '%b\n' "${DIM}                                                                                   "
+printf '%b\n' "                      Decentralized P2P Node — Every Node is a Tracker${NC}"
 
 # ═══════════════════════════════════════════════════════════
 #  0. Auto-install missing system deps
@@ -452,25 +709,35 @@ echo ""
 
 ENV_FILE="$INSTALL_DIR/.env"
 
-# Auto-detect LLM API key from environment and persist to .env
-if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
-    mkdir -p "$(dirname "$ENV_FILE")"
-    if [ ! -f "$ENV_FILE" ]; then
-        echo "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" > "$ENV_FILE"
-    elif ! grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
-        echo "DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY" >> "$ENV_FILE"
-    else
-        # Replace empty/placeholder key line with env value
-        if [ "$(uname -s)" = "Darwin" ]; then
-            sed -i '' "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY|" "$ENV_FILE"
-        else
-            sed -i "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$DEEPSEEK_API_KEY|" "$ENV_FILE"
+# Auto-detect any LLM API keys from environment and persist to .env
+_WW_ENV_KEY_FOUND=0
+for _kv in $WW_LLM_KEY_VARS; do
+    _val="${!_kv:-}"
+    if ww_key_value_ok "$_val"; then
+        ww_upsert_env "$_kv" "$_val" "$ENV_FILE"
+        ok "${_kv} detected from environment"
+        _WW_ENV_KEY_FOUND=1
+        # Non-deepseek shell keys: ensure a matching default model for chat
+        _prov=$(ww_provider_for_env_var "$_kv")
+        if [ "$_prov" != "deepseek" ] && [ -z "${WW_MODEL:-}" ]; then
+            _model=$(ww_default_model_for_provider "$_prov")
+            ww_upsert_env "WW_MODEL" "$_model" "$ENV_FILE"
+            export WW_MODEL="$_model"
         fi
     fi
-    ok "DEEPSEEK_API_KEY detected from environment"
-elif [ -f "$ENV_FILE" ] && grep -qE "^DEEPSEEK_API_KEY=.+" "$ENV_FILE" 2>/dev/null; then
-    ok "DEEPSEEK_API_KEY loaded from $ENV_FILE"
+done
+if [ "$_WW_ENV_KEY_FOUND" -eq 0 ] && [ -f "$ENV_FILE" ]; then
+    for _kv in $WW_LLM_KEY_VARS; do
+        if grep -qE "^${_kv}=.+" "$ENV_FILE" 2>/dev/null; then
+            _val=$(grep "^${_kv}=" "$ENV_FILE" | head -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//')
+            if ww_key_value_ok "$_val"; then
+                ok "${_kv} loaded from $ENV_FILE"
+                _WW_ENV_KEY_FOUND=1
+            fi
+        fi
+    done
 fi
+unset _kv _val _prov _model _WW_ENV_KEY_FOUND
 
 # Node ID (quiet — one line)
 NODE_ID_FILE="$HOME/.ww_data/node_id.txt"
@@ -502,40 +769,33 @@ ok "ww command ready → $LOCAL_BIN/ww"
 if ! ww_has_llm_key "$ENV_FILE"; then
     if [ -t 0 ]; then
         echo ""
-        echo -e "  ${BOLD}🔑  Paste your DeepSeek API key to chat:${NC}"
-        echo -e "  ${DIM}     Free key: https://platform.deepseek.com${NC}"
-        echo ""
+        echo -e "  ${BOLD}🔑  Paste your LLM API key to chat:${NC}"
+        echo -e "  ${DIM}     DeepSeek · OpenAI · Anthropic · OpenRouter${NC}"
+        echo -e "  ${DIM}     (or later: ww key set <key>)${NC}"
         printf "  ${CYAN}→ ${NC}"
         read -r USER_KEY || USER_KEY=""
         USER_KEY=$(echo "$USER_KEY" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         if [ -n "$USER_KEY" ]; then
-            mkdir -p "$(dirname "$ENV_FILE")"
-            if [ -f "$ENV_FILE" ] && grep -q "^DEEPSEEK_API_KEY=" "$ENV_FILE" 2>/dev/null; then
-                if [ "$(uname -s)" = "Darwin" ]; then
-                    sed -i '' "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$USER_KEY|" "$ENV_FILE"
-                else
-                    sed -i "s|^DEEPSEEK_API_KEY=.*|DEEPSEEK_API_KEY=$USER_KEY|" "$ENV_FILE"
-                fi
-            else
-                echo "DEEPSEEK_API_KEY=$USER_KEY" >> "$ENV_FILE"
-            fi
-            export DEEPSEEK_API_KEY="$USER_KEY"
             echo ""
-            ok "Key saved — change anytime: ww key set sk-xxx"
+            if ww_save_llm_key "$USER_KEY" "${WW_PROVIDER:-}" "$ENV_FILE"; then
+                ok "Key saved — change anytime: ww key set <key> [provider]"
+            else
+                # Ambiguous or invalid: install still continues; chat may need key later
+                warn "Key not saved — set later: ww key set <key> [provider]"
+            fi
         else
             echo ""
             warn "No key entered — chat needs a key first"
-            echo -e "  ${DIM}  Later: ww key set sk-xxx${NC}"
-            echo -e "  ${DIM}  Get one: https://platform.deepseek.com${NC}"
+            echo -e "  ${DIM}  Later: ww key set <key> [deepseek|openai|anthropic|openrouter]${NC}"
         fi
     else
         # Non-TTY (curl | bash, CI): install done, do not hang on prompt or server
         echo ""
         warn "No LLM API key configured (non-interactive install)"
         echo "  Set a key, then chat:"
-        echo "    ww key set sk-xxx"
+        echo "    ww key set <key> [deepseek|openai|anthropic|openrouter|custom]"
         echo "    ww"
-        echo "  Free key: https://platform.deepseek.com"
+        echo "  Providers: DeepSeek · OpenAI · Anthropic · OpenRouter · custom"
         echo ""
         ok "Install complete"
         exit 0
