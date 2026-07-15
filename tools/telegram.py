@@ -66,7 +66,7 @@ class TelegramPublisher:
         if not allow_text_send(str(chat_id), text or ""):
             return {
                 "ok": False,
-                "error": "outbound gate suppressed (budget or time-window)",
+                "error": "outbound gate suppressed (budget exceeded)",
                 "suppressed": True,
             }
         params = {
