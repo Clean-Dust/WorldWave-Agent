@@ -220,7 +220,19 @@ class TestChatUpdateIntercept:
             ("/update --dry-run", "--dry-run"),
             ("ww update --dry-run", "--dry-run"),
             ("update dry-run", "--dry-run"),
+            # upgrade alias
+            ("/upgrade", ""),
+            ("upgrade", ""),
+            ("ww upgrade", ""),
+            ("WW Upgrade", ""),
+            ("upgrade status", "status"),
+            ("ww upgrade --dry-run", "--dry-run"),
+            # exit must never parse as update
             ("/exit", None),
+            ("exit", None),
+            ("/EXIT", None),
+            ("quit", None),
+            ("q", None),
             ("update my blog", None),
             ("please ww update something", None),
             ("hello", None),
@@ -229,6 +241,32 @@ class TestChatUpdateIntercept:
     )
     def test_parse_chat_update_command(self, cli_module, line, expected):
         assert cli_module.parse_chat_update_command(line) == expected
+
+    @pytest.mark.parametrize(
+        "line,expected",
+        [
+            ("/exit", True),
+            ("/quit", True),
+            ("/q", True),
+            ("exit", True),
+            ("quit", True),
+            ("q", True),
+            ("/EXIT", True),
+            ("EXIT", True),
+            ("  exit  ", True),
+            ("exit\r", True),
+            ("／exit", True),  # fullwidth solidus
+            ("／QUIT", True),
+            ("/update", False),
+            ("upgrade", False),
+            ("ww update", False),
+            ("hello", False),
+            ("", False),
+            ("exit now", False),
+        ],
+    )
+    def test_is_chat_exit_command(self, cli_module, line, expected):
+        assert cli_module.is_chat_exit_command(line) is expected
 
     def test_repl_update_does_not_call_api(self, cli_module):
         """Typing 'ww update' in chat must run handle_chat_update, not api_post."""
@@ -246,6 +284,44 @@ class TestChatUpdateIntercept:
         mock_upd.assert_called_once_with("")
         mock_api.assert_not_called()
         print("✅ CLI: ww update in REPL does not call api_post")
+
+    def test_repl_upgrade_does_not_call_api(self, cli_module):
+        """Typing 'ww upgrade' in chat must run handle_chat_update, not api_post."""
+        inputs = iter(["ww upgrade", "exit"])
+
+        with patch.object(cli_module, "check_llm_api_key", return_value="deepseek"):
+            with patch.object(cli_module, "load_or_create_api_key", return_value="k"):
+                with patch.object(cli_module, "auto_start_server", return_value=True):
+                    with patch.object(cli_module, "api_post") as mock_api:
+                        with patch.object(cli_module, "handle_chat_update") as mock_upd:
+                            with patch("builtins.input", side_effect=lambda *_a, **_k: next(inputs)):
+                                args = type("Args", (), {"goal": [], "spirals": None})()
+                                cli_module.cmd_run(args)
+
+        mock_upd.assert_called_once_with("")
+        mock_api.assert_not_called()
+        print("✅ CLI: ww upgrade in REPL does not call api_post")
+
+    def test_repl_exit_variants_do_not_call_api(self, cli_module, capsys):
+        """Bare exit /EXIT /q must leave REPL with Bye. — never api_post."""
+        for exit_line in ("exit", "/EXIT", "q", "／exit"):
+            inputs = iter([exit_line])
+            with patch.object(cli_module, "check_llm_api_key", return_value="deepseek"):
+                with patch.object(cli_module, "load_or_create_api_key", return_value="k"):
+                    with patch.object(cli_module, "auto_start_server", return_value=True):
+                        with patch.object(cli_module, "api_post") as mock_api:
+                            with patch.object(cli_module, "handle_chat_update") as mock_upd:
+                                with patch(
+                                    "builtins.input",
+                                    side_effect=lambda *_a, **_k: next(inputs),
+                                ):
+                                    args = type("Args", (), {"goal": [], "spirals": None})()
+                                    cli_module.cmd_run(args)
+            mock_api.assert_not_called()
+            mock_upd.assert_not_called()
+            out = capsys.readouterr().out
+            assert "Bye." in out
+        print("✅ CLI: exit variants leave REPL without api_post")
 
     def test_repl_slash_update_status(self, cli_module):
         inputs = iter(["/update status", "/exit"])

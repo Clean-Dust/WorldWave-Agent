@@ -310,6 +310,8 @@ ww_test_llm_key() {
 
 # ── Subcommands ──
 CMD="${1:-start}"
+# upgrade is an alias for update
+[ "$CMD" = "upgrade" ] && CMD=update
 if [ "$CMD" = "update" ]; then
     INSTALL_DIR="${WW_HOME:-$HOME/worldwave}"
     cd "$INSTALL_DIR"

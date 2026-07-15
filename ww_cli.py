@@ -520,19 +520,21 @@ def cmd_run(args):
             except (EOFError, KeyboardInterrupt):
                 print()
                 break
-            line = line.strip()
+            # Normalize: strip whitespace + trailing CR (Windows paste / TTY)
+            line = line.strip().rstrip("\r").strip()
             if not line:
                 continue
-            if line in ("/exit", "/quit"):
+            if is_chat_exit_command(line):
+                print("Bye.")
                 break
             if line == "/help":
                 print(
-                    "  /exit · /quit     Leave chat\n"
-                    "  /clear            Clear context note\n"
-                    "  /update           Upgrade Worldwave (not an LLM goal)\n"
-                    "  /update status    Version comparison\n"
-                    "  /update --dry-run Preview incoming commits\n"
-                    "  Also accepted: update · ww update (same as /update)"
+                    "  /exit · /quit · /q  Leave chat (also: exit, quit, q)\n"
+                    "  /clear              Clear context note\n"
+                    "  /update             Upgrade Worldwave (not an LLM goal)\n"
+                    "  /update status      Version comparison\n"
+                    "  /update --dry-run   Preview incoming commits\n"
+                    "  Also: update · upgrade · ww update · ww upgrade"
                 )
                 continue
             if line == "/clear":
@@ -902,11 +904,32 @@ def cmd_server(args):
             print(f"  {Colors.red('○')} stopped")
 
 
+def is_chat_exit_command(line: str) -> bool:
+    """True if *line* is a local REPL exit (never send to LLM / api_post).
+
+    Accepted (case-insensitive; whitespace and trailing CR stripped):
+      /exit · /quit · /q
+      exit · quit · q
+      fullwidth solidus forms: ／exit · ／quit · ／q
+    """
+    s = (line or "").strip().rstrip("\r").strip()
+    if not s:
+        return False
+    lower = s.lower()
+    # Normalize fullwidth solidus U+FF0F → ASCII slash
+    if lower.startswith("\uff0f"):
+        lower = "/" + lower[1:]
+    if lower.startswith("/"):
+        lower = lower[1:].lstrip()
+    return lower in ("exit", "quit", "q")
+
+
 def parse_chat_update_command(line: str) -> Optional[str]:
     """If *line* is an in-chat update command, return the action; else None.
 
     Accepted (case-insensitive, surrounding whitespace ignored):
       /update | update | ww update
+      /upgrade | upgrade | ww upgrade   (alias of update)
       … status | … --dry-run | … dry-run
 
     Returns:
@@ -915,10 +938,13 @@ def parse_chat_update_command(line: str) -> Optional[str]:
       "--dry-run" — preview only
       None        — not an update command (treat as LLM goal)
     """
-    s = (line or "").strip()
+    s = (line or "").strip().rstrip("\r").strip()
     if not s:
         return None
     lower = s.lower()
+    # Normalize fullwidth solidus U+FF0F → ASCII slash
+    if lower.startswith("\uff0f"):
+        lower = "/" + lower[1:]
     # Optional leading "ww " (user typed shell form inside chat)
     if lower.startswith("ww "):
         lower = lower[3:].lstrip()
@@ -927,7 +953,7 @@ def parse_chat_update_command(line: str) -> Optional[str]:
         lower = lower[1:].lstrip()
 
     parts = lower.split()
-    if not parts or parts[0] != "update":
+    if not parts or parts[0] not in ("update", "upgrade"):
         return None
     if len(parts) == 1:
         return ""
@@ -1872,6 +1898,7 @@ def cmd_help(args):
   server start|stop      Explicit server control (usually not needed)
   status                 System status
   update                 One-click update (check + pull + reinstall)
+  upgrade                Alias for update
   update status          Show version comparison
   update --dry-run       Preview incoming changes
   logs [N]               View logs
@@ -1936,6 +1963,7 @@ COMMANDS = {
     "status": cmd_status,
     "server": cmd_server,
     "update": cmd_update,
+    "upgrade": cmd_update,  # alias
     "logs": cmd_logs,
     "delegate": cmd_delegate,
     "goal": cmd_goal,
@@ -2012,9 +2040,9 @@ def main():
         args.action = action
         COMMANDS[cmd](args)
 
-    elif cmd in ("update",):
+    elif cmd in ("update", "upgrade"):
         args.update_action = extra[0] if extra else None
-        COMMANDS[cmd](args)
+        COMMANDS["update"](args)
 
     elif cmd in ("config",):
         # config: subcommands or key/value

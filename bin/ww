@@ -8,9 +8,13 @@ cd "$INSTALL_DIR" 2>/dev/null || {
     exit 1
 }
 
-# update / key → deploy.sh (git pull, pip install, key management)
+# update / upgrade / key → deploy.sh (git pull, pip install, key management)
 case "${1:-}" in
-    update|key)
+    update|upgrade|key)
+        # upgrade is an alias for update
+        if [ "${1}" = "upgrade" ]; then
+            set -- update "${@:2}"
+        fi
         exec bash "$INSTALL_DIR/deploy.sh" "$@"
         ;;
 esac
