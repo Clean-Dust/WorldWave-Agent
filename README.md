@@ -21,9 +21,7 @@
 
 <h2 id="english">Worldwave</h2>
 
-**Persistent session. Persistent memory. Persistent autonomy.**
-
-One entity across every chat — close the terminal, open Telegram, same agent, same context. No re-explaining.
+**恒久记忆 · 恒久自主 · 恒久 Session**
 
 ### Quick Install
 
@@ -206,9 +204,7 @@ MIT — see [LICENSE](LICENSE).
 
 <h2 id="chinese">Worldwave · 简体中文</h2>
 
-**恒久 Session · 恒久记忆 · 恒久自主**
-
-跨终端 / Telegram / HTTP 的同一个实体、同一条时间线。关了窗口再回来——不用重新解释。
+**恒久记忆 · 恒久自主 · 恒久 Session**
 
 ### 快速安装
 
