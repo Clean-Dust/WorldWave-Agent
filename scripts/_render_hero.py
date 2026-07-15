@@ -65,23 +65,33 @@ def make_bg(w: int, h: int) -> Image.Image:
     return Image.alpha_composite(base, glow)
 
 
-def draw_title_bold_glow(draw: ImageDraw.ImageDraw, xy, text, fnt) -> None:
-    """4eb37ba style: multi-pass electric glow + #50DCFF fill."""
-    x, y = xy
+def render_title_layer(text: str, fnt, v_stretch: float = 1.20) -> Image.Image:
+    """Render title with glow, then stretch vertically (width unchanged)."""
+    dummy = ImageDraw.Draw(Image.new("RGBA", (8, 8)))
+    bb = dummy.textbbox((0, 0), text, font=fnt)
+    pad = 16  # room for glow
+    tw, th = int(bb[2] - bb[0]), int(bb[3] - bb[1])
+    layer = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+    ox, oy = int(pad - bb[0]), int(pad - bb[1])
     glow_rgb = (0, 180, 255)
     fill = (80, 220, 255, 255)  # #50DCFF
     glow_r = 6
     for r in range(glow_r, 0, -1):
         a = int(25 + (glow_r - r) * 12)
         for dx, dy in [(-r, 0), (r, 0), (0, -r), (0, r), (-r, -r), (r, r), (-r, r), (r, -r)]:
-            draw.text((x + dx, y + dy), text, font=fnt, fill=(*glow_rgb, min(255, a)))
-    draw.text((x, y), text, font=fnt, fill=fill)
+            d.text((ox + dx, oy + dy), text, font=fnt, fill=(*glow_rgb, min(255, a)))
+    d.text((ox, oy), text, font=fnt, fill=fill)
+    if abs(v_stretch - 1.0) > 1e-3:
+        nw, nh = layer.width, max(1, int(round(layer.height * v_stretch)))
+        layer = layer.resize((nw, nh), Image.Resampling.LANCZOS)
+    return layer
 
 
 def compose(w: int, h: int, out_path: Path) -> None:
     bg = make_bg(w, h)
     sh = shark.copy()
-    target_h = int(h * 0.68)
+    target_h = int(h * 0.66)
     ratio = target_h / sh.height
     sh = sh.resize((max(1, int(sh.width * ratio)), target_h), Image.Resampling.LANCZOS)
     sx = int(w * 0.02)
@@ -91,27 +101,34 @@ def compose(w: int, h: int, out_path: Path) -> None:
     draw = ImageDraw.Draw(bg)
     title = "WORLDWAVE"
     margin_r = 28
-    # left shift ~10% from classic 0.36w zone
+    V_STRETCH = 1.20  # 上下拉长 20%
     base_left = max(int(w * 0.36), sx + sh.width - 10)
     text_left = max(sx + sh.width + int(w * 0.01), int(base_left - 0.10 * w))
     max_w = w - text_left - margin_r
 
-    # 4eb37ba was ~106; keep large, fit bold metrics
-    size = int(h * 0.30)
+    # Fit bold metrics; allow taller after vertical stretch
+    size = int(h * 0.28)
     dummy = ImageDraw.Draw(Image.new("RGB", (8, 8)))
     while size >= 40:
         f = font(BOLD, size)
         bb = dummy.textbbox((0, 0), title, font=f)
         tw, th = bb[2] - bb[0], bb[3] - bb[1]
-        if tw <= max_w and th <= int(h * 0.48):
+        if tw <= max_w and int(th * V_STRETCH) <= int(h * 0.52):
             break
         size -= 2
     title_font = font(BOLD, size)
-    bb = dummy.textbbox((0, 0), title, font=title_font)
-    tw, th = bb[2] - bb[0], bb[3] - bb[1]
-    tx, ty = text_left, int(h * 0.22)
-
-    draw_title_bold_glow(draw, (tx, ty), title, title_font)
+    title_layer = render_title_layer(title, title_font, v_stretch=V_STRETCH)
+    tw, th = title_layer.width, title_layer.height
+    # if width (incl pad) exceeds, crop is fine; position by content
+    tx = text_left
+    ty = int(h * 0.18)
+    # keep inside canvas
+    if tx + tw > w - 4:
+        # trim left pad visually by shifting
+        tx = max(0, w - 4 - tw)
+    if ty + th > h - 80:
+        ty = max(8, h - 80 - th)
+    bg.paste(title_layer, (tx, ty), title_layer)
 
     sub = "Persistent memory · Persistent autonomy · Persistent session"
     sub_size = max(16, int(h * 0.048))
@@ -123,18 +140,19 @@ def compose(w: int, h: int, out_path: Path) -> None:
         sub_size -= 1
     sub_font = font(REG, sub_size)
     sw = dummy.textbbox((0, 0), sub, font=sub_font)[2] - dummy.textbbox((0, 0), sub, font=sub_font)[0]
-    sty = ty + th + int(h * 0.055)
-    draw.text((tx, sty), sub, font=sub_font, fill=(230, 245, 255, 255))
+    sty = ty + th + int(h * 0.02)
+    draw.text((text_left, sty), sub, font=sub_font, fill=(230, 245, 255, 255))
 
-    assert tx + tw <= w - 4, (tx, tw, w)
-    assert tx + sw <= w - 4, (tx, sw, w)
+    assert text_left + sw <= w - 4, (text_left, sw, w)
 
     out = bg.convert("RGB")
     out = ImageEnhance.Contrast(out).enhance(1.06)
     out = ImageEnhance.Color(out).enhance(1.08)
     out.save(out_path, "PNG", optimize=True)
-    print(f"wrote {out_path} size={size} tx={tx} ({tx/w:.1%}) tw={tw} font=DejaVuBold#50DCFF")
-
+    print(
+        f"wrote {out_path} size={size} v_stretch={V_STRETCH} "
+        f"title_px=({tw}x{th}) tx={tx} font=DejaVuBold#50DCFF"
+    )
 
 if __name__ == "__main__":
     compose(1280, 560, assets / "banner.png")
