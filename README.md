@@ -1,19 +1,15 @@
 <p align="center">
   <br>
-  <img alt="Worldwave — persistent cognitive entity" src="docs/assets/banner.png" width="800">
+  <img alt="Worldwave — blue shark · one agent, one memory, every platform" src="docs/assets/banner.png" width="100%">
   <br>
 </p>
 
 <p align="center">
-  <a href="https://github.com/Clean-Dust/worldwave/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="License"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python"></a>
-  <a href="#"><img src="https://img.shields.io/badge/version-0.5.0-informational" alt="Version"></a>
-  <a href="https://github.com/Clean-Dust/worldwave"><img src="https://img.shields.io/github/stars/Clean-Dust/worldwave?style=social" alt="Stars"></a>
-  <br>
-  <a href="#"><img src="https://img.shields.io/badge/tests-584_passed-brightgreen" alt="Tests"></a>
-  <a href="#"><img src="https://img.shields.io/badge/tools-195-orange" alt="Tools"></a>
-  <a href="#"><img src="https://img.shields.io/badge/modules-219-blueviolet" alt="Modules"></a>
-  <a href="#"><img src="https://img.shields.io/badge/platforms-13-lightgrey" alt="Platforms"></a>
+  <a href="https://github.com/Clean-Dust/worldwave/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f6feb" alt="License"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-0ea5e9" alt="Python"></a>
+  <a href="#quick-install"><img src="https://img.shields.io/badge/install-one_line-0284c7" alt="Install"></a>
+  <a href="#english"><img src="https://img.shields.io/badge/lang-English-334155" alt="English"></a>
+  <a href="#chinese"><img src="https://img.shields.io/badge/lang-中文-334155" alt="中文"></a>
 </p>
 
 <p align="center">
@@ -25,11 +21,9 @@
 
 <h2 id="english">Worldwave</h2>
 
-A **persistent cognitive entity** framework — an AI agent that actually remembers you.
+**One agent. One memory. Every platform.**
 
-Worldwave gives your agent **persistent memory** that lasts across sessions, a **cross-platform identity** so you can continue on Telegram what you started in the terminal, and a **cognitive entity** that remembers your projects, preferences, and decisions — across days, across weeks.
-
-Close the terminal, open Telegram — same agent, same context. No re-explaining.
+A persistent cognitive entity — close the terminal, open Telegram, same agent, same context. No re-explaining.
 
 ### Quick Install
 
@@ -212,11 +206,9 @@ MIT — see [LICENSE](LICENSE).
 
 <h2 id="chinese">Worldwave · 简体中文</h2>
 
-一个**持久认知主体**（Persistent Cognitive Entity）框架。无论你从终端、Telegram、飞书还是网页接入，连接的都是同一个实体、同一条时间线。
+**一个代理。一份记忆。所有平台。**
 
-Worldwave 给你的代理**持久记忆**（跨会话不丢失）、**跨平台统一身份**（在 Telegram 上继续终端未完成的话题）、一个**认知实体**（记住你的项目、偏好和决策，跨天、跨周）。
-
-关了终端，打开 Telegram——同一个代理，同一个上下文。不用重新解释。
+持久认知主体——关了终端，打开 Telegram，还是同一个代理、同一条时间线。不用重新解释。
 
 ### 快速安装
 
