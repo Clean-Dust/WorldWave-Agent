@@ -7,6 +7,7 @@ from .registry import (
     TransportRegistry,
     default_transports,
     infer_provider,
+    resolve_api_model,
     find_available_providers,
     FAILOVER_CHAIN,
 )

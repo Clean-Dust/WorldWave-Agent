@@ -17,7 +17,9 @@ set -euo pipefail
 
 # ── Helpers (shared by subcommands + install) ──
 # LLM env vars supported by core (transports + ww_has_llm_key).
-WW_LLM_KEY_VARS="DEEPSEEK_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY CUSTOM_API_KEY"
+# GOOGLE_API_KEY is an alias for Gemini (has-key checks); primary write target is GEMINI_API_KEY.
+WW_LLM_KEY_VARS="DEEPSEEK_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY GEMINI_API_KEY GOOGLE_API_KEY XAI_API_KEY GROQ_API_KEY FIREWORKS_API_KEY TOGETHER_API_KEY MISTRAL_API_KEY MOONSHOT_API_KEY DEEPINFRA_API_KEY OLLAMA_API_KEY CUSTOM_API_KEY"
+WW_PROVIDER_IDS="deepseek openai anthropic openrouter gemini xai groq fireworks together mistral moonshot deepinfra ollama custom"
 
 # True if value looks like a real key (not empty / placeholder).
 ww_key_value_ok() {
@@ -30,7 +32,33 @@ ww_key_value_ok() {
     return 0
 }
 
-# True if env or .env has a non-empty LLM API key.
+# True if Ollama local mode is opted in (env or .env).
+ww_has_ollama_opt_in() {
+    local env_file="${1:-}"
+    local val
+    val="${WW_USE_OLLAMA:-}"
+    case "$(echo "${val}" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|on) return 0 ;;
+    esac
+    if [ -n "${OLLAMA_BASE_URL:-}" ] || [ -n "${OLLAMA_HOST:-}" ]; then
+        return 0
+    fi
+    if [ -n "$env_file" ] && [ -f "$env_file" ]; then
+        val=$(grep "^WW_USE_OLLAMA=" "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//')
+        case "$(echo "${val:-}" | tr '[:upper:]' '[:lower:]')" in
+            1|true|yes|on) return 0 ;;
+        esac
+        if grep -qE "^OLLAMA_BASE_URL=.+" "$env_file" 2>/dev/null; then
+            return 0
+        fi
+        if grep -qE "^OLLAMA_HOST=.+" "$env_file" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+# True if env or .env has a non-empty LLM API key (or Ollama opt-in).
 ww_has_llm_key() {
     local env_file="${1:-}"
     local var key val
@@ -47,6 +75,9 @@ ww_has_llm_key() {
                 return 0
             fi
         done
+    fi
+    if ww_has_ollama_opt_in "$env_file"; then
+        return 0
     fi
     return 1
 }
@@ -100,6 +131,15 @@ ww_env_var_for_provider() {
         openai)     echo "OPENAI_API_KEY" ;;
         anthropic)  echo "ANTHROPIC_API_KEY" ;;
         openrouter) echo "OPENROUTER_API_KEY" ;;
+        gemini|google) echo "GEMINI_API_KEY" ;;
+        xai|grok)   echo "XAI_API_KEY" ;;
+        groq)       echo "GROQ_API_KEY" ;;
+        fireworks)  echo "FIREWORKS_API_KEY" ;;
+        together)   echo "TOGETHER_API_KEY" ;;
+        mistral)    echo "MISTRAL_API_KEY" ;;
+        moonshot|kimi) echo "MOONSHOT_API_KEY" ;;
+        deepinfra)  echo "DEEPINFRA_API_KEY" ;;
+        ollama)     echo "OLLAMA_API_KEY" ;;
         custom)     echo "CUSTOM_API_KEY" ;;
         *)          echo "" ;;
     esac
@@ -112,6 +152,15 @@ ww_provider_for_env_var() {
         OPENAI_API_KEY)     echo "openai" ;;
         ANTHROPIC_API_KEY)  echo "anthropic" ;;
         OPENROUTER_API_KEY) echo "openrouter" ;;
+        GEMINI_API_KEY|GOOGLE_API_KEY) echo "gemini" ;;
+        XAI_API_KEY)        echo "xai" ;;
+        GROQ_API_KEY)       echo "groq" ;;
+        FIREWORKS_API_KEY)  echo "fireworks" ;;
+        TOGETHER_API_KEY)   echo "together" ;;
+        MISTRAL_API_KEY)    echo "mistral" ;;
+        MOONSHOT_API_KEY)   echo "moonshot" ;;
+        DEEPINFRA_API_KEY)  echo "deepinfra" ;;
+        OLLAMA_API_KEY)     echo "ollama" ;;
         CUSTOM_API_KEY)     echo "custom" ;;
         *)                  echo "" ;;
     esac
@@ -124,26 +173,38 @@ ww_default_model_for_provider() {
         openai)     echo "gpt-4o-mini" ;;
         anthropic)  echo "claude-sonnet-4" ;;
         openrouter) echo "google/gemini-2.0-flash" ;;
+        gemini)     echo "gemini-2.0-flash" ;;
+        xai)        echo "grok-3-mini" ;;
+        groq)       echo "llama-3.3-70b-versatile" ;;
+        fireworks)  echo "accounts/fireworks/models/llama-v3p1-70b-instruct" ;;
+        together)   echo "meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo" ;;
+        mistral)    echo "mistral-small-latest" ;;
+        moonshot)   echo "moonshot-v1-8k" ;;
+        deepinfra)  echo "meta-llama/Meta-Llama-3.1-8B-Instruct" ;;
+        ollama)     echo "ollama/llama3.2" ;;
         custom)     echo "custom/default" ;;
         *)          echo "deepseek/deepseek-v4-flash" ;;
     esac
 }
 
 # Infer provider from key shape. Empty string = ambiguous sk-* (need ask).
-# Prints: deepseek|openai|anthropic|openrouter|custom|""
 ww_infer_provider_from_key() {
     local key="${1:-}"
     case "$key" in
         sk-ant-*|sk-ant*) echo "anthropic" ;;
         sk-or-*|sk-or*)   echo "openrouter" ;;
         sk-proj-*)        echo "openai" ;;
+        gsk_*)            echo "groq" ;;
+        xai-*)            echo "xai" ;;
+        AIza*)            echo "gemini" ;;
         sk-*)             echo "" ;;  # DeepSeek / OpenAI / OpenRouter classic — ambiguous
+        none|null|"")     echo "" ;;
         *)                echo "custom" ;;
     esac
 }
 
 # Normalize provider label (accept aliases). Empty if unknown.
-# Number map (TTY menu): 1 DeepSeek, 2 OpenAI, 3 Anthropic, 4 OpenRouter, 5 custom
+# Number map (TTY menu): 1–8 majors, 9 More… submenu
 ww_normalize_provider() {
     local p
     p=$(echo "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')
@@ -152,12 +213,24 @@ ww_normalize_provider() {
         openai|oai)            echo "openai" ;;
         anthropic|claude)      echo "anthropic" ;;
         openrouter|or)         echo "openrouter" ;;
-        custom|local|ollama)   echo "custom" ;;
+        gemini|google)         echo "gemini" ;;
+        xai|grok)              echo "xai" ;;
+        groq)                  echo "groq" ;;
+        fireworks|fw)          echo "fireworks" ;;
+        together)              echo "together" ;;
+        mistral)               echo "mistral" ;;
+        moonshot|kimi)         echo "moonshot" ;;
+        deepinfra|di)          echo "deepinfra" ;;
+        ollama)                echo "ollama" ;;
+        custom|local)          echo "custom" ;;
         1) echo "deepseek" ;;
         2) echo "openai" ;;
         3) echo "anthropic" ;;
         4) echo "openrouter" ;;
-        5) echo "custom" ;;
+        5) echo "gemini" ;;
+        6) echo "xai" ;;
+        7) echo "groq" ;;
+        8) echo "ollama" ;;
         *) echo "" ;;
     esac
 }
@@ -195,14 +268,20 @@ ww_load_primary_key() {
 
 # Ask TTY which provider (first-install, or ambiguous sk-* on CLI).
 # Prints provider (stdout) or empty. Prompts go to stderr so $(...) stays clean.
+# Provider first, then key (callers paste key after this returns).
 ww_ask_provider_tty() {
     echo "  Which provider?" >&2
     echo "    1) DeepSeek" >&2
     echo "    2) OpenAI" >&2
     echo "    3) Anthropic" >&2
     echo "    4) OpenRouter" >&2
+    echo "    5) Google Gemini" >&2
+    echo "    6) xAI (Grok)" >&2
+    echo "    7) Groq" >&2
+    echo "    8) Ollama (local)" >&2
+    echo "    9) More…" >&2
     printf "  → " >&2
-    local choice=""
+    local choice="" more=""
     read -r choice || choice=""
     choice=$(echo "$choice" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     case "$choice" in
@@ -210,6 +289,35 @@ ww_ask_provider_tty() {
         2|openai|OpenAI)          echo "openai" ;;
         3|anthropic|Anthropic|claude|Claude) echo "anthropic" ;;
         4|openrouter|OpenRouter)  echo "openrouter" ;;
+        5|gemini|Gemini|google|Google) echo "gemini" ;;
+        6|xai|xAI|XAI|grok|Grok)  echo "xai" ;;
+        7|groq|Groq)              echo "groq" ;;
+        8|ollama|Ollama)          echo "ollama" ;;
+        9|more|More|m|M)
+            echo "  More providers:" >&2
+            echo "    a) Fireworks" >&2
+            echo "    b) Together" >&2
+            echo "    c) Mistral" >&2
+            echo "    d) Moonshot (Kimi)" >&2
+            echo "    e) DeepInfra" >&2
+            echo "    f) Custom (OpenAI-compatible)" >&2
+            printf "  → " >&2
+            read -r more || more=""
+            more=$(echo "$more" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            case "$more" in
+                a|A|fireworks|Fireworks) echo "fireworks" ;;
+                b|B|together|Together)   echo "together" ;;
+                c|C|mistral|Mistral)     echo "mistral" ;;
+                d|D|moonshot|Moonshot|kimi|Kimi) echo "moonshot" ;;
+                e|E|deepinfra|DeepInfra) echo "deepinfra" ;;
+                f|F|custom|Custom|local|Local) echo "custom" ;;
+                *)
+                    local n
+                    n=$(ww_normalize_provider "$more")
+                    echo "${n}"
+                    ;;
+            esac
+            ;;
         *)
             local n
             n=$(ww_normalize_provider "$choice")
@@ -222,6 +330,7 @@ ww_ask_provider_tty() {
 # Returns 0 on success, 1 on validation failure, 2 if provider needed but unavailable (non-TTY).
 # When force_provider is set and key shape clearly infers a different provider, warn and use
 # the inferred one (safer). Ambiguous sk-* (empty inference) keeps the chosen provider.
+# Ollama: empty key / "none" enables local mode (WW_USE_OLLAMA=1) without a real API key.
 ww_save_llm_key() {
     local key="${1:-}"
     local force_provider="${2:-}"
@@ -229,16 +338,36 @@ ww_save_llm_key() {
     local provider env_var model inferred
 
     key=$(echo "$key" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    if ! ww_key_value_ok "$key"; then
-        echo "⚠️  Empty or placeholder key — not saved."
-        return 1
-    fi
     if [ -z "$env_file" ]; then
         echo "⚠️  No .env path for key save."
         return 1
     fi
 
     provider=$(ww_normalize_provider "${force_provider:-${WW_PROVIDER:-}}")
+
+    # Ollama local: allow empty / none / null as "no key needed"
+    if [ "$provider" = "ollama" ]; then
+        case "$key" in
+            ""|none|null|placeholder|ollama|no-key|nokey)
+                ww_upsert_env "WW_USE_OLLAMA" "1" "$env_file"
+                export WW_USE_OLLAMA=1
+                model=$(ww_default_model_for_provider "ollama")
+                ww_upsert_env "WW_MODEL" "$model" "$env_file"
+                export WW_MODEL="$model"
+                echo "✓ Ollama local enabled (WW_USE_OLLAMA=1) in $env_file"
+                echo "  Default model: $model  (override: WW_MODEL=...)"
+                echo "  Optional: set OLLAMA_BASE_URL if not on 127.0.0.1:11434"
+                return 0
+                ;;
+        esac
+    fi
+
+    if ! ww_key_value_ok "$key"; then
+        echo "⚠️  Empty or placeholder key — not saved."
+        echo "   Tip: for local Ollama use: ww key set none ollama"
+        return 1
+    fi
+
     inferred=$(ww_infer_provider_from_key "$key")
     if [ -n "$provider" ]; then
         # Chosen/forced provider: prefer clear key-shape inference when it conflicts
@@ -257,14 +386,15 @@ ww_save_llm_key() {
     fi
     if [ -z "$provider" ]; then
         echo "⚠️  Ambiguous key prefix (sk-*). Specify a provider:"
-        echo "   ww key set <key> deepseek|openai|anthropic|openrouter"
-        echo "   Or set WW_PROVIDER=deepseek|openai|anthropic|openrouter"
+        echo "   ww key set <key> deepseek|openai|anthropic|openrouter|gemini|xai|groq|ollama|…"
+        echo "   Or set WW_PROVIDER=<id>  (see: ww key)"
         return 2
     fi
 
     env_var=$(ww_env_var_for_provider "$provider")
     if [ -z "$env_var" ]; then
         echo "⚠️  Unknown provider: $provider"
+        echo "   Known: $WW_PROVIDER_IDS"
         return 1
     fi
 
@@ -272,6 +402,11 @@ ww_save_llm_key() {
     # Export for current process (safe for special chars in key)
     printf -v "$env_var" '%s' "$key"
     export "$env_var"
+
+    if [ "$provider" = "ollama" ]; then
+        ww_upsert_env "WW_USE_OLLAMA" "1" "$env_file"
+        export WW_USE_OLLAMA=1
+    fi
 
     # Set WW_MODEL so chat matches provider (ConfigManager ENV_PREFIX=WW_)
     model=$(ww_default_model_for_provider "$provider")
@@ -315,8 +450,48 @@ ww_test_llm_key() {
                 -H "Authorization: Bearer ${key_val}" \
                 "https://openrouter.ai/api/v1/models" 2>&1 || echo "NETWORK_ERROR")
             ;;
-        custom)
-            echo "⚠️  custom provider — no fixed public test URL. Key is present."
+        gemini)
+            resp=$(curl -sS --connect-timeout 10 \
+                -H "Authorization: Bearer ${key_val}" \
+                "https://generativelanguage.googleapis.com/v1beta/openai/models" 2>&1 || echo "NETWORK_ERROR")
+            ;;
+        xai)
+            resp=$(curl -sS --connect-timeout 10 \
+                -H "Authorization: Bearer ${key_val}" \
+                "https://api.x.ai/v1/models" 2>&1 || echo "NETWORK_ERROR")
+            ;;
+        groq)
+            resp=$(curl -sS --connect-timeout 10 \
+                -H "Authorization: Bearer ${key_val}" \
+                "https://api.groq.com/openai/v1/models" 2>&1 || echo "NETWORK_ERROR")
+            ;;
+        mistral)
+            resp=$(curl -sS --connect-timeout 10 \
+                -H "Authorization: Bearer ${key_val}" \
+                "https://api.mistral.ai/v1/models" 2>&1 || echo "NETWORK_ERROR")
+            ;;
+        together)
+            resp=$(curl -sS --connect-timeout 10 \
+                -H "Authorization: Bearer ${key_val}" \
+                "https://api.together.xyz/v1/models" 2>&1 || echo "NETWORK_ERROR")
+            ;;
+        fireworks)
+            resp=$(curl -sS --connect-timeout 10 \
+                -H "Authorization: Bearer ${key_val}" \
+                "https://api.fireworks.ai/inference/v1/models" 2>&1 || echo "NETWORK_ERROR")
+            ;;
+        moonshot)
+            resp=$(curl -sS --connect-timeout 10 \
+                -H "Authorization: Bearer ${key_val}" \
+                "https://api.moonshot.cn/v1/models" 2>&1 || echo "NETWORK_ERROR")
+            ;;
+        deepinfra)
+            resp=$(curl -sS --connect-timeout 10 \
+                -H "Authorization: Bearer ${key_val}" \
+                "https://api.deepinfra.com/v1/openai/models" 2>&1 || echo "NETWORK_ERROR")
+            ;;
+        ollama|custom)
+            echo "⚠️  $provider — local/custom endpoint; key/config is present (no fixed public test)."
             return 0
             ;;
         deepseek|*)
@@ -433,15 +608,29 @@ if [ "$CMD" = "key" ]; then
 
     case "$KEY_ACTION" in
         set)
-            if [ -z "$NEW_KEY" ]; then
-                echo "⚠️  Usage: ww key set <key> [deepseek|openai|anthropic|openrouter|custom]"
-                echo "   Providers: DeepSeek · OpenAI · Anthropic · OpenRouter · custom"
+            if [ -z "$NEW_KEY" ] && [ -z "$KEY_PROVIDER" ]; then
+                echo "⚠️  Usage: ww key set <key> [provider]"
+                echo "   Providers: $WW_PROVIDER_IDS"
+                echo "   Local Ollama (no key): ww key set none ollama"
                 exit 1
             fi
-            # Non-empty validation only (Anthropic/custom may not use sk-*)
-            if ! ww_key_value_ok "$NEW_KEY"; then
-                echo "⚠️  Empty or placeholder key — not saved."
+            # Allow empty key when provider is ollama (handled in ww_save_llm_key)
+            _norm_p=$(ww_normalize_provider "${KEY_PROVIDER:-}")
+            if [ -z "$NEW_KEY" ] && [ "$_norm_p" != "ollama" ]; then
+                echo "⚠️  Usage: ww key set <key> [provider]"
+                echo "   Providers: $WW_PROVIDER_IDS"
                 exit 1
+            fi
+            if [ -z "$NEW_KEY" ] && [ "$_norm_p" = "ollama" ]; then
+                NEW_KEY="none"
+            fi
+            # Non-empty validation only for non-ollama (Anthropic/custom may not use sk-*)
+            if [ "$_norm_p" != "ollama" ] && ! ww_key_value_ok "$NEW_KEY"; then
+                # still pass through — ww_save_llm_key may map ollama via force provider later
+                if [ -z "$KEY_PROVIDER" ]; then
+                    echo "⚠️  Empty or placeholder key — not saved."
+                    exit 1
+                fi
             fi
             set +e
             ww_save_llm_key "$NEW_KEY" "$KEY_PROVIDER" "$ENV_FILE"
@@ -469,9 +658,21 @@ if [ "$CMD" = "key" ]; then
                     echo "🔑 ${_kv} (${_prov}): $MASKED"
                 fi
             done
+            # Ollama may be opted-in without a key
+            _use_ollama="${WW_USE_OLLAMA:-}"
+            if [ -z "$_use_ollama" ] && [ -f "$ENV_FILE" ]; then
+                _use_ollama=$(grep "^WW_USE_OLLAMA=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//')
+            fi
+            case "$(echo "${_use_ollama:-}" | tr '[:upper:]' '[:lower:]')" in
+                1|true|yes|on)
+                    FOUND=1
+                    echo "🔑 Ollama local: WW_USE_OLLAMA=1 (no API key required)"
+                    ;;
+            esac
             if [ "$FOUND" -eq 0 ]; then
                 echo "⚠️  No key configured."
-                echo "   Set one: ww key set <key> [deepseek|openai|anthropic|openrouter|custom]"
+                echo "   Set one: ww key set <key> [provider]"
+                echo "   Providers: $WW_PROVIDER_IDS"
             fi
             exit 0
             ;;
@@ -486,9 +687,10 @@ if [ "$CMD" = "key" ]; then
             echo "  ww key show                   Show configured keys (masked)"
             echo "  ww key test                   Test primary key against its provider API"
             echo ""
-            echo "  Providers: deepseek · openai · anthropic · openrouter · custom"
-            echo "  Key shape is auto-detected when possible (sk-ant-*, sk-or-*, sk-proj-*)."
+            echo "  Providers: $WW_PROVIDER_IDS"
+            echo "  Key shape is auto-detected when possible (sk-ant-*, sk-or-*, sk-proj-*, gsk_*, AIza*)."
             echo "  Ambiguous sk-* keys need a provider: ww key set <key> openai"
+            echo "  Local Ollama without key: ww key set none ollama"
             exit 0
             ;;
     esac
@@ -819,9 +1021,9 @@ if ! ww_has_llm_key "$ENV_FILE"; then
     if [ -t 0 ]; then
         echo ""
         echo -e "  ${BOLD}🔑  LLM API key needed to chat${NC}"
-        echo -e "  ${DIM}     DeepSeek · OpenAI · Anthropic · OpenRouter${NC}"
+        echo -e "  ${DIM}     DeepSeek · OpenAI · Anthropic · OpenRouter · Gemini · xAI · Groq · Ollama · …${NC}"
         echo ""
-        # Prefer WW_PROVIDER if already set; otherwise always ask before paste
+        # Prefer WW_PROVIDER if already set; otherwise always ask provider before paste
         USER_PROVIDER=$(ww_normalize_provider "${WW_PROVIDER:-}")
         if [ -z "$USER_PROVIDER" ]; then
             USER_PROVIDER=$(ww_ask_provider_tty)
@@ -829,7 +1031,23 @@ if ! ww_has_llm_key "$ENV_FILE"; then
         if [ -z "$USER_PROVIDER" ]; then
             echo ""
             warn "No provider selected — chat needs a key first"
-            echo -e "  ${DIM}  Later: ww key set <key> [deepseek|openai|anthropic|openrouter]${NC}"
+            echo -e "  ${DIM}  Later: ww key set <key> [provider]  (see ww key)${NC}"
+        elif [ "$USER_PROVIDER" = "ollama" ]; then
+            echo ""
+            echo -e "  ${BOLD}Ollama (local) — API key optional${NC}"
+            echo -e "  ${DIM}  Press Enter for no key, or paste OLLAMA_API_KEY if set${NC}"
+            printf "  ${CYAN}→ ${NC}"
+            read -r USER_KEY || USER_KEY=""
+            USER_KEY=$(echo "$USER_KEY" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [ -z "$USER_KEY" ]; then
+                USER_KEY="none"
+            fi
+            echo ""
+            if ww_save_llm_key "$USER_KEY" "ollama" "$ENV_FILE"; then
+                ok "Ollama ready — change anytime: ww key set <key> [provider]"
+            else
+                warn "Ollama not configured — later: ww key set none ollama"
+            fi
         else
             echo ""
             echo -e "  ${BOLD}Paste your API key:${NC}"
@@ -847,7 +1065,7 @@ if ! ww_has_llm_key "$ENV_FILE"; then
             else
                 echo ""
                 warn "No key entered — chat needs a key first"
-                echo -e "  ${DIM}  Later: ww key set <key> [deepseek|openai|anthropic|openrouter]${NC}"
+                echo -e "  ${DIM}  Later: ww key set <key> [provider]  (see ww key)${NC}"
             fi
         fi
     else
@@ -855,9 +1073,10 @@ if ! ww_has_llm_key "$ENV_FILE"; then
         echo ""
         warn "No LLM API key configured (non-interactive install)"
         echo "  Set a key, then chat:"
-        echo "    ww key set <key> [deepseek|openai|anthropic|openrouter|custom]"
+        echo "    ww key set <key> [provider]"
         echo "    ww"
-        echo "  Providers: DeepSeek · OpenAI · Anthropic · OpenRouter · custom"
+        echo "  Providers: $WW_PROVIDER_IDS"
+        echo "  Local Ollama: ww key set none ollama"
         echo ""
         ok "Install complete"
         exit 0

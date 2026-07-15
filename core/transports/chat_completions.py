@@ -31,6 +31,8 @@ class ChatCompletionsTransport(ProviderTransport):
         default_base_url: str,
         models: List[str] = None,
         extra_headers: Dict[str, str] = None,
+        allow_missing_key: bool = False,
+        api_key_env_fallbacks: Optional[List[str]] = None,
     ):
         self._name = name
         self._api_key_env = api_key_env
@@ -38,13 +40,47 @@ class ChatCompletionsTransport(ProviderTransport):
         self._default_base_url = default_base_url
         self._models = models or []
         self._extra_headers = extra_headers or {}
+        self._allow_missing_key = allow_missing_key
+        self._api_key_env_fallbacks = list(api_key_env_fallbacks or [])
 
     @property
     def name(self) -> str:
         return self._name
 
+    @property
+    def allow_missing_key(self) -> bool:
+        return self._allow_missing_key
+
     def get_api_key(self) -> str:
-        return os.environ.get(self._api_key_env, "")
+        """Return configured API key, or a local placeholder when allowed.
+
+        For ollama (allow_missing_key), returns a non-empty placeholder only when
+        the user has opted in (key set, base URL override, WW_USE_OLLAMA, etc.).
+        """
+        key = (os.environ.get(self._api_key_env, "") or "").strip()
+        if not key and self._api_key_env_fallbacks:
+            for env_name in self._api_key_env_fallbacks:
+                key = (os.environ.get(env_name, "") or "").strip()
+                if key:
+                    break
+        if key:
+            return key
+        if self._allow_missing_key and self._local_opted_in():
+            # Local servers (Ollama) often ignore Authorization; keep Bearer non-empty.
+            return "ollama"
+        return ""
+
+    def _local_opted_in(self) -> bool:
+        """True when local / allow_missing_key provider is intentionally enabled."""
+        if (os.environ.get(self._base_url_env, "") or "").strip():
+            return True
+        if self._name == "ollama":
+            flag = (os.environ.get("WW_USE_OLLAMA", "") or "").strip().lower()
+            if flag in ("1", "true", "yes", "on"):
+                return True
+            if (os.environ.get("OLLAMA_HOST", "") or "").strip():
+                return True
+        return False
 
     def get_base_url(self) -> str:
         return os.environ.get(self._base_url_env, self._default_base_url).rstrip("/")
@@ -65,7 +101,10 @@ class ChatCompletionsTransport(ProviderTransport):
     ) -> NormalizedResponse:
         api_key = self.get_api_key()
         if not api_key:
-            raise RuntimeError(f"[{self._name}] No API key (env: {self._api_key_env})")
+            envs = self._api_key_env
+            if self._api_key_env_fallbacks:
+                envs = envs + " / " + " / ".join(self._api_key_env_fallbacks)
+            raise RuntimeError(f"[{self._name}] No API key (env: {envs})")
 
         base_url = self.get_base_url()
         endpoint = f"{base_url}/chat/completions"
@@ -169,15 +208,9 @@ class ChatCompletionsTransport(ProviderTransport):
         )
 
     def _resolve_model(self, model: str) -> str:
-        """Map WW model name to API model name"""
-        if self._name == "deepseek":
-            if "flash" in model.lower() or "pro" in model.lower():
-                return "deepseek-v4-flash"
-            if "reasoner" in model.lower():
-                return "deepseek-reasoner"
-            if "/" in model:
-                return "deepseek-v4-flash"
-        return model
+        """Map WW model name to API model name (lazy import avoids circular deps)."""
+        from .registry import resolve_api_model
+        return resolve_api_model(model, self._name)
 
     def _clean_markdown(self, text: str) -> str:
         """Remove markdown code fences from output"""
@@ -224,6 +257,7 @@ class ChatCompletionsTransport(ProviderTransport):
         parsed = urlparse(base_url)
         host = parsed.netloc
         path = parsed.path.rstrip("/") + "/chat/completions"
+        use_https = parsed.scheme != "http"
 
         api_model = self._resolve_model(model)
 
@@ -246,9 +280,14 @@ class ChatCompletionsTransport(ProviderTransport):
             "Authorization": f"Bearer {api_key}",
             "Accept": "text/event-stream",
         }
+        headers.update(self._extra_headers)
 
-        ctx = ssl.create_default_context()
-        conn = http.client.HTTPSConnection(host, context=ctx, timeout=120)
+        if use_https:
+            ctx = ssl.create_default_context()
+            conn = http.client.HTTPSConnection(host, context=ctx, timeout=120)
+        else:
+            # Local Ollama / custom HTTP endpoints
+            conn = http.client.HTTPConnection(host, timeout=120)
         try:
             conn.request("POST", path, body=data, headers=headers)
             resp = conn.getresponse()

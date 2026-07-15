@@ -248,11 +248,40 @@ def check_llm_api_key() -> Optional[str]:
         "your-key-here",
         "sk-xxx",
         "changeme",
+        "placeholder",
+        "none",
+        "null",
     }
-    for provider in ("DEEPSEEK", "OPENAI", "ANTHROPIC", "OPENROUTER", "CUSTOM"):
-        val = (os.environ.get(f"{provider}_API_KEY") or "").strip()
+    # (env_var, provider_id) — order matches failover preference roughly
+    _key_vars = (
+        ("DEEPSEEK_API_KEY", "deepseek"),
+        ("OPENAI_API_KEY", "openai"),
+        ("ANTHROPIC_API_KEY", "anthropic"),
+        ("OPENROUTER_API_KEY", "openrouter"),
+        ("GEMINI_API_KEY", "gemini"),
+        ("GOOGLE_API_KEY", "gemini"),
+        ("XAI_API_KEY", "xai"),
+        ("GROQ_API_KEY", "groq"),
+        ("FIREWORKS_API_KEY", "fireworks"),
+        ("TOGETHER_API_KEY", "together"),
+        ("MISTRAL_API_KEY", "mistral"),
+        ("MOONSHOT_API_KEY", "moonshot"),
+        ("DEEPINFRA_API_KEY", "deepinfra"),
+        ("OLLAMA_API_KEY", "ollama"),
+        ("CUSTOM_API_KEY", "custom"),
+    )
+    for env_var, provider in _key_vars:
+        val = (os.environ.get(env_var) or "").strip()
         if val and val not in _placeholders:
-            return provider.lower()
+            return provider
+    # Local Ollama without a key
+    flag = (os.environ.get("WW_USE_OLLAMA") or "").strip().lower()
+    if flag in ("1", "true", "yes", "on"):
+        return "ollama"
+    if (os.environ.get("OLLAMA_BASE_URL") or "").strip() or (
+        os.environ.get("OLLAMA_HOST") or ""
+    ).strip():
+        return "ollama"
     return None
 
 
@@ -361,14 +390,16 @@ def cmd_init(args):
     provider = config.get("provider", "")
     api_key = os.environ.get(f"{provider.upper()}_API_KEY" if provider else "DEEPSEEK_API_KEY", "")
 
-    if not api_key:
+    llm_found = check_llm_api_key()
+    if not api_key and not llm_found:
         print(f"\n  {Colors.yellow('⚠')} No API key detected")
-        print("  Edit your .env to add at least one provider:")
-        print(f"    {Colors.dim('nano ' + os.path.join(ww_home, '.env'))}")
-        print("  Supported: DEEPSEEK_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY")
+        print("  Edit your .env to add at least one provider, or:")
+        print(f"    {Colors.cyan('ww key set <key> [provider]')}")
+        print(f"  See .env.example / {Colors.dim('ww key')} for the full provider list.")
         print()
     else:
-        print(f"  {Colors.green('✓')} API key: {provider.upper()} configured")
+        shown = (provider or llm_found or "deepseek").upper()
+        print(f"  {Colors.green('✓')} API key: {shown} configured")
 
     # 6. Test connection if key present
     if api_key:
@@ -695,15 +726,23 @@ def cmd_model(args):
 
     if args.name:
         config["model"] = args.name
-        model_lower = args.name.lower()
-        if model_lower.startswith("claude"):
-            config["provider"] = "anthropic"
-        elif model_lower.startswith(("gpt", "o1", "o3")):
-            config["provider"] = "openai"
-        elif model_lower.startswith("deepseek"):
-            config["provider"] = "deepseek"
-        elif "/" in model_lower:
-            config["provider"] = "openrouter"
+        try:
+            from core.transports.registry import infer_provider
+            config["provider"] = infer_provider(args.name)
+        except Exception:
+            model_lower = args.name.lower()
+            if model_lower.startswith("claude"):
+                config["provider"] = "anthropic"
+            elif model_lower.startswith(("gpt", "o1", "o3")):
+                config["provider"] = "openai"
+            elif model_lower.startswith("deepseek"):
+                config["provider"] = "deepseek"
+            elif model_lower.startswith("gemini"):
+                config["provider"] = "gemini"
+            elif model_lower.startswith("grok"):
+                config["provider"] = "xai"
+            elif "/" in model_lower:
+                config["provider"] = "openrouter"
         save_config(config)
 
         # Try API — switch model on running server

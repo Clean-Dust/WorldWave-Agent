@@ -13,7 +13,33 @@ from .anthropic import AnthropicTransport
 
 
 # ── default Failover chain ──
-FAILOVER_CHAIN = ["deepseek", "openrouter", "openai", "anthropic"]
+# Only providers with a configured key (or opted-in local ollama) are used.
+FAILOVER_CHAIN = [
+    "deepseek",
+    "openrouter",
+    "openai",
+    "anthropic",
+    "gemini",
+    "xai",
+    "groq",
+    "fireworks",
+    "together",
+    "mistral",
+    "moonshot",
+    "deepinfra",
+    "ollama",
+    "custom",
+]
+
+# Native OpenAI-compat providers that accept bare model ids (strip provider/ prefix).
+_STRIP_PREFIX_PROVIDERS = frozenset({
+    "gemini", "xai", "groq", "fireworks", "together", "mistral",
+    "ollama", "moonshot", "deepinfra", "custom", "openai", "anthropic",
+})
+
+# TODO: OAuth / subscription providers (Claude Max OAuth, OpenAI Codex device
+# code, GitHub Copilot, Nous Portal, Vertex ADC) — out of scope for the
+# first-class API-key / local path. Register here when implemented.
 
 
 def default_transports() -> Dict[str, ProviderTransport]:
@@ -52,6 +78,79 @@ def default_transports() -> Dict[str, ProviderTransport]:
             models=["gpt-4o", "gpt-4o-mini", "o1", "o3-mini"],
         ),
         "anthropic": AnthropicTransport(),
+        # Google AI Studio OpenAI-compat:
+        # https://generativelanguage.googleapis.com/v1beta/openai/
+        "gemini": ChatCompletionsTransport(
+            name="gemini",
+            api_key_env="GEMINI_API_KEY",
+            base_url_env="GEMINI_BASE_URL",
+            default_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            models=["gemini-2.0-flash", "gemini-2.5-flash", "gemini-2.5-pro"],
+            api_key_env_fallbacks=["GOOGLE_API_KEY"],
+        ),
+        # xAI Grok — OpenAI-compat at https://api.x.ai/v1
+        "xai": ChatCompletionsTransport(
+            name="xai",
+            api_key_env="XAI_API_KEY",
+            base_url_env="XAI_BASE_URL",
+            default_base_url="https://api.x.ai/v1",
+            models=["grok-3", "grok-3-mini", "grok-2-latest"],
+        ),
+        "groq": ChatCompletionsTransport(
+            name="groq",
+            api_key_env="GROQ_API_KEY",
+            base_url_env="GROQ_BASE_URL",
+            default_base_url="https://api.groq.com/openai/v1",
+            models=["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+        ),
+        # Fireworks inference OpenAI-compat:
+        # https://api.fireworks.ai/inference/v1
+        "fireworks": ChatCompletionsTransport(
+            name="fireworks",
+            api_key_env="FIREWORKS_API_KEY",
+            base_url_env="FIREWORKS_BASE_URL",
+            default_base_url="https://api.fireworks.ai/inference/v1",
+            models=["accounts/fireworks/models/llama-v3p1-70b-instruct"],
+        ),
+        "together": ChatCompletionsTransport(
+            name="together",
+            api_key_env="TOGETHER_API_KEY",
+            base_url_env="TOGETHER_BASE_URL",
+            default_base_url="https://api.together.xyz/v1",
+            models=["meta-llama/Meta-Llama-3.1-8B-Instruct-Turbo"],
+        ),
+        "mistral": ChatCompletionsTransport(
+            name="mistral",
+            api_key_env="MISTRAL_API_KEY",
+            base_url_env="MISTRAL_BASE_URL",
+            default_base_url="https://api.mistral.ai/v1",
+            models=["mistral-small-latest", "mistral-large-latest", "codestral-latest"],
+        ),
+        # Local Ollama OpenAI-compat (key optional). Available only when
+        # OLLAMA_API_KEY / OLLAMA_BASE_URL / OLLAMA_HOST / WW_USE_OLLAMA is set.
+        "ollama": ChatCompletionsTransport(
+            name="ollama",
+            api_key_env="OLLAMA_API_KEY",
+            base_url_env="OLLAMA_BASE_URL",
+            default_base_url="http://127.0.0.1:11434/v1",
+            models=["llama3.2", "llama3.1", "qwen2.5", "mistral"],
+            allow_missing_key=True,
+        ),
+        # Moonshot (Kimi) — https://api.moonshot.cn/v1
+        "moonshot": ChatCompletionsTransport(
+            name="moonshot",
+            api_key_env="MOONSHOT_API_KEY",
+            base_url_env="MOONSHOT_BASE_URL",
+            default_base_url="https://api.moonshot.cn/v1",
+            models=["moonshot-v1-8k", "moonshot-v1-32k", "kimi-latest"],
+        ),
+        "deepinfra": ChatCompletionsTransport(
+            name="deepinfra",
+            api_key_env="DEEPINFRA_API_KEY",
+            base_url_env="DEEPINFRA_BASE_URL",
+            default_base_url="https://api.deepinfra.com/v1/openai",
+            models=["meta-llama/Meta-Llama-3.1-8B-Instruct"],
+        ),
         "custom": ChatCompletionsTransport(
             name="custom",
             api_key_env="CUSTOM_API_KEY",
@@ -64,9 +163,15 @@ def default_transports() -> Dict[str, ProviderTransport]:
 
 def infer_provider(model: str) -> str:
     """infer provider based on model name"""
-    model_lower = model.lower()
+    model_lower = (model or "").lower().strip()
+    if not model_lower:
+        return "deepseek"
 
-    # OpenRouter style: provider/model
+    # ollama:model bare form
+    if model_lower.startswith("ollama:"):
+        return "ollama"
+
+    # Prefixed / multi-segment ids
     if "/" in model_lower:
         if model_lower.startswith("deepseek/"):
             return "deepseek"
@@ -76,37 +181,90 @@ def infer_provider(model: str) -> str:
             return "anthropic"
         if model_lower.startswith("custom/"):
             return "custom"
+        # Native Gemini prefix (not OpenRouter's google/gemini-*)
+        if model_lower.startswith("gemini/"):
+            return "gemini"
+        if model_lower.startswith("xai/"):
+            return "xai"
+        if model_lower.startswith("groq/"):
+            return "groq"
+        if model_lower.startswith("fireworks/") or model_lower.startswith("accounts/fireworks"):
+            return "fireworks"
+        if model_lower.startswith("mistral/"):
+            return "mistral"
+        if model_lower.startswith("moonshot/") or model_lower.startswith("kimi/"):
+            return "moonshot"
+        if model_lower.startswith("ollama/"):
+            return "ollama"
+        if model_lower.startswith("together/"):
+            return "together"
+        if model_lower.startswith("deepinfra/"):
+            return "deepinfra"
+        # google/gemini-* and other third-party multi-segment → OpenRouter
         return "openrouter"
-    if model_lower in ("deepseek-chat", "deepseek-reasoner"):
+
+    # Bare model names
+    if model_lower in ("deepseek-chat", "deepseek-reasoner") or model_lower.startswith("deepseek"):
         return "deepseek"
     if model_lower.startswith("claude"):
         return "anthropic"
     if model_lower.startswith(("gpt", "o1", "o3")):
         return "openai"
+    # bare gemini-* → native Gemini (not OpenRouter)
     if model_lower.startswith("gemini"):
-        return "openrouter"
+        return "gemini"
+    if model_lower.startswith("grok"):
+        return "xai"
+    if model_lower.startswith("mistral-") or model_lower in (
+        "mistral-small-latest", "mistral-large-latest", "codestral-latest",
+    ):
+        return "mistral"
+    if model_lower.startswith("kimi") or model_lower.startswith("moonshot"):
+        return "moonshot"
 
     return "deepseek"
 
 
 def resolve_api_model(model: str, provider: str) -> str:
-    """will convert WW model name to provider accepted API model name"""
+    """Convert WW model name to provider-accepted API model name."""
+    if not model:
+        return model
+
     if provider == "deepseek":
-        if "flash" in model.lower() or "pro" in model.lower():
-            return "deepseek-chat"
-        if "reasoner" in model.lower():
+        # Keep existing API mapping used by chat/completions transport.
+        lower = model.lower()
+        if "reasoner" in lower:
             return "deepseek-reasoner"
+        if "flash" in lower or "pro" in lower:
+            return "deepseek-v4-flash"
         if "/" in model:
-            return "deepseek-chat"
+            return "deepseek-v4-flash"
+        return model
+
+    if provider == "ollama":
+        if model.lower().startswith("ollama/"):
+            return model[7:]
+        if model.lower().startswith("ollama:"):
+            return model.split(":", 1)[1]
+        return model
+
     if provider == "custom":
         # Strip custom/ prefix: custom/llama3.1-8b → llama3.1-8b
         if model.startswith("custom/"):
             return model[7:]
+        return model
+
+    if provider in _STRIP_PREFIX_PROVIDERS:
+        prefix = f"{provider}/"
+        if model.lower().startswith(prefix):
+            return model[len(prefix):]
+        return model
+
     return model
 
 
 def find_available_providers(transports: Dict[str, ProviderTransport]) -> List[str]:
-    """list providers with available API key"""
+    """list providers with available API key (or opted-in local ollama)."""
     available = []
     for name, transport in transports.items():
         if transport.get_api_key():

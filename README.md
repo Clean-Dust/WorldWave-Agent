@@ -32,7 +32,7 @@ Linux, macOS, WSL2 (Python 3.10+):
 bash <(curl -fsSL https://raw.githubusercontent.com/Clean-Dust/worldwave/main/deploy.sh)
 ```
 
-One line. The installer asks for an LLM API key (DeepSeek · OpenAI · Anthropic · OpenRouter), then you chat — **install → key → talk**.
+One line. The installer asks for an LLM API key (DeepSeek · OpenAI · Anthropic · OpenRouter · Gemini · xAI · Groq · Ollama · …), then you chat — **install → key → talk**.
 
 <details>
 <summary><b>Advanced — manual install, server mode, platforms, extras</b></summary>
@@ -47,7 +47,9 @@ cp .env.example .env   # set any provider key (see .env.example)
 ww run "Hello, what can you do?"
 ```
 
-**Change / set key later** (if install skipped the prompt): `ww key set <key> [deepseek|openai|anthropic|openrouter]`
+**Providers:** DeepSeek, OpenAI, Anthropic, OpenRouter, Gemini, xAI, Groq, Fireworks, Together, Mistral, Moonshot, DeepInfra, Ollama, custom OpenAI-compatible.
+
+**Change / set key later** (if install skipped the prompt): `ww key set <key> [provider]` — see `ww key` for the full id list. Local Ollama without a key: `ww key set none ollama`.
 
 **Server mode** (API + Web UI + Telegram gateway)
 
@@ -210,7 +212,7 @@ Linux、macOS、WSL2（Python 3.10+）：
 bash <(curl -fsSL https://raw.githubusercontent.com/Clean-Dust/worldwave/main/deploy.sh)
 ```
 
-一行搞定。安装时会要 LLM API key（DeepSeek · OpenAI · Anthropic · OpenRouter），然后直接聊天 — **安装 → key → 聊天**。
+一行搞定。安装时会要 LLM API key（DeepSeek · OpenAI · Anthropic · OpenRouter · Gemini · xAI · Groq · Ollama · …），然后直接聊天 — **安装 → key → 聊天**。
 
 <details>
 <summary><b>高级 — 手动安装、服务器模式、平台与可选依赖</b></summary>
@@ -225,7 +227,9 @@ cp .env.example .env   # 写入任意厂商 LLM key（见 .env.example）
 ww run "你好，你能做什么？"
 ```
 
-**之后改 / 补 key**（安装时跳过提示时）：`ww key set <key> [deepseek|openai|anthropic|openrouter]`
+**Providers：** DeepSeek、OpenAI、Anthropic、OpenRouter、Gemini、xAI、Groq、Fireworks、Together、Mistral、Moonshot、DeepInfra、Ollama、自定义 OpenAI 兼容端点。
+
+**之后改 / 补 key**（安装时跳过提示时）：`ww key set <key> [provider]`（完整列表见 `ww key`）。本地 Ollama 可无 key：`ww key set none ollama`。
 
 **服务器模式**（API + Web UI + Telegram 网关）
 
