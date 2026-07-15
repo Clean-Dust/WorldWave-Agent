@@ -441,9 +441,12 @@ class Worldwave:
             "CRITICAL RULES:\n"
             "1. For greetings, small talk, or simple questions — reply TEXT ONLY, no tools.\n"
             "2. For factual questions about your own identity/capabilities — reply TEXT ONLY.\n"
-            "3. Only use tools when the user explicitly asks you to DO something\n"
+            "3. If the user message includes [Entity Context] with Known facts, answer\n"
+            "   questions about those facts from that context using TEXT ONLY — do not\n"
+            "   call tools for simple working-memory / recall questions.\n"
+            "4. Only use tools when the user explicitly asks you to DO something\n"
             "   (run a command, read a file, search the web, send a message, etc).\n"
-            "4. If you're unsure, reply with text rather than calling a tool.\n\n"
+            "5. If you're unsure, reply with text rather than calling a tool.\n\n"
             "Available tools (use ONLY when user explicitly requests an action):\n" + tool_descriptions
         )
         
@@ -535,7 +538,7 @@ class Worldwave:
             a.get("result", {}).get("success", False) for a in actions
         )
 
-        return {
+        draft = {
             "status": "completed",
             "spirals_completed": 0,
             "results": [{
@@ -553,6 +556,19 @@ class Worldwave:
             "summary": f"Reflex arc: {len(tool_calls)} tool calls, {'success' if success else 'partial failure'}",
             "reflex": True,
         }
+
+        # E4: tool-only reflex with no user-visible text (e.g. empty recall_mine)
+        # must not return a "Reflex arc: …" shell as the product reply.
+        # Fall through to full spiral so the agent can answer from entity context.
+        try:
+            from core.public_reply import extract_user_response
+            if not extract_user_response(draft):
+                self._log("## Reflex arc: tools ran but no user-visible reply — fall through")
+                return None
+        except Exception:
+            pass
+
+        return draft
 
     def run(self, goal: str, max_spirals: int = 3, image_path: str = "", reasoning_effort: str = "",
             on_spiral_progress: Optional[Callable[[str, str, int], None]] = None,

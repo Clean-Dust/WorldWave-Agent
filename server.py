@@ -464,36 +464,17 @@ class WorldwaveServer:
                 platform=platform,
                 conversation_window=conversation_window,
             )
-            status = result.get("status", "?")
 
-            # Extract the actual response — check reflex arc first, then spiral
-            response_text = ""
-            spiral_results = result.get("results", [])
-            if spiral_results:
-                last_spiral = spiral_results[-1]
-                actions = last_spiral.get("actions", [])
-                for a in reversed(actions):
-                    if a.get("tool") in ("reflex_text", "respond"):
-                        response_text = a.get("result", {}).get("output", "")
-                        break
-                if not response_text and result.get("reflex"):
-                    parts = []
-                    for a in actions:
-                        out = (
-                            a.get("result", {}).get("output", "")
-                            or a.get("result", {}).get("error", "")
-                        )
-                        if out:
-                            parts.append(str(out))
-                    if parts:
-                        response_text = "\n".join(parts)
-                if not response_text:
-                    eval_result = last_spiral.get("evaluation", {})
-                    response_text = (
-                        eval_result.get("summary", "")
-                        or eval_result.get("response", "")
-                        or eval_result.get("reason", "")
-                    )
+            # Prefer server-attached clean ``response``, then shared extractor
+            from core.public_reply import extract_user_response
+
+            response_text = (
+                result.get("response")
+                if isinstance(result.get("response"), str)
+                else ""
+            )
+            if not response_text or self._public_reply(response_text, fallback="") == "":
+                response_text = extract_user_response(result)
 
             if response_text:
                 return self._public_reply(str(response_text)[:1500], fallback="Done.")[:1500]
@@ -516,29 +497,19 @@ class WorldwaveServer:
     @staticmethod
     def _public_reply(text: str, fallback: str = "") -> str:
         """Strip internal mechanism strings before showing them to end users."""
+        from core.public_reply import public_reply
+
+        cleaned = public_reply(text, fallback="")
+        if cleaned:
+            return cleaned
+        # Preserve gateway fallbacks for empty/internal text
         if not text:
             return fallback
         t = str(text).strip()
-        bad_prefixes = (
-            "Reflex arc:",
-            "status=",
-            "error:",
-            "[completed]",
-            "[failed]",
-            "[interrupted]",
-            "WW not initialized",
-            "loop.run",
-            "## ",
-        )
         low = t.lower()
-        if any(t.startswith(p) for p in bad_prefixes):
-            return fallback or "Done."
-        if "reflex arc:" in low and len(t) < 80:
-            return fallback or "Done."
-        # Avoid leaking raw tool stack traces
         if "traceback (most recent call last)" in low:
             return fallback or "Something went wrong. Please try again."
-        return t
+        return fallback or "Done."
 
     def _get_sandbox(self):
         """Lazy load CodeSandbox. """
@@ -615,9 +586,17 @@ class WorldwaveServer:
                     reasoning_effort=reasoning_effort,
                     conversation_window=window,
                 )
-                # Always surface entity_id on the result for clients/CLI
+                # Always surface entity_id + clean user-facing response for clients
                 if isinstance(self._last_result, dict):
+                    from core.public_reply import extract_user_response
+
                     self._last_result["entity_id"] = entity_id or ""
+                    # Institutional E2: every /ww/run client can prefer ``response``
+                    # without re-implementing leak filters. Debug fields (summary,
+                    # evaluation.reason) may still say "Reflex arc" — OK if not chat.
+                    self._last_result["response"] = extract_user_response(
+                        self._last_result
+                    )
 
                 # Persist entity state after task (set_entity + record_interaction
                 # already save; re-save ensures dirty in-memory edits land on disk)

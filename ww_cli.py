@@ -441,106 +441,11 @@ def cmd_init(args):
     print()
 
 
-def _is_internal_response_text(text: str) -> bool:
-    """True if text looks like an internal status leak, not user-facing content."""
-    if not text or not isinstance(text, str):
-        return True
-    s = text.strip()
-    if not s:
-        return True
-    lower = s.lower()
-    if "reflex arc" in lower:
-        return True
-    if "direct response" in lower:
-        return True
-    if lower.startswith("error:"):
-        return True
-    if "traceback" in lower:
-        return True
-    return False
-
-
-def extract_user_response(result: dict) -> str:
-    """Best user-facing reply text from a /ww/run result dict.
-
-    Priority:
-      1. Top-level response/reply/output/message (future-proof)
-      2. evaluation.response / evaluation.summary (if not internal)
-      3. reflex_text / respond action result.output|text|response
-      4. Any successful action result with output/text/response
-    Never returns internal leaks (Reflex arc, direct response, traceback, …).
-    Last resort: empty string.
-    """
-    if not isinstance(result, dict):
-        return ""
-
-    def _clean(val) -> str:
-        if not isinstance(val, str):
-            return ""
-        s = val.strip()
-        if not s or _is_internal_response_text(s):
-            return ""
-        return s
-
-    # Optional top-level fields if the server adds them later
-    for key in ("response", "reply", "output", "message"):
-        got = _clean(result.get(key))
-        if got:
-            return got
-
-    spiral_results = result.get("results") or []
-    if not isinstance(spiral_results, list):
-        spiral_results = []
-
-    # evaluation.response / evaluation.summary (skip internal)
-    for r in spiral_results:
-        if not isinstance(r, dict):
-            continue
-        ev = r.get("evaluation") or {}
-        if not isinstance(ev, dict):
-            continue
-        for key in ("response", "summary"):
-            got = _clean(ev.get(key))
-            if got:
-                return got
-
-    # Prefer reflex_text / respond-style tools
-    _reply_tools = frozenset({"reflex_text", "respond", "reply", "final_answer"})
-    for r in spiral_results:
-        if not isinstance(r, dict):
-            continue
-        for a in (r.get("actions") or []):
-            if not isinstance(a, dict):
-                continue
-            tool = str(a.get("tool") or "").lower()
-            if tool not in _reply_tools:
-                continue
-            res = a.get("result") or {}
-            if not isinstance(res, dict):
-                continue
-            for key in ("output", "text", "response"):
-                got = _clean(res.get(key))
-                if got:
-                    return got
-
-    # Walk any successful action for output/text/response
-    for r in spiral_results:
-        if not isinstance(r, dict):
-            continue
-        for a in (r.get("actions") or []):
-            if not isinstance(a, dict):
-                continue
-            res = a.get("result") or {}
-            if not isinstance(res, dict):
-                continue
-            if res.get("success") is False:
-                continue
-            for key in ("output", "text", "response"):
-                got = _clean(res.get(key))
-                if got:
-                    return got
-
-    return ""
+# Shared extractor — single source of truth with server + gateway
+from core.public_reply import (  # noqa: E402
+    extract_user_response,
+    is_internal_response_text as _is_internal_response_text,
+)
 
 
 def cmd_run(args):

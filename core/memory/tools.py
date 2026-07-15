@@ -84,10 +84,12 @@ class MemoryTools:
             )
 
         return {
+            "success": True,
             "status": "stored",
             "key": key,
             "previous": previous,
             "timestamp": time.time(),
+            "output": f"Remembered {key}: {value}",
         }
 
     # ── forget ───────────────────────────────────────────────────
@@ -129,10 +131,12 @@ class MemoryTools:
                  self._entity_id[:12], key, was)
 
         return {
+            "success": True,
             "status": "forgotten",
             "key": key,
             "was": was,
             "timestamp": time.time(),
+            "output": f"Forgot {key}" + (f" (was: {was})" if was else ""),
         }
 
     # ── recall_mine ──────────────────────────────────────────────
@@ -159,10 +163,19 @@ class MemoryTools:
 
         # Limit
         items = list(facts.items())[:limit]
+        facts_out = dict(items)
+        # Human-readable output so extract_user_response / chat surfaces
+        # can show facts without a second LLM turn (E4 continuity).
+        if facts_out:
+            output = "\n".join(f"{k}: {v}" for k, v in facts_out.items())
+        else:
+            output = ""
 
         return {
-            "facts": dict(items),
+            "success": True,
+            "facts": facts_out,
             "total": len(items),
+            "output": output,
         }
 
     # ── Internal ─────────────────────────────────────────────────
