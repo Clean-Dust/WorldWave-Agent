@@ -155,7 +155,9 @@ def compose(w: int, h: int, out_path: Path) -> None:
     # total text column height ≈ title_layer + gap + sub block
     text_block_h = title_layer.height + title_to_sub + sub_block_h
     title_y = band_cy - text_block_h // 2
-    title_y = max(int(h * 0.06), min(title_y, h - text_block_h - int(h * 0.06)))
+    # Nudge entire type block down 5% of canvas height
+    title_y += int(h * 0.05)
+    title_y = max(int(h * 0.06), min(title_y, h - text_block_h - int(h * 0.04)))
 
     bg.paste(title_layer, (title_x, title_y), title_layer)
 
