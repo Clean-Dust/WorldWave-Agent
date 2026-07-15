@@ -2,7 +2,7 @@
 """WW Memory prove harness — mechanism + product modes.
 
 Modes:
-  --mechanism   L0 unit tests + L1 capacity/GC/promote + B3/B4 WM + B5 tiebreak + B6 recency
+  --mechanism   L0 + L1 capacity/GC/promote + B3–B7 WM (kind/labels, tiebreak, recency)
   --product     A1–A4 natural write/read on live server (no harness cheating)
   --all         mechanism then product (default if no flags)
 
@@ -889,6 +889,128 @@ def run_b6_wm_recency(report: Report) -> None:
         shutil.rmtree(td, ignore_errors=True)
 
 
+def run_b7_wm_label_order(report: Report) -> None:
+    """B7: closed four labels — constraint > commitment > outcome > rationale under capacity."""
+    from unittest.mock import MagicMock
+
+    from core.entity_state import (
+        EntityStateManager,
+        ROLE_WEIGHT,
+        WM_KINDS,
+        normalize_wm_kind,
+        wm_eviction_score,
+        wm_label_zh,
+    )
+
+    td = tempfile.mkdtemp(prefix="ww-mem-b7-")
+    prev = {
+        k: os.environ.get(k)
+        for k in ("WW_WORKING_MEMORY_CAPACITY", "WW_WM_RECENCY_ENABLED")
+    }
+    try:
+        os.environ["WW_WORKING_MEMORY_CAPACITY"] = "3"
+        os.environ["WW_WM_RECENCY_ENABLED"] = "0"  # isolate label weights
+        cfg = MagicMock()
+        cfg.get = MagicMock(return_value=None)
+        cfg.expand_path = MagicMock(side_effect=lambda p: os.path.expanduser(p))
+        esm = EntityStateManager(config=cfg, data_dir=td)
+        esm.working_memory_capacity = 3
+
+        kinds_ok = WM_KINDS == frozenset(
+            {"constraint", "commitment", "outcome", "rationale"}
+        )
+        weight_ok = (
+            ROLE_WEIGHT["constraint"]
+            > ROLE_WEIGHT["commitment"]
+            > ROLE_WEIGHT["outcome"]
+            > ROLE_WEIGHT["rationale"]
+            and abs(ROLE_WEIGHT["constraint"] - 4.0) < 1e-9
+            and abs(ROLE_WEIGHT["commitment"] - 3.0) < 1e-9
+            and abs(ROLE_WEIGHT["outcome"] - 2.0) < 1e-9
+            and abs(ROLE_WEIGHT["rationale"] - 1.0) < 1e-9
+        )
+        score_ok = (
+            wm_eviction_score("constraint", 0)
+            > wm_eviction_score("commitment", 0)
+            > wm_eviction_score("outcome", 0)
+            > wm_eviction_score("rationale", 0)
+        )
+        norm_ok = (
+            normalize_wm_kind("constraint") == "constraint"
+            and normalize_wm_kind("nope") == "outcome"
+        )
+        zh_ok = (
+            wm_label_zh("constraint") == "约束"
+            and wm_label_zh("commitment") == "承诺"
+            and wm_label_zh("outcome") == "结果"
+            and wm_label_zh("rationale") == "理由"
+        )
+
+        # Capacity 3: write all four (same access) → rationale squeezed first
+        eid = "ent_b7"
+        esm.set_working_memory(eid, "rule", "never change netplan", kind="constraint")
+        esm.set_working_memory(eid, "plan", "use docker", kind="commitment")
+        esm.set_working_memory(eid, "fact", "tests passed", kind="outcome")
+        esm.set_working_memory(eid, "why", "chose flash", kind="rationale")
+        st = esm.get(eid)
+        rat_gone = "why" not in st.working_memory
+        others_kept = (
+            "rule" in st.working_memory
+            and "plan" in st.working_memory
+            and "fact" in st.working_memory
+            and len(st.working_memory) == 3
+        )
+
+        # Capacity 1: constraint beats commitment (same access/age isolation)
+        esm.working_memory_capacity = 1
+        eid2 = "ent_b7_c"
+        esm.set_working_memory(eid2, "cmt", "next step", kind="commitment")
+        esm.set_working_memory(eid2, "rule2", "no sudo", kind="constraint")
+        st2 = esm.get(eid2)
+        c_beats_cmt = "rule2" in st2.working_memory and "cmt" not in st2.working_memory
+
+        # Inject uses Chinese brackets
+        eid3 = "ent_b7_inj"
+        esm.working_memory_capacity = 4
+        esm.set_working_memory(eid3, "no_netplan", "never change netplan", kind="constraint")
+        inj = esm.get_context_for(eid3)
+        inject_ok = "- [约束] no_netplan: never change netplan" in inj and "[constraint]" not in inj
+
+        ok = (
+            kinds_ok
+            and weight_ok
+            and score_ok
+            and norm_ok
+            and zh_ok
+            and rat_gone
+            and others_kept
+            and c_beats_cmt
+            and inject_ok
+        )
+        report.add(
+            "B7 WM label order constraint>commitment>outcome>rationale",
+            ok,
+            f"kinds={kinds_ok} weight={weight_ok} score={score_ok} norm={norm_ok} "
+            f"zh={zh_ok} rat_gone={rat_gone} kept={others_kept} c>cmt={c_beats_cmt} "
+            f"inject={inject_ok}",
+            "EntityStateManager WM labels",
+        )
+    except Exception as e:
+        report.add(
+            "B7 WM label order constraint>commitment>outcome>rationale",
+            False,
+            f"error: {e}",
+            "EntityStateManager WM labels",
+        )
+    finally:
+        for k, v in prev.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(td, ignore_errors=True)
+
+
 def run_mechanism(report: Report) -> None:
     run_l0(report)
     run_b1_capacity(report)
@@ -898,6 +1020,7 @@ def run_mechanism(report: Report) -> None:
     run_b4_wm_kind_eviction(report)
     run_b5_wm_tiebreak_switch(report)
     run_b6_wm_recency(report)
+    run_b7_wm_label_order(report)
 
 
 def _live_client() -> LiveClient:

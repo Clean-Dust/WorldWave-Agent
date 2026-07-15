@@ -1672,27 +1672,45 @@ def default_registry(guardrails=None) -> ToolRegistry:
         "new about the user or need to remember information across conversations. "
         "Facts stored with 'remember' persist across ALL platforms (Telegram, terminal, etc.) "
         "and survive server restarts. "
-        "Set kind explicitly: commitment=decision (highest protect), "
-        "rationale=process/why (easiest to squeeze), outcome=result (high protect; default). "
-        "Example: remember(key='user_name', value='Chung', kind='outcome')",
+        "Set kind (label id) explicitly: constraint=约束 (iron rule, weight 4), "
+        "commitment=承诺 (plan/next step, weight 3), outcome=结果 (fact/result, weight 2; default), "
+        "rationale=理由 (why/process, weight 1). "
+        "category is optional grouping only — does not affect eviction (category ≠ kind/label). "
+        "Prefer is_core=True for must-keep facts; constraint is soft high weight if is_core omitted. "
+        "Examples: "
+        "remember(key='no_netplan', value='never change netplan', kind='constraint'); "
+        "remember(key='plan_choice', value='use Docker sandbox', kind='commitment'); "
+        "remember(key='build_result', value='tests passed', kind='outcome'); "
+        "remember(key='model_reason', value='chose flash for latency', kind='rationale')",
         _remember_handler,
         parameters={
             "key": {"type": "string", "description": "Short label for this fact"},
             "value": {"type": "string", "description": "The fact content to store"},
-            "category": {"type": "string", "description": "Optional: general, preference, technical, contact, project", "default": "general"},
+            "category": {
+                "type": "string",
+                "description": (
+                    "Optional grouping only (general, preference, technical, contact, project). "
+                    "Does not affect eviction; not a WM label (kind is the label id)."
+                ),
+                "default": "general",
+            },
             "is_core": {"type": "boolean", "description": "Optional: mark as core (never auto-evicted)", "default": False},
             "kind": {
                 "type": "string",
                 "description": (
-                    "Optional memory role: commitment (decision), rationale (process/why), "
-                    "outcome (result). Empty/unknown → outcome. Explicit only; no keyword inference."
+                    "Optional label (kind): constraint (约束, iron rule), "
+                    "commitment (承诺, plan/next step), outcome (结果, fact/result), "
+                    "rationale (理由, why). Empty/unknown → outcome. "
+                    "Explicit only; no keyword inference. category ≠ kind/label."
                 ),
                 "default": "",
             },
         },
         examples=[
-            'remember(key="user_preferred_model", value="deepseek-v4-pro", kind="outcome")',
+            'remember(key="no_netplan", value="never change netplan", kind="constraint")',
             'remember(key="plan_choice", value="use Docker sandbox", kind="commitment")',
+            'remember(key="build_result", value="tests passed", kind="outcome")',
+            'remember(key="model_reason", value="chose flash for latency", kind="rationale")',
         ],
         category="memory")
 

@@ -12,7 +12,8 @@ Core principles:
 
 Three layers (entity → episodic → LTM):
   Working Memory (entity RAM, core/entity_state.py) — fixed-capacity online facts
-    with explicit roles (kind): commitment > outcome > rationale for eviction weight
+    with closed labels (kind == label id): constraint > commitment > outcome >
+    rationale for eviction weight (约束/承诺/结果/理由)
   → Hippocampus (episodic cap + protect/GC) — short-term buffer
   → sleep / promote (LTM) — consolidation into durable knowledge
 Subconscious is referee/gating only (BG safe gate + optional WM score

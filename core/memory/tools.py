@@ -8,8 +8,8 @@ the agent transitions from "passive consumer of recall results" to
 Two core tools:
 - remember(key, value, kind=...): Store a fact in memory. Agent calls this
   when it learns something new or detects a change. kind is an explicit
-  memory role (commitment / rationale / outcome) — never inferred from
-  keywords.
+  WM label id (constraint / commitment / outcome / rationale) — never
+  inferred from keywords. Product term: 标签; API field stays ``kind``.
 - forget(key): Mark a fact as no longer valid. Superseded, not deleted.
 
 These are the mechanism that makes entity continuity possible — the agent
@@ -17,7 +17,7 @@ can say "I'll remember that" and actually do it.
 
 Integration:
 - EntityStateManager: bounded working memory (RAM, capacity-evicted by
-  role weight)
+  label weight)
 - MemorySystem: durable atoms; also receives promote-on-evict from WM
 """
 
@@ -109,14 +109,19 @@ class MemoryTools:
         Args:
             key: Short label for the fact (e.g., "user_name", "preferred_model")
             value: The fact content (e.g., "Chung", "deepseek-v4-pro")
-            category: Optional category tag (general, preference, technical, etc.)
+            category: Optional grouping only (general, preference, technical, etc.).
+                      Does NOT affect eviction. Never call category a 标签/label
+                      for ranking — only ``kind`` is the WM label id.
             is_core: If True, mark as core memory (never auto-evicted / GC'd).
+                     Iron rule: prefer is_core=True for must-keep facts.
                      Always dual-writes to MemorySystem atoms; WM key is protected.
-            kind: Explicit memory role for WM eviction weight (not keyword-inferred):
-                  - commitment: a decision ("we decided to do A") — highest protect
-                  - rationale: process/why ("we used method B because...") — easiest squeeze
-                  - outcome: a result ("A is done") — high protect
-                  Empty/illegal → outcome (default).
+            kind: Explicit WM label id for eviction weight (not keyword-inferred):
+                  - constraint (约束): iron rule e.g. never change netplan — soft
+                    weight 4; if is_core omitted, still high protect but soft only
+                  - commitment (承诺): next step / plan choice — weight 3
+                  - outcome (结果): fact / code / result — weight 2 (default)
+                  - rationale (理由): why / process note — weight 1, easiest squeeze
+                  Empty/illegal → outcome (default). constraint does NOT replace is_core.
 
         Returns:
             {"status": "stored", "key": key, "previous": old_value or None}
@@ -291,19 +296,23 @@ class MemoryTools:
                     "Store a fact in your memory. Use this when you learn something "
                     "new about the user or the current task. The fact will persist "
                     "across all conversations and platforms. "
-                    "Set kind explicitly (never guess from keywords): "
-                    "commitment = a decision (\"we will do A\"); "
-                    "rationale = process/why (\"we chose method B because...\"); "
-                    "outcome = a result (\"A is done\"). "
-                    "Default kind is outcome. "
-                    "Example: remember(key='user_name', value='Chung', kind='outcome')"
+                    "Set kind (label id) explicitly (never guess from keywords): "
+                    "constraint=约束 (iron rule), commitment=承诺 (plan/next step), "
+                    "outcome=结果 (fact/result; default), rationale=理由 (why). "
+                    "category is optional grouping only — does not affect eviction. "
+                    "Prefer is_core=True for must-keep facts. "
+                    "Example: remember(key='no_netplan', value='never change netplan', "
+                    "kind='constraint')"
                 ),
                 "parameters": {
                     "key": {"type": "string", "description": "Short label for the fact"},
                     "value": {"type": "string", "description": "The fact content"},
                     "category": {
                         "type": "string",
-                        "description": "Optional: general, preference, technical, contact, project",
+                        "description": (
+                            "Optional grouping only (general, preference, technical, "
+                            "contact, project). Does not affect eviction; not a WM label."
+                        ),
                     },
                     "is_core": {
                         "type": "boolean",
@@ -312,11 +321,13 @@ class MemoryTools:
                     "kind": {
                         "type": "string",
                         "description": (
-                            "Optional memory role for eviction weight: "
-                            "commitment (decision, highest protect), "
-                            "rationale (process/why, easiest to squeeze), "
-                            "outcome (result, high protect). "
-                            "Empty or unknown → outcome. Explicit only; no keyword inference."
+                            "Optional WM label id for eviction weight: "
+                            "constraint (约束, iron rule, weight 4), "
+                            "commitment (承诺, plan/next step, weight 3), "
+                            "outcome (结果, fact/result, weight 2; default), "
+                            "rationale (理由, why/process, weight 1). "
+                            "Empty or unknown → outcome. Explicit only; no keyword inference. "
+                            "category ≠ kind/label."
                         ),
                     },
                 },

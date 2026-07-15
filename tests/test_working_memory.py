@@ -8,8 +8,9 @@ Offline only (no network). Covers:
 - capacity=1 boundary
 - is_core / preferences protected from eviction
 - context injection only contains current RAM set
-- Memory roles (kind): commitment / rationale / outcome weighted eviction
-- Recency decay as multiplicative importance (no protect_last_n)
+- Closed WM labels (kind): constraint > commitment > outcome > rationale
+- Chinese inject tags (约束/承诺/结果/理由); no protect_last_n / keyword inference
+- Recency decay as multiplicative importance
 """
 
 from __future__ import annotations
@@ -27,11 +28,15 @@ from core.entity_state import (
     DEFAULT_WM_RECENCY_FLOOR,
     DEFAULT_WM_RECENCY_HALF_LIFE_S,
     DEFAULT_WORKING_MEMORY_CAPACITY,
+    LABEL_WEIGHT,
     ROLE_WEIGHT,
+    WM_KINDS,
+    WM_LABEL_ZH,
     EntityStateManager,
     normalize_wm_kind,
     resolve_working_memory_capacity,
     wm_eviction_score,
+    wm_label_zh,
     wm_recency_factor,
 )
 
@@ -249,19 +254,40 @@ def test_memory_tools_is_core_and_promote_wire(tmp_path, cfg, monkeypatch):
     )
 
 
-# ── Memory roles (kind) ──────────────────────────────────────────
+# ── Closed WM labels (kind == label id) ───────────────────────────
 
 
-def test_normalize_wm_kind():
+def test_wm_kinds_four_labels_and_normalize():
+    """L0: closed enum has four labels; normalize ok for each + illegal → outcome."""
+    assert WM_KINDS == frozenset({"constraint", "commitment", "outcome", "rationale"})
     assert normalize_wm_kind(None) == "outcome"
     assert normalize_wm_kind("") == "outcome"
     assert normalize_wm_kind("unknown") == "outcome"
     assert normalize_wm_kind("garbage") == "outcome"
+    assert normalize_wm_kind("not-a-role") == "outcome"
     assert normalize_wm_kind("COMMITMENT") == "commitment"
+    assert normalize_wm_kind("constraint") == "constraint"
+    assert normalize_wm_kind("CONSTRAINT") == "constraint"
     assert normalize_wm_kind("rationale") == "rationale"
     assert normalize_wm_kind("outcome") == "outcome"
     assert DEFAULT_WM_KIND == "outcome"
-    assert ROLE_WEIGHT["commitment"] > ROLE_WEIGHT["outcome"] > ROLE_WEIGHT["rationale"]
+    # Weight order: constraint > commitment > outcome > rationale (fixed scores)
+    assert (
+        ROLE_WEIGHT["constraint"]
+        > ROLE_WEIGHT["commitment"]
+        > ROLE_WEIGHT["outcome"]
+        > ROLE_WEIGHT["rationale"]
+    )
+    assert ROLE_WEIGHT["constraint"] == pytest.approx(4.0)
+    assert ROLE_WEIGHT["commitment"] == pytest.approx(3.0)
+    assert ROLE_WEIGHT["outcome"] == pytest.approx(2.0)
+    assert ROLE_WEIGHT["rationale"] == pytest.approx(1.0)
+    assert LABEL_WEIGHT is ROLE_WEIGHT
+    assert wm_label_zh("constraint") == "约束"
+    assert wm_label_zh("commitment") == "承诺"
+    assert wm_label_zh("outcome") == "结果"
+    assert wm_label_zh("rationale") == "理由"
+    assert set(WM_LABEL_ZH) == WM_KINDS
 
 
 def test_rationale_evicted_before_commitment(esm):
@@ -353,6 +379,46 @@ def test_illegal_kind_normalized_to_outcome(esm):
     assert state.working_memory_meta["k"]["kind"] == "outcome"
 
 
+def test_constraint_survives_over_commitment_under_capacity(esm, monkeypatch):
+    """L0: same access/age — constraint beats commitment under capacity pressure."""
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "0")  # isolate label weight
+    esm.working_memory_capacity = 1
+    eid = "ent_c_vs_cmt"
+    esm.set_working_memory(eid, "cmt", "next: deploy", kind="commitment")
+    esm.set_working_memory(eid, "rule", "never change netplan", kind="constraint")
+    state = esm.get(eid)
+    assert "rule" in state.working_memory
+    assert "cmt" not in state.working_memory
+
+    # Flip write order: constraint first, then commitment under pressure
+    eid2 = "ent_c_vs_cmt2"
+    esm.set_working_memory(eid2, "rule2", "no sudo", kind="constraint")
+    esm.set_working_memory(eid2, "cmt2", "plan B", kind="commitment")
+    state2 = esm.get(eid2)
+    assert "rule2" in state2.working_memory
+    assert "cmt2" not in state2.working_memory
+
+    # Fixed scores: constraint > commitment > outcome > rationale
+    assert wm_eviction_score("constraint", 0) > wm_eviction_score("commitment", 0)
+    assert wm_eviction_score("commitment", 0) > wm_eviction_score("outcome", 0)
+    assert wm_eviction_score("outcome", 0) > wm_eviction_score("rationale", 0)
+
+
+def test_constraint_does_not_replace_is_core(esm, monkeypatch):
+    """constraint is soft weight only; is_core hard-protect still required for iron rules."""
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "0")
+    esm.working_memory_capacity = 1
+    eid = "ent_core_vs_c"
+    # is_core outcome beats non-core constraint when capacity is 1 after both written
+    esm.set_working_memory(eid, "core_out", "identity", is_core=True, kind="outcome")
+    esm.set_working_memory(eid, "soft_c", "maybe rule", kind="constraint")
+    state = esm.get(eid)
+    assert "core_out" in state.working_memory
+    assert "core_out" in state.working_memory_core
+    # soft constraint may be the only non-core or may be gone — core must stay
+    assert "core_out" in state.working_memory
+
+
 # ── Optional subconscious WM tie-break ────────────────────────────
 
 
@@ -439,13 +505,23 @@ def test_set_on_wm_score_alias(esm):
     assert state.working_memory_meta["k2"]["kind"] == "outcome"
 
 
-def test_context_injection_includes_kind_tag(esm):
+def test_context_injection_includes_chinese_label_tag(esm):
+    """Inject format LOCKED: ``- [{zh}] key: value`` (Chinese brackets)."""
     eid = "ent_ctx_kind"
     esm.set_working_memory(eid, "decision", "ship it", kind="commitment")
+    esm.set_working_memory(eid, "no_netplan", "never change netplan", kind="constraint")
+    esm.set_working_memory(eid, "build", "ok", kind="outcome")
+    esm.set_working_memory(eid, "why", "chose flash", kind="rationale")
     text = esm.get_context_for(eid)
-    assert "[commitment]" in text
-    assert "decision" in text
-    assert "ship it" in text
+    assert "- [承诺] decision: ship it" in text
+    assert "- [约束] no_netplan: never change netplan" in text
+    assert "- [结果] build: ok" in text
+    assert "- [理由] why: chose flash" in text
+    # English kind ids must not appear as inject brackets
+    assert "[commitment]" not in text
+    assert "[constraint]" not in text
+    assert "[outcome]" not in text
+    assert "[rationale]" not in text
 
 
 # ── Recency decay (importance dimension; no protect_last_n) ───────

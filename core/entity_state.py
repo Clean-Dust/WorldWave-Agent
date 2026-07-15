@@ -9,17 +9,24 @@ Working Memory (entity RAM):
   Fixed-capacity online fact buffer (default 32). Full buffer → evict
   by multi-signal score (numeric only; no keyword importance, no
   protect_last_n):
-    score = ROLE_WEIGHT[kind] * (1 + access_count) * recency_factor(age)
+    score = LABEL_WEIGHT[kind] * (1 + access_count) * recency_factor(age)
   Recency is continuous exponential decay from meta.updated_at (default
   half-life 3600s, floor 0.4); disable with WW_WM_RECENCY_ENABLED=0 to
   restore kind×access only (updated_at remains tertiary tie-break).
-  Memory roles (kind): commitment (decisions, highest protect), outcome
-  (results, high), rationale (process, easiest to squeeze). Kind is set
-  only via explicit remember(kind=...)/set_working_memory; never inferred
-  from content keywords. Important evictions promote via on_wm_evict
-  (MemorySystem) and/or archive to ~/.ww/entities/<id>/wm_evicted.jsonl.
-  Does not promise an infinite LLM prompt — only the current RAM set is
-  injected into context.
+
+  Closed WM labels (product term 标签; API field stays ``kind`` == label id):
+    constraint (约束, weight 4) — iron rules / hard limits
+    commitment (承诺, weight 3) — plan choices / next steps
+    outcome    (结果, weight 2) — facts / results (default)
+    rationale  (理由, weight 1) — why / process notes
+  Labels are set only via explicit remember(kind=...)/set_working_memory;
+  never inferred from content keywords. No free-string tag cloud, no
+  default LLM auto-label. constraint is soft high weight — it does NOT
+  replace is_core hard protect.
+
+  Important evictions promote via on_wm_evict (MemorySystem) and/or archive
+  to ~/.ww/entities/<id>/wm_evicted.jsonl. Does not promise an infinite LLM
+  prompt — only the current RAM set is injected into context.
 
 Memory stack (three layers):
   Working Memory (entity RAM, this module)
@@ -70,15 +77,27 @@ WM_PROMOTE_MIN_ACCESS = int(os.environ.get("WW_WM_PROMOTE_MIN_ACCESS", "2"))
 # Or when value is long and has been accessed at least once
 WM_PROMOTE_LONG_VALUE_LEN = int(os.environ.get("WW_WM_PROMOTE_LONG_LEN", "80"))
 
-# Memory roles (kind) — explicit only; illegal/missing → DEFAULT_WM_KIND
-WM_KINDS = frozenset({"commitment", "rationale", "outcome"})
+# Closed WM labels (kind API field == label id). Explicit only; illegal/missing → DEFAULT_WM_KIND.
+# Product term: 标签 (labels). Weights: constraint > commitment > outcome > rationale.
+WM_KINDS = frozenset({"constraint", "commitment", "outcome", "rationale"})
 DEFAULT_WM_KIND = "outcome"
 # Eviction protection weights: higher score stays longer.
-# base = ROLE_WEIGHT[kind] * (1 + access_count); lowest score evicted first.
+# base = LABEL_WEIGHT[kind] * (1 + access_count); lowest score evicted first.
+# ROLE_WEIGHT kept as alias for backward-compatible imports/tests.
 ROLE_WEIGHT: Dict[str, float] = {
+    "constraint": float(os.environ.get("WW_WM_WEIGHT_CONSTRAINT", "4.0")),
     "commitment": float(os.environ.get("WW_WM_WEIGHT_COMMITMENT", "3.0")),
     "outcome": float(os.environ.get("WW_WM_WEIGHT_OUTCOME", "2.0")),
     "rationale": float(os.environ.get("WW_WM_WEIGHT_RATIONALE", "1.0")),
+}
+LABEL_WEIGHT = ROLE_WEIGHT
+
+# Chinese product labels for context injection (LOCKED format: ``- [{zh}] key: value``).
+WM_LABEL_ZH: Dict[str, str] = {
+    "constraint": "约束",
+    "commitment": "承诺",
+    "outcome": "结果",
+    "rationale": "理由",
 }
 
 # Recency decay (multiplicative importance dimension; not protect_last_n).
@@ -94,7 +113,7 @@ WmTiebreakFn = Callable[[str, str, Dict[str, Any]], float]
 
 
 def normalize_wm_kind(kind: Optional[str] = None) -> str:
-    """Normalize WM kind to commitment | rationale | outcome.
+    """Normalize WM kind (label id) to constraint|commitment|outcome|rationale.
 
     Empty, missing, unknown, or 'unknown' → outcome (backward compatible).
     No keyword inference from fact content — only explicit kind values.
@@ -109,9 +128,14 @@ def normalize_wm_kind(kind: Optional[str] = None) -> str:
     return DEFAULT_WM_KIND
 
 
+def wm_label_zh(kind: Optional[str] = None) -> str:
+    """Chinese product label for a kind/label id (约束/承诺/结果/理由)."""
+    return WM_LABEL_ZH[normalize_wm_kind(kind)]
+
+
 def wm_role_weight(kind: Optional[str] = None) -> float:
-    """Protection weight for a kind (commitment > outcome > rationale)."""
-    return float(ROLE_WEIGHT.get(normalize_wm_kind(kind), ROLE_WEIGHT[DEFAULT_WM_KIND]))
+    """Protection weight for a label (constraint > commitment > outcome > rationale)."""
+    return float(LABEL_WEIGHT.get(normalize_wm_kind(kind), LABEL_WEIGHT[DEFAULT_WM_KIND]))
 
 
 def _env_truthy(raw: Optional[str], default: bool = True) -> bool:
@@ -251,7 +275,7 @@ class EntityState(BaseModel):
     are always restored.
 
     Working memory is a fixed-capacity RAM buffer. Overflow evicts by
-    kind × access × recency score (no protect_last_n); core keys
+    kind (label) × access × recency score (no protect_last_n); core keys
     (working_memory_core) are retained. Meta (updated_at, access_count,
     kind) is persisted with the state. Missing kind defaults to outcome.
     """
@@ -262,7 +286,8 @@ class EntityState(BaseModel):
     # ── Working memory (agent can self-edit via remember/forget tools) ──
     # Bounded RAM facts — capacity enforced by EntityStateManager on write.
     working_memory: Dict[str, str] = Field(default_factory=dict)
-    # Per-key meta: updated_at, access_count, kind (commitment|rationale|outcome).
+    # Per-key meta: updated_at, access_count, kind (label id:
+    # constraint|commitment|outcome|rationale).
     working_memory_meta: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     # Keys that must not be auto-evicted (is_core path; no keyword lists).
     working_memory_core: Set[str] = Field(default_factory=set)
@@ -332,7 +357,10 @@ class EntityState(BaseModel):
         Only injects facts currently in the working-memory RAM buffer
         (capacity-bounded). Title: "Working memory (online facts)".
         When bump_access is True, increments access_count for injected keys.
-        Fact lines include a kind tag: ``- [commitment] key: value``.
+
+        Inject format (LOCKED product contract): Chinese label brackets via
+        WM_LABEL_ZH, e.g. ``- [约束] no_netplan: never change netplan``.
+        Do not use English-only ``[commitment]`` tags in inject text.
         """
         parts: List[str] = []
 
@@ -345,8 +373,9 @@ class EntityState(BaseModel):
             fact_lines: List[str] = []
             for k, v in self.working_memory.items():
                 meta = self.working_memory_meta.get(k) or {}
-                kind = normalize_wm_kind(meta.get("kind"))
-                fact_lines.append(f"- [{kind}] {k}: {v}")
+                # Product inject: Chinese 标签 brackets (not English kind id).
+                zh = wm_label_zh(meta.get("kind"))
+                fact_lines.append(f"- [{zh}] {k}: {v}")
             facts = "\n".join(fact_lines)
             parts.append(f"Working memory (online facts):\n{facts}")
 
@@ -403,7 +432,7 @@ class EntityStateManager:
 
     Working memory writes enforce a fixed capacity (default 32). Overflow
     evicts keys with lowest multi-signal score:
-      ROLE_WEIGHT[kind] * (1 + access_count) * recency_factor(age)
+      LABEL_WEIGHT[kind] * (1 + access_count) * recency_factor(age)
     (recency off → kind×access only), then optional subconscious
     tie-break (higher protect first when primary scores equal), then
     oldest updated_at. No protect_last_n. Core keys and preference keys
@@ -576,10 +605,11 @@ class EntityStateManager:
         """Set a working memory key (called by remember tool).
 
         Enforces capacity: if over capacity, evict lowest multi-signal score
-        (kind × access × recency) then oldest non-core keys. is_core marks
-        the key so it is not auto-evicted.
+        (kind/label × access × recency) then oldest non-core keys. is_core
+        marks the key so it is not auto-evicted (hard protect; constraint
+        label is soft weight only and does not replace is_core).
 
-        kind: optional memory role — commitment | rationale | outcome.
+        kind: optional WM label id — constraint | commitment | outcome | rationale.
         Explicit only (no keyword inference). Empty/illegal/unknown → outcome.
         When kind is None and the key already has meta.kind, existing kind
         is preserved; new keys default to outcome.
@@ -657,7 +687,7 @@ class EntityStateManager:
     ):
         """Sort key for eviction: lower tuple = evicted first (min victim).
 
-        1) score = ROLE_WEIGHT[kind] * (1+access) * recency_factor(age)
+        1) score = LABEL_WEIGHT[kind] * (1+access) * recency_factor(age)
            (recency off → base only; primary)
         2) tiebreak  (optional; higher = more protect = larger = later)
         3) updated_at (oldest first when still tied)
