@@ -1154,10 +1154,17 @@ def memory_op(req: MemoryRequest):
         return {"consolidation": result}
     elif req.action == "probe":
         results = server.memory.recall_engine.probe_entity(req.query)
-        return {"results": [a.to_dict() for a in results]}
+        out = []
+        for a in results or []:
+            out.append(a.to_dict() if hasattr(a, "to_dict") else a)
+        return {"results": out}
     else:  # recall (default)
-        results = server.memory.recall(req.query, limit=req.limit)
-        return {"results": [a.to_dict() for a in results]}
+        # MemorySystem.recall returns a dict with results list of
+        # {atom, salience, hops} — not a list of MemoryAtom.
+        payload = server.memory.recall(req.query, top_k=req.limit)
+        if isinstance(payload, dict):
+            return payload
+        return {"results": payload, "total": len(payload) if payload else 0}
 
 @app.get("/ww/memory/stats")
 def memory_stats():
@@ -1189,8 +1196,12 @@ def memory_recall_json(data: dict):
     """Recall (with Spreading Activation)"""
     query = data.get("query", "")
     limit = data.get("limit", 10)
-    results = server.memory.recall(query, limit=limit)
-    return {"results": [a.to_dict() for a in results], "count": len(results)}
+    payload = server.memory.recall(query, top_k=limit)
+    if isinstance(payload, dict):
+        payload = dict(payload)
+        payload.setdefault("count", payload.get("total", len(payload.get("results") or [])))
+        return payload
+    return {"results": payload, "count": len(payload) if payload else 0}
 
 @app.post("/ww/memory/diffuse")
 def memory_diffuse(data: dict):
