@@ -200,6 +200,99 @@ class TestVersionNotification:
 
 
 # ══════════════════════════════════════════════
+# Tests: Interactive chat update interception
+# ══════════════════════════════════════════════
+
+class TestChatUpdateIntercept:
+    """REPL must not send 'ww update' / '/update' as LLM goals."""
+
+    @pytest.mark.parametrize(
+        "line,expected",
+        [
+            ("/update", ""),
+            ("update", ""),
+            ("ww update", ""),
+            ("WW Update", ""),
+            ("  /UPDATE  ", ""),
+            ("/update status", "status"),
+            ("update status", "status"),
+            ("ww update status", "status"),
+            ("/update --dry-run", "--dry-run"),
+            ("ww update --dry-run", "--dry-run"),
+            ("update dry-run", "--dry-run"),
+            ("/exit", None),
+            ("update my blog", None),
+            ("please ww update something", None),
+            ("hello", None),
+            ("", None),
+        ],
+    )
+    def test_parse_chat_update_command(self, cli_module, line, expected):
+        assert cli_module.parse_chat_update_command(line) == expected
+
+    def test_repl_update_does_not_call_api(self, cli_module):
+        """Typing 'ww update' in chat must run handle_chat_update, not api_post."""
+        inputs = iter(["ww update", "/exit"])
+
+        with patch.object(cli_module, "check_llm_api_key", return_value="deepseek"):
+            with patch.object(cli_module, "load_or_create_api_key", return_value="k"):
+                with patch.object(cli_module, "auto_start_server", return_value=True):
+                    with patch.object(cli_module, "api_post") as mock_api:
+                        with patch.object(cli_module, "handle_chat_update") as mock_upd:
+                            with patch("builtins.input", side_effect=lambda *_a, **_k: next(inputs)):
+                                args = type("Args", (), {"goal": [], "spirals": None})()
+                                cli_module.cmd_run(args)
+
+        mock_upd.assert_called_once_with("")
+        mock_api.assert_not_called()
+        print("✅ CLI: ww update in REPL does not call api_post")
+
+    def test_repl_slash_update_status(self, cli_module):
+        inputs = iter(["/update status", "/exit"])
+
+        with patch.object(cli_module, "check_llm_api_key", return_value="deepseek"):
+            with patch.object(cli_module, "load_or_create_api_key", return_value="k"):
+                with patch.object(cli_module, "auto_start_server", return_value=True):
+                    with patch.object(cli_module, "api_post") as mock_api:
+                        with patch.object(cli_module, "handle_chat_update") as mock_upd:
+                            with patch("builtins.input", side_effect=lambda *_a, **_k: next(inputs)):
+                                args = type("Args", (), {"goal": [], "spirals": None})()
+                                cli_module.cmd_run(args)
+
+        mock_upd.assert_called_once_with("status")
+        mock_api.assert_not_called()
+        print("✅ CLI: /update status intercepted")
+
+    def test_help_lists_update(self, cli_module, capsys):
+        inputs = iter(["/help", "/exit"])
+
+        with patch.object(cli_module, "check_llm_api_key", return_value="deepseek"):
+            with patch.object(cli_module, "load_or_create_api_key", return_value="k"):
+                with patch.object(cli_module, "auto_start_server", return_value=True):
+                    with patch.object(cli_module, "api_post") as mock_api:
+                        with patch("builtins.input", side_effect=lambda *_a, **_k: next(inputs)):
+                            args = type("Args", (), {"goal": [], "spirals": None})()
+                            cli_module.cmd_run(args)
+
+        out = capsys.readouterr().out
+        assert "/update" in out
+        assert "/exit" in out
+        mock_api.assert_not_called()
+        print("✅ CLI: /help lists /update")
+
+    def test_update_notification_mentions_chat_path(self, cli_module):
+        """Update-available copy must mention /update for chat users."""
+        import inspect
+        from core import updater
+
+        src = inspect.getsource(updater.check_for_update)
+        assert "/update" in src
+        assert "chat" in src
+        assert "shell" in src
+        print("✅ CLI: update notification mentions /update (chat)")
+
+
+# ══════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════
 

@@ -8,6 +8,7 @@ When an update is detected, stores the fact so any component
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -167,12 +168,16 @@ def check_for_update(force: bool = False) -> str | None:
     return (
         f"📦 Worldwave {remote_ver} available! "
         f"(you have {local_ver}, {behind} commit{'s' if behind != 1 else ''} behind)\n"
-        f"   Run 'ww update' to upgrade."
+        f"   Type /update (chat) or: ww update (shell)"
     )
 
 
 def perform_update() -> dict:
     """Pull the latest code and reinstall dependencies.
+
+    Prefer shell parity with ``deploy.sh update`` when available (git reset,
+    requirements.txt, reinstall ``~/.local/bin/ww``, optional server restart).
+    Falls back to an in-process git pull + pip path when deploy.sh is missing.
 
     Returns dict with 'success' (bool) and 'message' (str).
     """
@@ -182,6 +187,38 @@ def perform_update() -> dict:
             "message": "Not a git repo — cannot auto-update. Re-download from GitHub.",
         }
 
+    deploy_sh = os.path.join(WW_HOME, "deploy.sh")
+    if os.path.isfile(deploy_sh):
+        try:
+            result = subprocess.run(
+                ["bash", deploy_sh, "update"],
+                cwd=WW_HOME,
+                timeout=300,
+            )
+            if result.returncode == 0:
+                new_ver = get_local_version()
+                return {
+                    "success": True,
+                    "message": (
+                        f"✅ Updated to Worldwave {new_ver}! "
+                        "Restart chat if needed: /exit then ww "
+                        "(or restart the server if it was not auto-restarted)."
+                    ),
+                }
+            return {
+                "success": False,
+                "message": f"Update failed (deploy.sh exit {result.returncode}).",
+            }
+        except subprocess.TimeoutExpired:
+            return {"success": False, "message": "Update timed out."}
+        except OSError as e:
+            return {"success": False, "message": f"Could not run deploy.sh: {e}"}
+
+    return _perform_update_inline()
+
+
+def _perform_update_inline() -> dict:
+    """In-process update when deploy.sh is unavailable."""
     old_head = _git("rev-parse", "HEAD")
 
     # Fetch and pull
@@ -199,10 +236,21 @@ def perform_update() -> dict:
         if c and c.isdigit():
             count = int(c)
 
-    # Reinstall dependencies
+    # Reinstall dependencies (requirements.txt + editable install, like deploy.sh)
     venv_pip = os.path.join(WW_HOME, ".venv", "bin", "pip")
     if os.path.exists(venv_pip):
         try:
+            req = os.path.join(WW_HOME, "requirements.txt")
+            if os.path.isfile(req):
+                result = subprocess.run(
+                    [venv_pip, "install", "--quiet", "-r", req],
+                    cwd=WW_HOME,
+                    timeout=180,
+                    capture_output=True,
+                )
+                if result.returncode != 0:
+                    _rollback(old_head)
+                    return {"success": False, "message": "Dependency install failed — auto-rolled back."}
             result = subprocess.run(
                 [venv_pip, "install", "--quiet", "-e", "."],
                 cwd=WW_HOME,
@@ -216,13 +264,26 @@ def perform_update() -> dict:
             _rollback(old_head)
             return {"success": False, "message": "Dependency install error — auto-rolled back."}
 
+    # Refresh ~/.local/bin/ww (parity with deploy.sh)
+    try:
+        src = os.path.join(WW_HOME, "bin", "ww")
+        local_bin = os.path.expanduser("~/.local/bin")
+        if os.path.isfile(src):
+            os.makedirs(local_bin, exist_ok=True)
+            dest = os.path.join(local_bin, "ww")
+            shutil.copy2(src, dest)
+            os.chmod(dest, 0o755)
+    except OSError:
+        pass
+
     parts = [f"✅ Updated to Worldwave {new_ver}"]
     if count and count > 0:
         parts.append(f"({count} new commit{'s' if count != 1 else ''})")
     return {
         "success": True,
         "message": " ".join(parts)
-        + "! Run 'ww server restart' to reload if the server is running.",
+        + "! Restart chat if needed: /exit then ww "
+        "(or: ww server restart if the server is still running old code).",
     }
 
 

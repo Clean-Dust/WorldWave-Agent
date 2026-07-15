@@ -491,8 +491,9 @@ def cmd_run(args):
     llm_provider = check_llm_api_key()
     if not llm_provider:
         print(f"\n  {Colors.yellow('⚠')} No LLM API key found")
-        print(f"  Fix:  {Colors.cyan('ww key set sk-xxx')}")
-        print(f"  Free: https://platform.deepseek.com")
+        print(f"  Fix:  {Colors.cyan('ww key set <key> [provider]')}")
+        print(f"  Providers: deepseek · openai · anthropic · openrouter · custom")
+        print(f"  Example:  {Colors.dim('ww key set sk-xxx openai')}")
         print()
         return
 
@@ -508,7 +509,10 @@ def cmd_run(args):
     # ── Interactive mode (no goal provided) ──
     if not goal:
         print(f"\n{Colors.cyan('═══ Worldwave ═══')}")
-        print(f"Enter a goal, or type {Colors.yellow('/exit')} to exit\n")
+        print(
+            f"Enter a goal, or type {Colors.yellow('/exit')} / "
+            f"{Colors.yellow('/help')} / {Colors.yellow('/update')}\n"
+        )
         max_spirals = getattr(args, "spirals", None) or 3
         while True:
             try:
@@ -522,10 +526,22 @@ def cmd_run(args):
             if line in ("/exit", "/quit"):
                 break
             if line == "/help":
-                print("  /exit to quit, /clear to clear context")
+                print(
+                    "  /exit · /quit     Leave chat\n"
+                    "  /clear            Clear context note\n"
+                    "  /update           Upgrade Worldwave (not an LLM goal)\n"
+                    "  /update status    Version comparison\n"
+                    "  /update --dry-run Preview incoming commits\n"
+                    "  Also accepted: update · ww update (same as /update)"
+                )
                 continue
             if line == "/clear":
                 print(f"{Colors.dim('Context cleared')}")
+                continue
+            # Intercept update commands — never send as /ww/run goals
+            update_action = parse_chat_update_command(line)
+            if update_action is not None:
+                handle_chat_update(update_action)
                 continue
             print(f"{Colors.cyan('⟳')} Thinking...", end="", flush=True)
             payload = {"goal": line, "max_spirals": max_spirals}
@@ -798,7 +814,7 @@ def cmd_status(args):
 
     # Update notification
     if _UPDATE_AVAILABLE:
-        msg = '📦 Update available! Run "ww update" to upgrade'
+        msg = "📦 Update available! Type /update (chat) or: ww update (shell)"
         print(f"  {Colors.yellow(msg)}")
     print()
 
@@ -886,6 +902,77 @@ def cmd_server(args):
             print(f"  {Colors.red('○')} stopped")
 
 
+def parse_chat_update_command(line: str) -> Optional[str]:
+    """If *line* is an in-chat update command, return the action; else None.
+
+    Accepted (case-insensitive, surrounding whitespace ignored):
+      /update | update | ww update
+      … status | … --dry-run | … dry-run
+
+    Returns:
+      ""          — full update
+      "status"    — version comparison only
+      "--dry-run" — preview only
+      None        — not an update command (treat as LLM goal)
+    """
+    s = (line or "").strip()
+    if not s:
+        return None
+    lower = s.lower()
+    # Optional leading "ww " (user typed shell form inside chat)
+    if lower.startswith("ww "):
+        lower = lower[3:].lstrip()
+    # Optional slash command form
+    if lower.startswith("/"):
+        lower = lower[1:].lstrip()
+
+    parts = lower.split()
+    if not parts or parts[0] != "update":
+        return None
+    if len(parts) == 1:
+        return ""
+    if parts[1] == "status" and len(parts) == 2:
+        return "status"
+    if parts[1] in ("--dry-run", "dry-run") and len(parts) == 2:
+        return "--dry-run"
+    # e.g. "update my docs" → not a CLI update; let the LLM handle it
+    return None
+
+
+def handle_chat_update(action: str) -> None:
+    """Run update machinery from the interactive REPL (never via /ww/run)."""
+    global _UPDATE_AVAILABLE
+
+    if action == "status":
+        _cmd_update_status()
+        return
+    if action == "--dry-run":
+        _cmd_update_dryrun()
+        return
+
+    # Full update — same end state as shell `ww update` (deploy.sh preferred)
+    print(f"{Colors.cyan('⟳')} Checking for updates...")
+    msg = check_for_update(force=True)
+    if not msg:
+        local_ver = get_local_version()
+        print(f"{Colors.green('✓')} Worldwave {local_ver} is already up to date!")
+        _UPDATE_AVAILABLE = None
+        return
+
+    print(f"  {msg}\n")
+    print(f"{Colors.yellow('⟳')} Updating...")
+    result = perform_update()
+    if result["success"]:
+        _UPDATE_AVAILABLE = None
+        print(f"\n{Colors.green(result['message'])}")
+        print(
+            f"  {Colors.dim('If this chat session feels stale:')} "
+            f"{Colors.yellow('/exit')} {Colors.dim('then')} {Colors.cyan('ww')}"
+        )
+    else:
+        print(f"\n{Colors.red('✗')} {result['message']}")
+
+
 def cmd_update(args):
     """One-click update to latest version.
 
@@ -905,23 +992,8 @@ def cmd_update(args):
         _cmd_update_dryrun()
         return
 
-    # ── Normal update ──
-    print(f"{Colors.cyan('⟳')} Checking for updates...")
-    msg = check_for_update(force=True)
-    if not msg:
-        local_ver = get_local_version()
-        print(f"{Colors.green('✓')} Worldwave {local_ver} is already up to date!")
-        _UPDATE_AVAILABLE = None
-        return
-
-    print(f"  {msg}\n")
-    print(f"{Colors.yellow('⟳')} Updating...")
-    result = perform_update()
-    if result["success"]:
-        _UPDATE_AVAILABLE = None
-        print(f"\n{Colors.green(result['message'])}")
-    else:
-        print(f"\n{Colors.red('✗')} {result['message']}")
+    # ── Normal update (shared path with chat /update) ──
+    handle_chat_update("")
 
 
 def _cmd_update_status():
@@ -948,7 +1020,10 @@ def _cmd_update_status():
             print(f"\n  {Colors.bold('Incoming changes:')}")
             for c in commits:
                 print(f"    • {c}")
-        print(f"\n  Run {Colors.cyan('ww update')} to upgrade.")
+        print(
+            f"\n  Type {Colors.cyan('/update')} (chat) or: "
+            f"{Colors.cyan('ww update')} (shell)"
+        )
     else:
         print(f"  Status: {Colors.green('✓ Up to date')}")
     print()
@@ -976,7 +1051,10 @@ def _cmd_update_dryrun():
         print(f"  {Colors.bold('Changes to be applied:')}")
         for c in commits:
             print(f"    • {c}")
-    print(f"\n  Run {Colors.cyan('ww update')} to apply.")
+    print(
+        f"\n  Type {Colors.cyan('/update')} (chat) or: "
+        f"{Colors.cyan('ww update')} (shell)"
+    )
     print()
 
 
