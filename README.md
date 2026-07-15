@@ -1,6 +1,6 @@
 <p align="center">
   <br>
-  <img alt="Worldwave" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI2MDAiIGhlaWdodD0iMTIwIiB2aWV3Qm94PSIwIDAgNjAwIDEyMCI+PHJlY3Qgd2lkdGg9IjYwMCIgaGVpZ2h0PSIxMjAiIGZpbGw9IiMwZTBlMGUiLz48dGV4dCB4PSIzMDAiIHk9IjUwIiBmb250LWZhbWlseT0iQXJpYWwsIHNhbnMtc2VyaWYiIGZvbnQtc2l6ZT0iMzYiIGZpbGw9IiM2MGE1ZmEiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGZvbnQtd2VpZ2h0PSJib2xkIj7imp3imJ0gV09STERXQVZFPC90ZXh0Pjx0ZXh0IHg9IjMwMCIgeT0iOTAiIGZvbnQtZmFtaWx5PSJBcmlhbCwgc2Fucy1zZXJpZiIgZm9udC1zaXplPSIxOCIgZmlsbD0iIzg4ODg4OCIgdGV4dC1hbmNob3I9Im1pZGRsZSI+cGVyc2lzdGVudCBjb2dudGl0aXZlIGVudGl0eSBmcmFtZXdvcms8L3RleHQ+PC9zdmc+" width="600" height="120" alt="Worldwave">
+  <img alt="Worldwave — persistent cognitive entity" src="docs/assets/banner.png" width="800">
   <br>
 </p>
 
