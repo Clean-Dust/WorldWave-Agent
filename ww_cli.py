@@ -1672,9 +1672,10 @@ def cmd_gateway(args):
 
         # Check existing gateways
         status = api_get("/ww/gateway/list") or {}
-        gateways = status.get("gateways", {})
-        configured = {k: v for k, v in gateways.items() if v.get("configured")}
-        running = {k: v for k, v in gateways.items() if v.get("running")}
+        raw_gw = status.get("gateways", {}) if isinstance(status, dict) else {}
+        gateways = raw_gw if isinstance(raw_gw, dict) else {}
+        configured = {k: v for k, v in gateways.items() if isinstance(v, dict) and v.get("configured")}
+        running = {k: v for k, v in gateways.items() if isinstance(v, dict) and v.get("running")}
 
         if configured and not action:
             # Already configured — show status
@@ -1693,6 +1694,16 @@ def cmd_gateway(args):
                 print(f"\n{Colors.yellow('○')} Gateway configured but not running — run 'ww gateway start'")
             return
 
+        # Interactive setup needs a real TTY (not pipes / non-interactive)
+        if not sys.stdin.isatty():
+            print(f"\n{Colors.red('✗')} Gateway setup requires an interactive terminal")
+            print(f"  Run in a real TTY (not a pipe or non-interactive shell):")
+            print(f"    {Colors.cyan('ww gateway setup')}")
+            print(f"  Or set the token in .env:")
+            print(f"    TELEGRAM_WW_TOKEN=<bot-token-from-BotFather>")
+            print(f"  Then: {Colors.cyan('ww gateway start')}\n")
+            return
+
         # Nothing configured → interactive setup
         print(f"\n{Colors.bold('🌐 Gateway Setup')}\n")
         print(f"  Connect WW to a messaging platform so you can chat from anywhere.\n")
@@ -1700,7 +1711,11 @@ def cmd_gateway(args):
 
         platform = args.platform
         if not platform:
-            platform = input(f"  {Colors.green('Platform?')} [telegram]: ").strip().lower() or "telegram"
+            try:
+                platform = input(f"  {Colors.green('Platform?')} [telegram]: ").strip().lower() or "telegram"
+            except (EOFError, KeyboardInterrupt):
+                print(f"\n{Colors.yellow('⚠')} Setup cancelled")
+                return
 
         if platform == "telegram":
             print(f"\n  {Colors.bold('Telegram Bot Setup')}")
@@ -1708,7 +1723,11 @@ def cmd_gateway(args):
             print(f"  {Colors.dim('2. Send /newbot → follow prompts')}")
             print(f"  {Colors.dim('3. Copy the bot token (looks like 123:ABC...)')}\n")
 
-            token = input(f"  {Colors.green('Bot token?')} ").strip()
+            try:
+                token = input(f"  {Colors.green('Bot token?')} ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print(f"\n{Colors.yellow('⚠')} No token entered — setup cancelled")
+                return
             if not token:
                 print(f"\n{Colors.yellow('⚠')} No token entered — setup cancelled")
                 return
@@ -1721,7 +1740,10 @@ def cmd_gateway(args):
             # Workspace is optional — DMs work with token alone
             print(f"\n  {Colors.dim('Optional group: add bot to a group, get ID via @userinfobot.')}")
             print(f"  {Colors.dim('Skip for DM-only mode.')}\n")
-            ws = input(f"  {Colors.green('Group ID?')} (press Enter to skip / DM-only): ").strip()
+            try:
+                ws = input(f"  {Colors.green('Group ID?')} (press Enter to skip / DM-only): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                ws = ""
             if ws:
                 _upsert_env(env_file, "TELEGRAM_WW_WORKSPACE", ws)
                 print(f"{Colors.green('✓')} Workspace saved (DM + group)")
@@ -1749,25 +1771,32 @@ def cmd_gateway(args):
     # ── List ──
     if action == "list":
         if not auto_start_server():
-            print(f"\n  {Colors.dim('(server not running)')}")
+            print(f"\n  {Colors.dim('(no gateway configured)')}")
             print(f"  {Colors.yellow('→')} Run {Colors.cyan('ww gateway setup')} to get started\n")
             return
         status = api_get("/ww/gateway/list")
+        gateways = {}
         if status and isinstance(status, dict):
-            gateways = status.get("gateways", status)
-            print(f"\n{Colors.bold('Gateway:')}\n")
-            if isinstance(gateways, dict):
-                for name, info in gateways.items():
-                    running = info.get("running", False)
-                    icon = Colors.green("●") if running else Colors.red("○")
-                    platform = info.get("platform", name)
-                    print(f"  {icon} {Colors.cyan(platform)}")
-                    for k, v in info.items():
-                        if k not in ("platform", "running"):
-                            print(f"      {k}: {v}")
-        else:
+            raw = status.get("gateways", status)
+            if isinstance(raw, dict):
+                gateways = raw
+        # Empty or missing → never print a blank "Gateway:" header alone
+        if not gateways:
             print(f"\n  {Colors.dim('(no gateway configured)')}")
             print(f"  {Colors.yellow('→')} Run {Colors.cyan('ww gateway setup')} to get started\n")
+            return
+        print(f"\n{Colors.bold('Gateway:')}\n")
+        for name, info in gateways.items():
+            if not isinstance(info, dict):
+                print(f"  {Colors.cyan(str(name))}: {info}")
+                continue
+            running = info.get("running", False)
+            icon = Colors.green("●") if running else Colors.red("○")
+            platform = info.get("platform", name)
+            print(f"  {icon} {Colors.cyan(platform)}")
+            for k, v in info.items():
+                if k not in ("platform", "running"):
+                    print(f"      {k}: {v}")
 
     elif action == "start":
         if not auto_start_server():
@@ -2014,7 +2043,9 @@ def cmd_help(args):
 
   tools                  List available tools
   delegate <goal>        Delegate sub-tasks
-  gateway list|start|stop Gateway management
+  gateway                Status if configured, else interactive setup
+  gateway setup          Interactive Telegram gateway setup (needs a real TTY)
+  gateway list|start|stop  List / start / stop gateways
   telegram status        Telegram token/workspace/pairing status
   pairing list|approve|reject  DM pairing codes
   memory stats|search|sleep  Memory operations
@@ -2028,7 +2059,10 @@ def cmd_help(args):
   --home PATH            Specify WW path
   --no-color             Disable colors
   --effort LEVEL         Reasoning effort: low/medium/high/xhigh
-  -h, --help             Show help
+  -h, --help             Show this help
+  ww help                Same as --help (WW commands, not bash)
+
+  Note: In a shell, bare "help" is the bash builtin — use ww --help or ww help.
 """)
 
 
@@ -2143,62 +2177,79 @@ def main():
         return
 
     cmd = args.command
+    # Subcommands often land in args.goal (argparse nargs="*"), not only parse_known_args extra
+    def _pos():
+        return list(getattr(args, "goal", []) or []) + list(extra or [])
+
     if cmd in ("server",):
         # server start/stop/restart/status
-        action = extra[0] if extra else "status"
-        args.action = action
+        pos = _pos()
+        args.action = pos[0] if pos else "status"
         COMMANDS[cmd](args)
 
     elif cmd in ("update", "upgrade"):
-        args.update_action = extra[0] if extra else None
+        pos = _pos()
+        args.update_action = pos[0] if pos else None
         COMMANDS["update"](args)
 
     elif cmd in ("config",):
         # config: subcommands or key/value
-        if extra and extra[0] == "profile":
+        pos = _pos()
+        if pos and pos[0] == "profile":
             args.profile = True
-            args.profile_action = extra[1] if len(extra) > 1 else "list"
-            args.profile_name = extra[2] if len(extra) > 2 else ""
+            args.profile_action = pos[1] if len(pos) > 1 else "list"
+            args.profile_name = pos[2] if len(pos) > 2 else ""
             COMMANDS[cmd](args)
         else:
             args.profile = False
-            args.set_key = extra[0] if extra else None
-            args.set_value = extra[1:] if len(extra) > 1 else None
+            args.set_key = pos[0] if pos else None
+            args.set_value = pos[1:] if len(pos) > 1 else None
             COMMANDS[cmd](args)
 
     elif cmd in ("model",):
-        args.name = extra[0] if extra else None
+        pos = _pos()
+        args.name = pos[0] if pos else None
         COMMANDS[cmd](args)
 
     elif cmd in ("logs",):
-        args.n = int(extra[0]) if extra else 20
+        pos = _pos()
+        args.n = int(pos[0]) if pos else 20
         COMMANDS[cmd](args)
 
     elif cmd in ("gateway",):
-        args.action = extra[0] if extra else "list"
-        args.platform = extra[1] if len(extra) > 1 else None
+        # bare → None (setup/status); explicit list|setup|start|stop still work
+        pos = _pos()
+        args.action = pos[0] if pos else None
+        args.platform = pos[1] if len(pos) > 1 else None
         COMMANDS[cmd](args)
 
+    elif cmd in ("help",):
+        # ww help — never treat as one-shot LLM goal
+        cmd_help(args)
+
     elif cmd in ("telegram",):
-        args.action = extra[0] if extra else "status"
+        pos = _pos()
+        args.action = pos[0] if pos else "status"
         COMMANDS[cmd](args)
 
     elif cmd in ("pairing",):
-        args.action = extra[0] if extra else "list"
+        pos = _pos()
+        args.action = pos[0] if pos else "list"
         if args.action == "remove":
-            args.platform = extra[1] if len(extra) > 1 else ""
-            args.code = extra[2] if len(extra) > 2 else ""
+            args.platform = pos[1] if len(pos) > 1 else ""
+            args.code = pos[2] if len(pos) > 2 else ""
         else:
-            args.code = extra[1] if len(extra) > 1 else ""
+            args.code = pos[1] if len(pos) > 1 else ""
         COMMANDS[cmd](args)
 
     elif cmd in ("memory",):
-        args.action = extra[0] if extra else "stats"
-        args.query = extra[1:] if len(extra) > 1 else []
+        pos = _pos()
+        args.action = pos[0] if pos else "stats"
+        args.query = pos[1:] if len(pos) > 1 else []
         COMMANDS[cmd](args)
 
     elif cmd in ("delegate",):
-        args.goal = extra
+        args.goal = _pos()
         args.parallel = 3
         COMMANDS[cmd](args)
 
@@ -2216,9 +2267,10 @@ def main():
         COMMANDS[cmd](args)
 
     elif cmd in ("mascot",):
-        args.action = extra[0] if extra else "open"
-        if args.action == 'state' and len(extra) > 1:
-            args.state_name = extra[1]
+        pos = _pos()
+        args.action = pos[0] if pos else "open"
+        if args.action == "state" and len(pos) > 1:
+            args.state_name = pos[1]
         COMMANDS[cmd](args)
 
     elif cmd in ("migrate",):
