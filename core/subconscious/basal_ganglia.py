@@ -459,6 +459,13 @@ class BasalGanglia:
     def classify_action(self, tool_name: str) -> str:
         """Auto-classify a tool name into an action category."""
         tool = tool_name.lower()
+        # Memory self-edit tools are product-critical and non-destructive to the host.
+        # Must be classified before generic substring checks (e.g. modify_local).
+        if tool in {
+            "remember", "forget", "recall_mine", "recall", "memory_search",
+            "memory_store", "memory_recall",
+        } or tool.startswith("memory_"):
+            return "safe_info"
         # Safe reads
         if any(w in tool for w in ["read", "search", "find", "list", "ls", "cat",
                                      "grep", "stat", "view", "show", "get",
