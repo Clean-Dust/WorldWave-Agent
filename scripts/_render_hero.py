@@ -116,7 +116,9 @@ def draw_text_outlined(
     draw.text((x, y), text, font=fnt, fill=fill)
 
 
-def render_title(text: str, max_w: int, max_h: int) -> tuple[Image.Image, int, int, int]:
+def render_title(
+    text: str, max_w: int, max_h: int, stroke: int = 2
+) -> tuple[Image.Image, int, int, int]:
     """Largest bold title that fits max_w x max_h (uniform). Returns layer, content_w, content_h, pad."""
     lo, hi = 24, 360
     best_f, best_tw, best_th = font(BOLD, 48), 0, 0
@@ -130,14 +132,12 @@ def render_title(text: str, max_w: int, max_h: int) -> tuple[Image.Image, int, i
         else:
             hi = mid - 1
 
-    # pad must cover tight outline
-    stroke = max(1, min(3, int(best_f.size // 55)))
+    stroke = max(1, int(stroke))
     pad = int(8 + stroke * 2)
     layer = Image.new("RGBA", (best_tw + pad * 2, best_th + pad * 2), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     bb = ImageDraw.Draw(Image.new("RGBA", (8, 8))).textbbox((0, 0), text, font=best_f)
     ox, oy = int(pad - bb[0]), int(pad - bb[1])
-    # Tight black outline first (no soft cyan glow — keeps edge crisp)
     draw_text_outlined(
         d,
         (ox, oy),
@@ -155,7 +155,6 @@ def outline_rgba(img: Image.Image, stroke: int = 3, color=(0, 0, 0, 255)) -> Ima
     if stroke <= 0:
         return img
     img = img.convert("RGBA")
-    # Expand canvas so stroke is not clipped at edges
     pad = stroke + 1
     big = Image.new("RGBA", (img.width + pad * 2, img.height + pad * 2), (0, 0, 0, 0))
     big.paste(img, (pad, pad), img)
@@ -176,26 +175,29 @@ def compose(w: int, h: int, out_path: Path) -> None:
     # Shared vertical center so mascot + type sit on one horizontal band
     band_cy = int(h * 0.48)
 
-    # Shark left — raised (centered on band, not glued to bottom) + black outline
-    sh = shark_src.copy()
+    # Shared outline thickness for shark + all type (match mascot)
     target_h = int(h * 0.70)
+    outline_stroke = max(2, min(4, target_h // 90))
+
+    # Shark left — raised + black outline
+    sh = shark_src.copy()
     ratio = target_h / sh.height
     sh = sh.resize((max(1, int(sh.width * ratio)), target_h), Image.Resampling.LANCZOS)
-    # stroke scale with size (~2–4px tight hug)
-    shark_stroke = max(2, min(4, target_h // 90))
-    sh = outline_rgba(sh, stroke=shark_stroke, color=(0, 0, 0, 255))
+    sh = outline_rgba(sh, stroke=outline_stroke, color=(0, 0, 0, 255))
     sx = int(w * 0.03)
     sy = band_cy - sh.height // 2
     sy = max(int(h * 0.04), min(sy, h - sh.height - int(h * 0.06)))
     bg.paste(sh, (sx, sy), sh)
     shark_right = sx + sh.width
 
-    # WORLDWAVE + promos as one column, centered on same band_cy
+    # WORLDWAVE + promos — same outline_stroke as shark
     margin_r = int(w * 0.04)
     text_left = shark_right + int(w * 0.03)
     max_title_w = w - text_left - margin_r
     max_title_h = int(h * 0.28)
-    title_layer, tw, th, pad = render_title("WORLDWAVE", max_title_w, max_title_h)
+    title_layer, tw, th, pad = render_title(
+        "WORLDWAVE", max_title_w, max_title_h, stroke=outline_stroke
+    )
     col_w = max_title_w
     title_x = text_left + (col_w - title_layer.width) // 2
 
@@ -216,10 +218,8 @@ def compose(w: int, h: int, out_path: Path) -> None:
     gap = max(4, int(lh * 0.22))
     sub_block_h = 3 * lh + 2 * gap
     title_to_sub = int(h * 0.028)
-    # total text column height ≈ title_layer + gap + sub block
     text_block_h = title_layer.height + title_to_sub + sub_block_h
     title_y = band_cy - text_block_h // 2
-    # Nudge entire type block down 5% of canvas height
     title_y += int(h * 0.05)
     title_y = max(int(h * 0.06), min(title_y, h - text_block_h - int(h * 0.04)))
 
@@ -234,7 +234,6 @@ def compose(w: int, h: int, out_path: Path) -> None:
     for line in lines:
         lw, _ = text_size(sub_font, line)
         x = glyph_cx - lw // 2
-        # tight black outline on promo lines too
         draw_text_outlined(
             draw,
             (x, y),
@@ -242,15 +241,15 @@ def compose(w: int, h: int, out_path: Path) -> None:
             sub_font,
             fill=SUB_FILL,
             outline=(0, 0, 0, 255),
-            stroke=1,
+            stroke=outline_stroke,
         )
         y += lh + gap
 
     out = bg.convert("RGB")
     out.save(out_path, "PNG", optimize=True)
     print(
-        f"wrote {out_path} shark_y={sy} title_y={title_y} band_cy={band_cy} "
-        f"shark_mid={sy + sh.height//2} title_mid={title_y + text_block_h//2}"
+        f"wrote {out_path} outline_stroke={outline_stroke} shark_y={sy} title_y={title_y} "
+        f"band_cy={band_cy} shark_mid={sy + sh.height//2} title_mid={title_y + text_block_h//2}"
     )
 
 
