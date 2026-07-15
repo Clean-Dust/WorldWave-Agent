@@ -173,17 +173,41 @@ def compose(w: int, h: int, out_path: Path) -> None:
     title_img = render_title_to_box("WORLDWAVE", tw, th)
     bg.paste(title_img, (tx0, ty0), title_img)
 
-    # ── GREEN: promo inside green bar, width = green width ──
+    # ── GREEN: three promo lines stacked (not side-by-side) ──
     gx0, gx1 = int(w * SUB["l"]), int(w * SUB["r"])
     gy0, gy1 = int(h * SUB["t"]), int(h * SUB["b"])
     gw, gh = gx1 - gx0, gy1 - gy0
-    sub = "Persistent memory · Persistent autonomy · Persistent session"
-    # font height ~ 45% of green box height
-    sub_max = max(14, int(gh * 0.55))
-    sub_font = fit_sub_font(sub, gw, max_size=sub_max, min_size=12)
-    _, sh_h = text_size(sub_font, sub)
-    sty = gy0 + max(0, (gh - sh_h) // 2)
-    draw_text_exact_width(draw, (gx0, sty), sub, sub_font, gw, SUB_FILL)
+    lines = [
+        "Persistent memory",
+        "Persistent autonomy",
+        "Persistent session",
+    ]
+    # Fit font: 3 lines + gaps inside green box height; each line ≤ green width
+    n = len(lines)
+    gap_ratio = 0.22  # gap between lines as fraction of line height
+    # total = n*lh + (n-1)*gap*lh = lh * (n + (n-1)*gap_ratio)
+    size = max(12, int(gh / (n + (n - 1) * gap_ratio) * 0.92))
+    while size >= 10:
+        f = font(REG, size)
+        max_lw = max(text_size(f, line)[0] for line in lines)
+        lh = text_size(f, "Hg")[1]
+        gap = max(2, int(lh * gap_ratio))
+        total_h = n * lh + (n - 1) * gap
+        if max_lw <= gw and total_h <= gh:
+            break
+        size -= 1
+    sub_font = font(REG, size)
+    lh = text_size(sub_font, "Hg")[1]
+    gap = max(2, int(lh * gap_ratio))
+    total_h = n * lh + (n - 1) * gap
+    y = gy0 + max(0, (gh - total_h) // 2)
+    for line in lines:
+        lw, _ = text_size(sub_font, line)
+        # left-align to green box (same as title column feel); optional slight indent
+        x = gx0
+        # if much shorter than box, still left-align (not letter-spaced across full width)
+        draw.text((x, y), line, font=sub_font, fill=SUB_FILL)
+        y += lh + gap
 
     out = bg.convert("RGB")
     out.save(out_path, "PNG", optimize=True)
@@ -191,7 +215,7 @@ def compose(w: int, h: int, out_path: Path) -> None:
         f"wrote {out_path}\n"
         f"  shark box {sw}x{sh} @({sx0},{sy0}) sprite {nw}x{nh}\n"
         f"  title box {tw}x{th} @({tx0},{ty0})\n"
-        f"  sub   box {gw}x{gh} @({gx0},{gy0}) font~{sub_max}"
+        f"  sub   box {gw}x{gh} @({gx0},{gy0}) stacked x3 font={size}"
     )
 
 
