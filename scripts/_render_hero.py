@@ -150,6 +150,25 @@ def render_title(text: str, max_w: int, max_h: int) -> tuple[Image.Image, int, i
     return layer, best_tw, best_th, pad
 
 
+def outline_rgba(img: Image.Image, stroke: int = 3, color=(0, 0, 0, 255)) -> Image.Image:
+    """Add a tight opaque outline around a transparent RGBA sprite (by dilating alpha)."""
+    if stroke <= 0:
+        return img
+    img = img.convert("RGBA")
+    # Expand canvas so stroke is not clipped at edges
+    pad = stroke + 1
+    big = Image.new("RGBA", (img.width + pad * 2, img.height + pad * 2), (0, 0, 0, 0))
+    big.paste(img, (pad, pad), img)
+    alpha = big.split()[-1]
+    out_a = alpha
+    for _ in range(stroke):
+        out_a = out_a.filter(ImageFilter.MaxFilter(3))
+    solid = Image.new("RGBA", big.size, color)
+    solid.putalpha(out_a)
+    canvas = Image.alpha_composite(solid, big)
+    return canvas
+
+
 def compose(w: int, h: int, out_path: Path) -> None:
     bg = make_bg(w, h)
     draw = ImageDraw.Draw(bg)
@@ -157,11 +176,14 @@ def compose(w: int, h: int, out_path: Path) -> None:
     # Shared vertical center so mascot + type sit on one horizontal band
     band_cy = int(h * 0.48)
 
-    # Shark left — raised (centered on band, not glued to bottom)
+    # Shark left — raised (centered on band, not glued to bottom) + black outline
     sh = shark_src.copy()
     target_h = int(h * 0.70)
     ratio = target_h / sh.height
     sh = sh.resize((max(1, int(sh.width * ratio)), target_h), Image.Resampling.LANCZOS)
+    # stroke scale with size (~2–4px tight hug)
+    shark_stroke = max(2, min(4, target_h // 90))
+    sh = outline_rgba(sh, stroke=shark_stroke, color=(0, 0, 0, 255))
     sx = int(w * 0.03)
     sy = band_cy - sh.height // 2
     sy = max(int(h * 0.04), min(sy, h - sh.height - int(h * 0.06)))
