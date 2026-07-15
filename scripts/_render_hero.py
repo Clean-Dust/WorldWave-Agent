@@ -182,36 +182,47 @@ def compose(w: int, h: int, out_path: Path) -> None:
     text_left = max(int(w * 0.08), text_left)
     max_w = w - text_left - margin_r
 
-    # Title size: as large as fits width after left shift
-    size = int(h * 0.30)
+    # IMPORTANT: only vertical stretch — do NOT grow overall point size when left-shifted.
+    # Fit base size against the *reference* right margin (same as approved frame), then stretch Y only.
+    ref_left_for_size = int(w * REF_TITLE_LEFT_FRAC)
+    ref_max_w = w - ref_left_for_size - margin_r
+    size = int(h * 0.28)
     while size >= 40:
         f = font(BOLD, size)
         tw, th = text_size(f, title)
-        if tw <= max_w and int(th * V_STRETCH) <= int(h * 0.52):
+        if tw <= ref_max_w and th <= int(h * 0.38):
             break
         size -= 2
     title_font = font(BOLD, size)
+    natural_w, natural_h = text_size(title_font, title)
+    # If natural width exceeds available after left shift, shrink width-only by fitting size down
+    # (still no intentional overall "bigger"; only prevent clipping)
+    while natural_w > max_w and size > 40:
+        size -= 2
+        title_font = font(BOLD, size)
+        natural_w, natural_h = text_size(title_font, title)
+
     title_layer, content_w, content_h = render_title_layer(title, title_font, v_stretch=V_STRETCH)
-    # Align content box to text_left (layer includes pad)
+    # content_w should == natural_w (width unchanged by v_stretch)
     pad = 14
     tx = text_left - pad
-    ty = int(h * 0.20)
+    ty = int(h * 0.22)
     if ty + title_layer.height > h - 70:
         ty = max(6, h - 70 - title_layer.height)
     bg.paste(title_layer, (tx, ty), title_layer)
 
-    # Subtitle: grow font under content_w, then letter-space to exact WORLDWAVE width
-    sub_font = fit_sub_font(sub, content_w, max_size=max(14, int(h * 0.055)), min_size=11)
-    natural_sw, sh_h = text_size(sub_font, sub)
-    # place under title content
-    sty = ty + pad + content_h + int(h * 0.035)
+    # Subtitle: letter-space to exact WORLDWAVE content width (not a bigger font for fill)
+    sub_font = fit_sub_font(sub, content_w, max_size=max(12, int(h * 0.048)), min_size=11)
+    natural_sw, _ = text_size(sub_font, sub)
+    sty = ty + pad + content_h + int(h * 0.04)
     draw_text_exact_width(draw, (text_left, sty), sub, sub_font, content_w, SUB_FILL)
 
     out = bg.convert("RGB")
     out.save(out_path, "PNG", optimize=True)
     print(
         f"wrote {out_path} size={size} v={V_STRETCH} left={text_left}({text_left/w:.1%}) "
-        f"title_w={content_w} sub_nat={natural_sw} -> exact {content_w}"
+        f"natural=({natural_w}x{natural_h}) stretched_h={content_h} "
+        f"title_w={content_w} sub_nat={natural_sw}->exact"
     )
 
 
