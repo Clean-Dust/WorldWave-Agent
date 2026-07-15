@@ -57,9 +57,14 @@ else
 fi
 
 # 3) Clean pong via /ww/run (content + no internal leak)
+# Must use core.public_reply.extract_user_response — top-level "response" is often
+# absent on reflex path; answer lives in actions[].result.output (reflex_text).
 if [ -n "$KEY" ]; then
-  RESP=$(.venv/bin/python - <<'PY2' || true
-import json, os, urllib.request
+  BODY=$(.venv/bin/python - <<'PY2' || true
+import json, os, sys, urllib.request
+sys.path.insert(0, os.getcwd())
+from core.public_reply import extract_user_response
+
 port = os.environ.get("WW_PORT", "9300")
 key = os.environ.get("WW_API_KEY", "")
 body = {"goal": "Reply with exactly the single word pong and nothing else.", "max_spirals": 2}
@@ -70,16 +75,16 @@ req = urllib.request.Request(
     method="POST",
 )
 try:
-    print(urllib.request.urlopen(req, timeout=90).read().decode())
+    raw = urllib.request.urlopen(req, timeout=90).read().decode()
+    data = json.loads(raw)
 except Exception as e:
-    print(json.dumps({"response": "", "error": str(e)}))
+    print("")
+    print("SMOKE_ERR", e, file=sys.stderr)
+    raise SystemExit(0)
+text = extract_user_response(data) or ""
+print(text)
 PY2
 )
-  BODY=$(printf '%s' "$RESP" | python3 -c 'import sys,json
-try:
- d=json.load(sys.stdin); print(d.get("response") or "")
-except Exception:
- print("")' 2>/dev/null || true)
   LOW=$(printf '%s' "$BODY" | tr '[:upper:]' '[:lower:]')
   if printf '%s' "$LOW" | grep -q 'reflex arc'; then
     fail "user response leaked Reflex arc: ${BODY:0:80}"
