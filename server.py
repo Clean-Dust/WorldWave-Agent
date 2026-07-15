@@ -1205,8 +1205,13 @@ def memory_op(req: MemoryRequest):
 
 @app.get("/ww/memory/stats")
 def memory_stats():
-    """Memory System Statistics"""
-    return server.memory.get_stats()
+    """Memory System Statistics (includes entity Working Memory capacity when available)."""
+    out = server.memory.get_stats()
+    if not isinstance(out, dict):
+        out = {"stats": out}
+    if getattr(server, "entity_mgr", None) is not None:
+        out["working_memory_capacity"] = server.entity_mgr.working_memory_capacity
+    return out
 
 @app.get("/ww/memory/recent")
 def memory_recent(limit: int = 10):
@@ -2691,22 +2696,33 @@ def identity_link(req: dict):
 
 @app.get("/ww/identity/state/{entity_id}")
 def entity_state_get(entity_id: str):
-    """Get entity persistent state (working memory, preferences, context)."""
+    """Get entity persistent state (working memory, preferences, context).
+
+    Includes working_memory_size, working_memory_capacity, wm_evicted_total
+    for Working Memory (bounded entity RAM) observability.
+    """
     state = server.entity_mgr.get(entity_id)
-    return state.to_dict()
+    out = state.to_dict()
+    out.update(server.entity_mgr.get_wm_status(entity_id))
+    return out
 
 @app.post("/ww/identity/state/{entity_id}")
 def entity_state_set(entity_id: str, req: dict):
-    """Set entity working memory or preferences."""
-    state = server.entity_mgr.get(entity_id)
+    """Set entity working memory or preferences.
+
+    Working memory writes go through capacity enforcement (evict on overflow).
+    """
     if "working_memory" in req:
         for k, v in req["working_memory"].items():
-            state.working_memory[k] = v
+            server.entity_mgr.set_working_memory(entity_id, str(k), str(v))
+    state = server.entity_mgr.get(entity_id)
     if "preferences" in req:
         for k, v in req["preferences"].items():
             state.preferences[k] = v
-    server.entity_mgr.save(state)
-    return state.to_dict()
+        server.entity_mgr.save(state)
+    out = state.to_dict()
+    out.update(server.entity_mgr.get_wm_status(entity_id))
+    return out
 
 
 if __name__ == "__main__":

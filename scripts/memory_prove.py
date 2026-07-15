@@ -2,7 +2,7 @@
 """WW Memory prove harness — mechanism + product modes.
 
 Modes:
-  --mechanism   L0 unit tests + L1 capacity/GC/promote (isolated data_dir)
+  --mechanism   L0 unit tests + L1 capacity/GC/promote + B3 WM (isolated data_dir)
   --product     A1–A4 natural write/read on live server (no harness cheating)
   --all         mechanism then product (default if no flags)
 
@@ -90,6 +90,7 @@ def run_l0(report: Report) -> None:
         "tests/test_memory_curation.py",
         "tests/test_memory_recall_sleep.py",
         "tests/test_memory.py",
+        "tests/test_working_memory.py",
         "-q",
         "--tb=line",
     ]
@@ -240,6 +241,84 @@ def run_promote(report: Report) -> None:
             "MemorySystem atoms",
         )
     finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def run_b3_working_memory(report: Report) -> None:
+    """B3: isolated EntityStateManager capacity eviction (no LLM)."""
+    from unittest.mock import MagicMock
+
+    from core.entity_state import EntityStateManager
+
+    td = tempfile.mkdtemp(prefix="ww-mem-b3-")
+    prev_cap = os.environ.get("WW_WORKING_MEMORY_CAPACITY")
+    try:
+        os.environ["WW_WORKING_MEMORY_CAPACITY"] = "3"
+        cfg = MagicMock()
+        cfg.get = MagicMock(return_value=None)
+        cfg.expand_path = MagicMock(side_effect=lambda p: os.path.expanduser(p))
+        esm = EntityStateManager(config=cfg, data_dir=td)
+        assert esm.working_memory_capacity == 3
+
+        promoted: List[tuple] = []
+        esm.set_on_wm_evict(lambda e, k, v: promoted.append((e, k, v)))
+        esm._promote_min_access = 2
+
+        eid = "ent_b3"
+        esm.set_working_memory(eid, "a", "va")
+        time.sleep(0.01)
+        esm.set_working_memory(eid, "b", "vb")
+        time.sleep(0.01)
+        esm.set_working_memory(eid, "c", "vc")
+        # Hot-access "b" so cold "a" is preferred victim
+        st = esm.get(eid)
+        for _ in range(4):
+            st.bump_wm_access(["b"])
+        esm.save(st)
+        time.sleep(0.01)
+        esm.set_working_memory(eid, "d", "vd")  # capacity+1
+
+        st = esm.get(eid)
+        size_ok = len(st.working_memory) == 3
+        hot_kept = "b" in st.working_memory
+        cold_gone = "a" not in st.working_memory
+        archive = Path(td) / eid / "wm_evicted.jsonl"
+        arch_ok = archive.exists() and any(
+            "a" in line for line in archive.read_text(encoding="utf-8").splitlines()
+        )
+
+        # Force-promote path on a fresh entity (high-access key vs core slot)
+        esm.working_memory_capacity = 1
+        eid2 = "ent_b3_promo"
+        esm.set_working_memory(eid2, "promo_key", "promo_val")
+        st2 = esm.get(eid2)
+        for _ in range(3):
+            st2.bump_wm_access(["promo_key"])
+        esm.save(st2)
+        esm.set_working_memory(eid2, "core_only", "x", is_core=True)
+        promo_ok = any(p[1] == "promo_key" for p in promoted)
+        st2 = esm.get(eid2)
+
+        ok = size_ok and hot_kept and cold_gone and arch_ok and promo_ok
+        report.add(
+            "B3 entity working memory capacity",
+            ok,
+            f"size_ok={size_ok} hot_kept={hot_kept} cold_gone={cold_gone} "
+            f"arch={arch_ok} promo={promo_ok} wm_evicted={st.wm_evicted_total}+{st2.wm_evicted_total}",
+            "EntityStateManager WM",
+        )
+    except Exception as e:
+        report.add(
+            "B3 entity working memory capacity",
+            False,
+            f"error: {e}",
+            "EntityStateManager WM",
+        )
+    finally:
+        if prev_cap is None:
+            os.environ.pop("WW_WORKING_MEMORY_CAPACITY", None)
+        else:
+            os.environ["WW_WORKING_MEMORY_CAPACITY"] = prev_cap
         shutil.rmtree(td, ignore_errors=True)
 
 
@@ -496,6 +575,7 @@ def run_mechanism(report: Report) -> None:
     run_b1_capacity(report)
     run_b2_gc(report)
     run_promote(report)
+    run_b3_working_memory(report)
 
 
 def _live_client() -> LiveClient:
@@ -763,7 +843,9 @@ def run_telegram_channel(report: Report) -> None:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description="WW Memory prove harness")
-    ap.add_argument("--mechanism", action="store_true", help="L0 + B1 + B2 + promote")
+    ap.add_argument(
+        "--mechanism", action="store_true", help="L0 + B1 + B2 + promote + B3 WM"
+    )
     ap.add_argument("--product", action="store_true", help="A1–A4 live product path")
     ap.add_argument("--restart", action="store_true", help="write → restart service → read")
     ap.add_argument("--narrative", action="store_true", help="multi-turn distraction recall")

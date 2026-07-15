@@ -1,5 +1,5 @@
 """
-Worldwave Memory System — Bionic Three-layer Architecture
+Worldwave Memory System — Bionic Architecture
 
 WW's memory is a first-class module of the framework (not an external service).
 Third pillar alongside main consciousness and subconscious.
@@ -7,8 +7,16 @@ Third pillar alongside main consciousness and subconscious.
 Core principles:
 - Memory is private - does not participate in federated learning
 - Memory system is integral to WW, not separable
-- Three-layer separation: Short-term Buffer (Hippocampus) -> Emotional Scoring (Amygdala) -> Long-term Consolidation (Sleep)
+- Bounded online buffers + long-term store (no infinite-prompt promise)
 - Recall via pattern completion + diffuse activation, not keyword search
+
+Three layers (entity → episodic → LTM):
+  Working Memory (entity RAM, core/entity_state.py) — fixed-capacity online facts
+  → Hippocampus (episodic cap + protect/GC) — short-term buffer
+  → sleep / promote (LTM) — consolidation into durable knowledge
+
+Also within this package:
+  Short-term Buffer (Hippocampus) -> Emotional Scoring (Amygdala) -> Sleep
 
 Modules:
 atom.py          Memory atom + Entity Resolution + Fact Store

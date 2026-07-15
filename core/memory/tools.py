@@ -14,8 +14,8 @@ These are the mechanism that makes entity continuity possible — the agent
 can say "I'll remember that" and actually do it.
 
 Integration:
-- EntityStateManager: stores working memory (fast, always in context)
-- MemorySystem: stores semantic facts (durable, recallable)
+- EntityStateManager: bounded working memory (RAM, capacity-evicted)
+- MemorySystem: durable atoms; also receives promote-on-evict from WM
 """
 
 from __future__ import annotations
@@ -40,10 +40,40 @@ class MemoryTools:
         self._memory = memory_system
         self._entity_mgr = entity_state_mgr
         self._entity_id = entity_id or "default"
+        self._wire_wm_evict()
 
     def set_entity(self, entity_id: str):
         """Set the current entity context (called before each interaction)."""
         self._entity_id = entity_id
+
+    def _wire_wm_evict(self) -> None:
+        """Promote important WM evictions into MemorySystem atoms (once per mgr)."""
+        if not self._entity_mgr or not self._memory:
+            return
+        if getattr(self._entity_mgr, "_wm_evict_wired", False):
+            return
+
+        def _on_wm_evict(entity_id: str, key: str, value: str) -> None:
+            fact = f"{key}: {value}"
+            try:
+                if hasattr(self._memory, "store_fact"):
+                    self._memory.store_fact(
+                        fact=fact,
+                        entities=[key, "wm_evict"],
+                        context_id=f"wm_evict:{entity_id}",
+                    )
+                elif hasattr(self._memory, "store_text"):
+                    self._memory.store_text(
+                        fact, source="wm_evict", entities=[key, "wm_evict"]
+                    )
+                log.info(
+                    "WM promote→LTM entity=%s key=%s", entity_id[:12], key
+                )
+            except Exception as e:
+                log.warning("WM promote store failed for %s: %s", key, e)
+
+        self._entity_mgr.set_on_wm_evict(_on_wm_evict)
+        self._entity_mgr._wm_evict_wired = True
 
     # ── remember ─────────────────────────────────────────────────
 
@@ -60,7 +90,8 @@ class MemoryTools:
             key: Short label for the fact (e.g., "user_name", "preferred_model")
             value: The fact content (e.g., "Chung", "deepseek-v4-pro")
             category: Optional category tag (general, preference, technical, etc.)
-            is_core: If True, mark as core memory (never auto-evicted / GC'd)
+            is_core: If True, mark as core memory (never auto-evicted / GC'd).
+                     Always dual-writes to MemorySystem atoms; WM key is protected.
 
         Returns:
             {"status": "stored", "key": key, "previous": old_value or None}
@@ -73,15 +104,18 @@ class MemoryTools:
 
         previous = None
 
-        # 1. Store in entity working memory (always in context)
+        # 1. Entity working memory (bounded RAM; is_core keys are not auto-evicted)
         if self._entity_mgr:
             state = self._entity_mgr.get(self._entity_id)
             previous = state.working_memory.get(key)
-            self._entity_mgr.set_working_memory(self._entity_id, key, value)
-            log.info("Entity %s: remember '%s' = '%s' (was: %s)",
-                     self._entity_id[:12], key, value[:50], previous)
+            self._entity_mgr.set_working_memory(
+                self._entity_id, key, value, is_core=bool(is_core)
+            )
+            log.info("Entity %s: remember '%s' = '%s' (was: %s, is_core=%s)",
+                     self._entity_id[:12], key, value[:50], previous, is_core)
 
-        # 2. Store in semantic memory (durable, recallable)
+        # 2. Semantic / atom memory (durable). is_core always goes to MemorySystem
+        #    so core facts are not only in the volatile WM buffer.
         if self._memory:
             fact_text = self._format_fact(key, value, category)
             if is_core and hasattr(self._memory, "_do_store"):
