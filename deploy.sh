@@ -51,6 +51,24 @@ ww_has_llm_key() {
     return 1
 }
 
+# True if Telegram gateway token is already configured (env or .env).
+ww_has_telegram_token() {
+    local env_file="${1:-}"
+    local val
+    val="${TELEGRAM_WW_TOKEN:-}"
+    val=$(echo "$val" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [ -n "$val" ]; then
+        return 0
+    fi
+    if [ -n "$env_file" ] && [ -f "$env_file" ]; then
+        val=$(grep "^TELEGRAM_WW_TOKEN=" "$env_file" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' | sed 's/^["'\'']//;s/["'\'']$//;s/^[[:space:]]*//;s/[[:space:]]*$//')
+        if [ -n "$val" ]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 # Upsert KEY=VALUE in .env (Darwin/Linux sed). Creates file if missing.
 ww_upsert_env() {
     local key="$1"
@@ -817,6 +835,53 @@ if ! ww_has_llm_key "$ENV_FILE"; then
         echo ""
         ok "Install complete"
         exit 0
+    fi
+fi
+
+# Offer messaging gateway (opt-in, after LLM key is present; TTY only for prompt)
+if ww_has_llm_key "$ENV_FILE"; then
+    if [ -t 0 ]; then
+        if ww_has_telegram_token "$ENV_FILE"; then
+            echo ""
+            ok "Telegram gateway token already configured"
+        else
+            echo ""
+            echo -e "  ${BOLD}🌐  Set up a messaging gateway now? (Telegram)${NC}"
+            echo -e "  ${DIM}    Chat from your phone after install.${NC}"
+            printf "  ${CYAN}[y/N] ${NC}"
+            read -r GW_SETUP || GW_SETUP=""
+            GW_SETUP=$(echo "$GW_SETUP" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            case "$GW_SETUP" in
+                y|Y|yes|YES|Yes)
+                    export PATH="$LOCAL_BIN:$PATH"
+                    # Align CLI ↔ server on shared WW_API_KEY (~/.ww/api_key)
+                    _WW_KEY_FILE="${WW_CONFIG:-$HOME/.ww}/api_key"
+                    if [ -z "${WW_API_KEY:-}" ] && [ -f "$_WW_KEY_FILE" ]; then
+                        WW_API_KEY=$(tr -d '\r\n' < "$_WW_KEY_FILE")
+                        export WW_API_KEY
+                    fi
+                    unset _WW_KEY_FILE
+                    cd "$INSTALL_DIR"
+                    if [ -x "$LOCAL_BIN/ww" ]; then
+                        "$LOCAL_BIN/ww" gateway setup || \
+                            warn "Gateway setup exited — later: ww gateway setup"
+                    elif [ -x "$VENV_DIR/bin/python" ] && [ -f "$INSTALL_DIR/ww_cli.py" ]; then
+                        "$VENV_DIR/bin/python" "$INSTALL_DIR/ww_cli.py" gateway setup || \
+                            warn "Gateway setup exited — later: ww gateway setup"
+                    else
+                        warn "ww CLI not found — later: ww gateway setup"
+                    fi
+                    ;;
+                *)
+                    echo -e "  ${DIM}Later: ww gateway setup${NC}"
+                    ;;
+            esac
+        fi
+    else
+        # Non-TTY (curl|bash): do not prompt
+        if ! ww_has_telegram_token "$ENV_FILE"; then
+            echo -e "  ${DIM}Optional later: ww gateway setup${NC}"
+        fi
     fi
 fi
 

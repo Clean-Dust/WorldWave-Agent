@@ -492,7 +492,8 @@ def cmd_run(args):
         print(f"\n{Colors.cyan('═══ Worldwave ═══')}")
         print(
             f"Enter a goal, or type {Colors.yellow('/exit')} / "
-            f"{Colors.yellow('/help')} / {Colors.yellow('/update')}\n"
+            f"{Colors.yellow('/help')} / {Colors.yellow('/update')} / "
+            f"{Colors.yellow('/gateway')}\n"
         )
         max_spirals = getattr(args, "spirals", None) or 3
         while True:
@@ -515,7 +516,10 @@ def cmd_run(args):
                     "  /update             Upgrade Worldwave (not an LLM goal)\n"
                     "  /update status      Version comparison\n"
                     "  /update --dry-run   Preview incoming commits\n"
-                    "  Also: update · upgrade · ww update · ww upgrade"
+                    "  /gateway            Gateway status / setup (not an LLM goal)\n"
+                    "  /gateway setup      Interactive Telegram gateway setup\n"
+                    "  Also: update · upgrade · ww update · gateway · "
+                    "ww gateway · /ww gateway"
                 )
                 continue
             if line == "/clear":
@@ -525,6 +529,11 @@ def cmd_run(args):
             update_action = parse_chat_update_command(line)
             if update_action is not None:
                 handle_chat_update(update_action)
+                continue
+            # Intercept gateway commands — never send as /ww/run goals
+            gateway_cmd = parse_chat_gateway_command(line)
+            if gateway_cmd is not None:
+                handle_chat_gateway(gateway_cmd[0], gateway_cmd[1])
                 continue
             print(f"{Colors.cyan('⟳')} Thinking...", end="", flush=True)
             payload = {"goal": line, "max_spirals": max_spirals}
@@ -980,6 +989,60 @@ def handle_chat_update(action: str) -> None:
         )
     else:
         print(f"\n{Colors.red('✗')} {result['message']}")
+
+
+def parse_chat_gateway_command(line: str) -> Optional[tuple]:
+    """If *line* is an in-chat gateway command, return (action, platform); else None.
+
+    Accepted (case-insensitive, surrounding whitespace ignored):
+      gateway | /gateway | ww gateway | /ww gateway
+      … setup | list | start | stop
+      start/stop may take an optional platform (e.g. telegram)
+
+    Returns:
+      ("", None)           — bare gateway (status if configured, else setup)
+      ("setup", None)
+      ("list", None)
+      ("start", platform_or_None)
+      ("stop", platform_or_None)
+      None                 — not a gateway command (treat as LLM goal)
+    """
+    s = (line or "").strip().rstrip("\r").strip()
+    if not s:
+        return None
+    lower = s.lower()
+    # Normalize fullwidth solidus U+FF0F → ASCII slash
+    if lower.startswith("\uff0f"):
+        lower = "/" + lower[1:]
+    # Optional leading slash (covers /gateway and /ww gateway …)
+    if lower.startswith("/"):
+        lower = lower[1:].lstrip()
+    # Optional leading "ww " (shell form inside chat, including after /)
+    if lower.startswith("ww "):
+        lower = lower[3:].lstrip()
+
+    parts = lower.split()
+    if not parts or parts[0] != "gateway":
+        return None
+    if len(parts) == 1:
+        return ("", None)
+    action = parts[1]
+    if action == "setup" and len(parts) == 2:
+        return ("setup", None)
+    if action == "list" and len(parts) == 2:
+        return ("list", None)
+    if action in ("start", "stop") and len(parts) in (2, 3):
+        platform = parts[2] if len(parts) == 3 else None
+        return (action, platform)
+    # e.g. "gateway my bot token" → not a CLI gateway command
+    return None
+
+
+def handle_chat_gateway(action: str, platform: Optional[str] = None) -> None:
+    """Run gateway CLI from the interactive REPL (never via /ww/run)."""
+    # Auth before any /ww/gateway/* call so setup cannot 401 from a missing key
+    load_or_create_api_key()
+    cmd_gateway(ArgsObj(action=action or None, platform=platform))
 
 
 def cmd_update(args):
@@ -1557,10 +1620,15 @@ def cmd_gateway(args):
     """Gateway management — connect to Telegram, Discord, etc."""
     action = args.action
 
+    # Shared HTTP auth: env/file key before any /ww/gateway/* call.
+    # Prevents 401 when the server was started with a different in-memory key.
+    load_or_create_api_key()
+
     # ── Setup mode: interactive gateway configuration ──
     if action == "setup" or not action:
-        if not ensure_server_running():
+        if not auto_start_server():
             print(f"{Colors.red('✗')} Cannot start WW server")
+            print(f"  Fix:  {Colors.cyan('ww server restart')}  then retry setup")
             return
 
         # Check existing gateways
@@ -1628,7 +1696,11 @@ def cmd_gateway(args):
                 print(f"{Colors.green('✓')} Telegram gateway started!")
                 print(f"  {Colors.dim('Try sending /start to your bot on Telegram')}")
             else:
-                print(f"{Colors.yellow('⚠')} Gateway start failed — restart server: ww server restart")
+                print(
+                    f"{Colors.yellow('⚠')} Gateway start failed — "
+                    f"run {Colors.cyan('ww server restart')} then "
+                    f"{Colors.cyan('ww gateway setup')} again"
+                )
 
             return
 
@@ -1637,7 +1709,11 @@ def cmd_gateway(args):
 
     # ── List ──
     if action == "list":
-        status = api_get("/ww/gateway/list") if ensure_server_running() else None
+        if not auto_start_server():
+            print(f"\n  {Colors.dim('(server not running)')}")
+            print(f"  {Colors.yellow('→')} Run {Colors.cyan('ww gateway setup')} to get started\n")
+            return
+        status = api_get("/ww/gateway/list")
         if status and isinstance(status, dict):
             gateways = status.get("gateways", status)
             print(f"\n{Colors.bold('Gateway:')}\n")
@@ -1655,14 +1731,25 @@ def cmd_gateway(args):
             print(f"  {Colors.yellow('→')} Run {Colors.cyan('ww gateway setup')} to get started\n")
 
     elif action == "start":
+        if not auto_start_server():
+            print(f"  {Colors.red('✗')} Cannot start WW server")
+            print(f"  Fix:  {Colors.cyan('ww server restart')}  then retry")
+            return
         platform = args.platform or "telegram"
         result = api_post("/ww/gateway/start", {"platform": platform})
         if result:
             print(f"  {Colors.green('✓')} {platform} gateway started")
         else:
-            print(f"  {Colors.red('✗')} Failed to start (server not running?)")
+            print(
+                f"  {Colors.red('✗')} Failed to start — "
+                f"try {Colors.cyan('ww server restart')} then "
+                f"{Colors.cyan('ww gateway start')}"
+            )
 
     elif action == "stop":
+        if not auto_start_server():
+            print(f"  {Colors.red('✗')} Cannot start WW server")
+            return
         platform = args.platform or "telegram"
         api_post("/ww/gateway/stop", {"platform": platform})
         print(f"  {Colors.yellow('○')} {platform} gateway stopped")

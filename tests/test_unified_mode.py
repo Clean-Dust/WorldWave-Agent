@@ -369,6 +369,112 @@ class TestChatUpdateIntercept:
 
 
 # ══════════════════════════════════════════════
+# Tests: Interactive chat gateway interception
+# ══════════════════════════════════════════════
+
+class TestChatGatewayIntercept:
+    """REPL must not send '/ww gateway setup' / '/gateway' as LLM goals."""
+
+    @pytest.mark.parametrize(
+        "line,expected",
+        [
+            ("/gateway", ("", None)),
+            ("gateway", ("", None)),
+            ("ww gateway", ("", None)),
+            ("/ww gateway", ("", None)),
+            ("WW Gateway", ("", None)),
+            ("  /gateway  ", ("", None)),
+            ("/gateway setup", ("setup", None)),
+            ("gateway setup", ("setup", None)),
+            ("ww gateway setup", ("setup", None)),
+            ("/ww gateway setup", ("setup", None)),  # exact screenshot form
+            ("/WW gateway SETUP", ("setup", None)),
+            ("gateway list", ("list", None)),
+            ("/gateway list", ("list", None)),
+            ("ww gateway list", ("list", None)),
+            ("/ww gateway list", ("list", None)),
+            ("gateway start", ("start", None)),
+            ("gateway start telegram", ("start", "telegram")),
+            ("/gateway stop", ("stop", None)),
+            ("ww gateway stop telegram", ("stop", "telegram")),
+            ("／gateway setup", ("setup", None)),  # fullwidth solidus
+            # must not steal update / exit / normal goals
+            ("/update", None),
+            ("/exit", None),
+            ("exit", None),
+            ("gateway my bot", None),
+            ("please gateway setup something", None),
+            ("hello", None),
+            ("", None),
+        ],
+    )
+    def test_parse_chat_gateway_command(self, cli_module, line, expected):
+        assert cli_module.parse_chat_gateway_command(line) == expected
+
+    def test_repl_ww_gateway_setup_does_not_call_api(self, cli_module):
+        """Typing '/ww gateway setup' in chat must run cmd_gateway, not api_post."""
+        inputs = iter(["/ww gateway setup", "/exit"])
+
+        with patch.object(cli_module, "check_llm_api_key", return_value="deepseek"):
+            with patch.object(cli_module, "load_or_create_api_key", return_value="k"):
+                with patch.object(cli_module, "auto_start_server", return_value=True):
+                    with patch.object(cli_module, "api_post") as mock_api:
+                        with patch.object(cli_module, "cmd_gateway") as mock_gw:
+                            with patch(
+                                "builtins.input",
+                                side_effect=lambda *_a, **_k: next(inputs),
+                            ):
+                                args = type("Args", (), {"goal": [], "spirals": None})()
+                                cli_module.cmd_run(args)
+
+        mock_gw.assert_called_once()
+        call_args = mock_gw.call_args[0][0]
+        assert call_args.action == "setup"
+        mock_api.assert_not_called()
+        print("✅ CLI: /ww gateway setup in REPL does not call api_post")
+
+    def test_repl_gateway_list_does_not_call_api(self, cli_module):
+        inputs = iter(["gateway list", "/exit"])
+
+        with patch.object(cli_module, "check_llm_api_key", return_value="deepseek"):
+            with patch.object(cli_module, "load_or_create_api_key", return_value="k"):
+                with patch.object(cli_module, "auto_start_server", return_value=True):
+                    with patch.object(cli_module, "api_post") as mock_api:
+                        with patch.object(cli_module, "cmd_gateway") as mock_gw:
+                            with patch(
+                                "builtins.input",
+                                side_effect=lambda *_a, **_k: next(inputs),
+                            ):
+                                args = type("Args", (), {"goal": [], "spirals": None})()
+                                cli_module.cmd_run(args)
+
+        mock_gw.assert_called_once()
+        assert mock_gw.call_args[0][0].action == "list"
+        mock_api.assert_not_called()
+        print("✅ CLI: gateway list in REPL does not call api_post")
+
+    def test_help_lists_gateway(self, cli_module, capsys):
+        inputs = iter(["/help", "/exit"])
+
+        with patch.object(cli_module, "check_llm_api_key", return_value="deepseek"):
+            with patch.object(cli_module, "load_or_create_api_key", return_value="k"):
+                with patch.object(cli_module, "auto_start_server", return_value=True):
+                    with patch.object(cli_module, "api_post") as mock_api:
+                        with patch(
+                            "builtins.input",
+                            side_effect=lambda *_a, **_k: next(inputs),
+                        ):
+                            args = type("Args", (), {"goal": [], "spirals": None})()
+                            cli_module.cmd_run(args)
+
+        out = capsys.readouterr().out
+        assert "/gateway" in out
+        assert "/gateway setup" in out
+        mock_api.assert_not_called()
+        print("✅ CLI: /help lists /gateway")
+
+
+# ══════════════════════════════════════════════
 # Main
 # ══════════════════════════════════════════════
 
