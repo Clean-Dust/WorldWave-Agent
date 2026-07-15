@@ -175,15 +175,16 @@ def compose(w: int, h: int, out_path: Path) -> None:
     # Shared vertical center so mascot + type sit on one horizontal band
     band_cy = int(h * 0.48)
 
-    # Shared outline thickness for shark + all type (match mascot)
+    # Shared base outline; shark slightly thinner than type
     target_h = int(h * 0.70)
     outline_stroke = max(2, min(4, target_h // 90))
+    shark_stroke = max(1, outline_stroke - 2)  # thinner mascot outline
 
     # Shark left — raised + black outline
     sh = shark_src.copy()
     ratio = target_h / sh.height
     sh = sh.resize((max(1, int(sh.width * ratio)), target_h), Image.Resampling.LANCZOS)
-    sh = outline_rgba(sh, stroke=outline_stroke, color=(0, 0, 0, 255))
+    sh = outline_rgba(sh, stroke=shark_stroke, color=(0, 0, 0, 255))
     sx = int(w * 0.03)
     sy = band_cy - sh.height // 2
     sy = max(int(h * 0.04), min(sy, h - sh.height - int(h * 0.06)))
@@ -248,8 +249,9 @@ def compose(w: int, h: int, out_path: Path) -> None:
     out = bg.convert("RGB")
     out.save(out_path, "PNG", optimize=True)
     print(
-        f"wrote {out_path} outline_stroke={outline_stroke} shark_y={sy} title_y={title_y} "
-        f"band_cy={band_cy} shark_mid={sy + sh.height//2} title_mid={title_y + text_block_h//2}"
+        f"wrote {out_path} type_stroke={outline_stroke} shark_stroke={shark_stroke} "
+        f"shark_y={sy} title_y={title_y} band_cy={band_cy} "
+        f"shark_mid={sy + sh.height//2} title_mid={title_y + text_block_h//2}"
     )
 
 
