@@ -70,42 +70,66 @@ def make_bg(w: int, h: int) -> Image.Image:
         draw.polygon(pts, fill=(*WAVE, alpha))
         crest_lines.append(ridge)
 
-    # White sea foam along wave crests
+    # White sea foam along wave crests — broken / fragmented whitecaps
     foam = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     fd = ImageDraw.Draw(foam)
     for i, ridge in enumerate(crest_lines):
-        # soft white ribbon hugging the crest
-        ribbon = []
-        for x, yy in ridge:
-            ribbon.append((x, yy - 1))
-        # go back lower for a thin band
-        for x, yy in reversed(ridge):
-            ribbon.append((x, yy + 4 + i))
-        a = 70 - i * 12
-        fd.polygon(ribbon, fill=(255, 255, 255, max(28, a)))
-        # crest highlight line
-        if len(ridge) >= 2:
-            fd.line(ridge, fill=(255, 255, 255, 110 - i * 20), width=2)
-        # scattered whitecap dots / flecks along crest
-        step = 18 + i * 6
-        for j in range(0, len(ridge), max(1, step // 8)):
+        # broken crest dashes (not a continuous ribbon)
+        if len(ridge) >= 4:
+            for j in range(0, len(ridge) - 1, 3):
+                # skip some segments for broken look
+                if (j + i) % 5 == 0:
+                    continue
+                x0, y0 = ridge[j]
+                x1, y1 = ridge[min(j + 2, len(ridge) - 1)]
+                fd.line(
+                    [(x0, y0), (x1, y1)],
+                    fill=(255, 255, 255, 100 - i * 18),
+                    width=1 + (j % 2),
+                )
+        # dense flecks / spray clusters along ridge
+        for j in range(0, len(ridge), 2):
             x, yy = ridge[j]
-            # only near local crests (high points)
-            if j > 0 and j < len(ridge) - 1:
-                prev_y = ridge[j - 1][1]
-                next_y = ridge[j + 1][1]
-                if yy <= prev_y and yy <= next_y:
-                    r = 2 + (j % 3)
-                    fd.ellipse(
-                        [x - r, yy - r - 1, x + r + 2, yy + r],
-                        fill=(255, 255, 255, 150),
+            # local crest preference + some random-ish scatter via hash
+            hsh = (x * 73856093 + int(yy) * 19349663 + i * 83492791) & 0xFFFFFFFF
+            if hsh % 3 == 0:
+                continue
+            # cluster of tiny white dots (broken foam)
+            n_dots = 2 + (hsh % 4)
+            for k in range(n_dots):
+                h2 = (hsh + k * 2654435761) & 0xFFFFFFFF
+                ox = (h2 % 11) - 5
+                oy = ((h2 >> 4) % 7) - 2
+                rr = 1 + ((h2 >> 8) % 3)
+                alpha = 70 + ((h2 >> 12) % 90)
+                fd.ellipse(
+                    [x + ox - rr, yy + oy - rr, x + ox + rr, yy + oy + rr],
+                    fill=(255, 255, 255, min(200, alpha)),
+                )
+            # occasional larger clump
+            if hsh % 7 == 0:
+                fd.ellipse(
+                    [x - 4, yy - 2, x + 6, yy + 3],
+                    fill=(255, 255, 255, 55),
+                )
+            # spray up
+            if hsh % 5 == 0:
+                for s in range(3):
+                    fd.point(
+                        (x + s * 2 - 2, yy - 4 - s * 2),
+                        fill=(255, 255, 255, 120),
                     )
-                    # tiny spray
-                    fd.ellipse(
-                        [x + 4, yy - 5, x + 7, yy - 2],
-                        fill=(255, 255, 255, 90),
-                    )
-    foam = foam.filter(ImageFilter.GaussianBlur(0.8))
+        # secondary broken foam band slightly below crest
+        for j in range(1, len(ridge), 4):
+            x, yy = ridge[j]
+            hsh = (x * 97 + i * 13) & 255
+            if hsh % 2:
+                fd.ellipse(
+                    [x - 3, yy + 3, x + 5, yy + 7],
+                    fill=(255, 255, 255, 40 + (hsh % 40)),
+                )
+    # light blur so flecks feel soft, still fragmented
+    foam = foam.filter(ImageFilter.GaussianBlur(0.6))
     base = Image.alpha_composite(base, foam)
 
     glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
