@@ -608,16 +608,48 @@ if [ "$CMD" = "key" ]; then
 
     case "$KEY_ACTION" in
         set)
-            if [ -z "$NEW_KEY" ] && [ -z "$KEY_PROVIDER" ]; then
-                echo "⚠️  Usage: ww key set <key> [provider]"
-                echo "   Providers: $WW_PROVIDER_IDS"
-                echo "   Local Ollama (no key): ww key set none ollama"
-                exit 1
+            # No key arg: interactive on TTY (provider then key); usage on non-TTY
+            if [ -z "$NEW_KEY" ]; then
+                if [ -t 0 ]; then
+                    if [ -z "$KEY_PROVIDER" ]; then
+                        KEY_PROVIDER=$(ww_ask_provider_tty)
+                    fi
+                    KEY_PROVIDER=$(ww_normalize_provider "${KEY_PROVIDER:-}")
+                    if [ -z "$KEY_PROVIDER" ]; then
+                        echo "⚠️  No provider selected."
+                        exit 1
+                    fi
+                    if [ "$KEY_PROVIDER" = "ollama" ]; then
+                        echo "Paste API key (Enter = none for local Ollama):"
+                        printf "  → "
+                        read -r NEW_KEY || NEW_KEY=""
+                        NEW_KEY=$(echo "$NEW_KEY" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                        case "$(echo "$NEW_KEY" | tr '[:upper:]' '[:lower:]')" in
+                            ""|none|null) NEW_KEY="none" ;;
+                        esac
+                    else
+                        echo "Paste your API key:"
+                        printf "  → "
+                        read -r NEW_KEY || NEW_KEY=""
+                        NEW_KEY=$(echo "$NEW_KEY" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+                        if [ -z "$NEW_KEY" ]; then
+                            echo "⚠️  Empty key — not saved."
+                            exit 1
+                        fi
+                    fi
+                else
+                    echo "⚠️  Usage: ww key set <key> [provider]"
+                    echo "   Or run interactively (TTY): ww key set"
+                    echo "   Providers: $WW_PROVIDER_IDS"
+                    echo "   Local Ollama (no key): ww key set none ollama"
+                    exit 1
+                fi
             fi
             # Allow empty key when provider is ollama (handled in ww_save_llm_key)
             _norm_p=$(ww_normalize_provider "${KEY_PROVIDER:-}")
             if [ -z "$NEW_KEY" ] && [ "$_norm_p" != "ollama" ]; then
                 echo "⚠️  Usage: ww key set <key> [provider]"
+                echo "   Or run interactively (TTY): ww key set"
                 echo "   Providers: $WW_PROVIDER_IDS"
                 exit 1
             fi
@@ -672,6 +704,7 @@ if [ "$CMD" = "key" ]; then
             if [ "$FOUND" -eq 0 ]; then
                 echo "⚠️  No key configured."
                 echo "   Set one: ww key set <key> [provider]"
+                echo "   Or interactively (TTY): ww key set"
                 echo "   Providers: $WW_PROVIDER_IDS"
             fi
             exit 0
@@ -683,6 +716,7 @@ if [ "$CMD" = "key" ]; then
         *)
             echo "🌊 ww key — manage LLM API keys (multi-provider)"
             echo ""
+            echo "  ww key set                    Interactive setup (TTY: provider, then key)"
             echo "  ww key set <key> [provider]   Save/update API key"
             echo "  ww key show                   Show configured keys (masked)"
             echo "  ww key test                   Test primary key against its provider API"
@@ -691,6 +725,7 @@ if [ "$CMD" = "key" ]; then
             echo "  Key shape is auto-detected when possible (sk-ant-*, sk-or-*, sk-proj-*, gsk_*, AIza*)."
             echo "  Ambiguous sk-* keys need a provider: ww key set <key> openai"
             echo "  Local Ollama without key: ww key set none ollama"
+            echo "  Bare ww key set on a terminal starts interactive setup."
             exit 0
             ;;
     esac
