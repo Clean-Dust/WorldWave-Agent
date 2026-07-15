@@ -21,7 +21,7 @@
 
 <h2 id="english">Worldwave</h2>
 
-**恒久记忆 · 恒久自主 · 恒久 Session**
+**Persistent memory · Persistent autonomy · Persistent session**
 
 ### Quick Install
 
