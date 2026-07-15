@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Render Worldwave README hero banner + social preview.
 
-Base: user-approved frame (img_e3518b0217ed) colors/layout.
-Tweaks: WORLDWAVE v-stretch +20%, shift left 20% of canvas,
-subtitle line width matched exactly to WORLDWAVE glyph width.
+Layout zones (user annotated):
+  LEFT   — small blue shark (mascot)
+  RIGHT  — WORLDWAVE title (bold cyan, vertical stretch only)
+  BELOW  — promo line, letter-spaced to equal WORLDWAVE width
+
+Title must NOT invade the shark column.
 """
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -19,16 +22,13 @@ if not Path(BOLD).exists():
 if not Path(REG).exists():
     REG = "/mnt/c/Windows/Fonts/arial.ttf"
 
-# Sampled from approved base image img_e3518b0217ed
-TITLE_FILL = (49, 209, 247, 255)  # ~#31D1F7
+# Approved soft cyan palette
+TITLE_FILL = (49, 209, 247, 255)
 TITLE_GLOW = (25, 150, 210)
 SUB_FILL = (240, 248, 255, 255)
 BG_TOP = (0, 21, 73)
 WAVE = (15, 77, 131)
-# Base title left ≈ 31.0% of width on the reference frame
-REF_TITLE_LEFT_FRAC = 0.310
-V_STRETCH = 1.20
-LEFT_SHIFT_FRAC = 0.20  # of canvas width
+V_STRETCH = 1.20  # 只上下拉长，不整体放大
 
 
 def font(path: str, size: int) -> ImageFont.FreeTypeFont:
@@ -54,7 +54,7 @@ def make_bg(w: int, h: int) -> Image.Image:
             r = max(0, min(255, int(r * (1 - 0.10 * cx))))
             g = max(0, min(255, int(g * (1 - 0.08 * cx))))
             b = max(0, min(255, int(b * (1 - 0.05 * cx))))
-            lx = max(0, 1 - abs(x - w * 0.20) / (w * 0.40))
+            lx = max(0, 1 - abs(x - w * 0.18) / (w * 0.35))
             g = min(255, int(g + 12 * lx * (1 - t * 0.35)))
             b = min(255, int(b + 22 * lx * (1 - t * 0.25)))
             px[x, y] = (r, g, b)
@@ -69,12 +69,12 @@ def make_bg(w: int, h: int) -> Image.Image:
         draw.polygon(pts, fill=(*WAVE, alpha))
     glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     gd = ImageDraw.Draw(glow)
-    gx, gy = int(w * 0.20), int(h * 0.55)
-    for r, a in [(180, 26), (110, 38), (70, 48)]:
+    gx, gy = int(w * 0.18), int(h * 0.58)
+    for r, a in [(160, 26), (100, 38), (60, 48)]:
         gd.ellipse([gx - r, gy - r, gx + r, gy + r], fill=(30, 95, 155, a))
-    for r, a in [(150, 16), (90, 22)]:
+    for r, a in [(140, 14), (90, 20)]:
         gd.ellipse(
-            [int(w * 0.48) - r, int(h * 0.34) - r, int(w * 0.48) + r, int(h * 0.34) + r],
+            [int(w * 0.58) - r, int(h * 0.36) - r, int(w * 0.58) + r, int(h * 0.36) + r],
             fill=(20, 130, 200, a),
         )
     glow = glow.filter(ImageFilter.GaussianBlur(30))
@@ -82,12 +82,10 @@ def make_bg(w: int, h: int) -> Image.Image:
 
 
 def render_title_layer(text: str, fnt, v_stretch: float = 1.20) -> tuple[Image.Image, int, int]:
-    """Return (layer, content_w, content_h_after_stretch) — content box without pad."""
     tw, th = text_size(fnt, text)
     pad = 14
     layer = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    # textbbox origin may not be 0,0
     bb = ImageDraw.Draw(Image.new("RGBA", (8, 8))).textbbox((0, 0), text, font=fnt)
     ox, oy = int(pad - bb[0]), int(pad - bb[1])
     glow_r = 4
@@ -96,19 +94,17 @@ def render_title_layer(text: str, fnt, v_stretch: float = 1.20) -> tuple[Image.I
         for dx, dy in [(-r, 0), (r, 0), (0, -r), (0, r), (-r, -r), (r, r), (-r, r), (r, -r)]:
             d.text((ox + dx, oy + dy), text, font=fnt, fill=(*TITLE_GLOW, min(255, a)))
     d.text((ox, oy), text, font=fnt, fill=TITLE_FILL)
-
     content_w, content_h = tw, th
     if abs(v_stretch - 1.0) > 1e-3:
-        nw = layer.width
-        nh = max(1, int(round(layer.height * v_stretch)))
-        layer = layer.resize((nw, nh), Image.Resampling.LANCZOS)
+        layer = layer.resize(
+            (layer.width, max(1, int(round(layer.height * v_stretch)))),
+            Image.Resampling.LANCZOS,
+        )
         content_h = max(1, int(round(th * v_stretch)))
-        # content_w unchanged (vertical stretch only)
     return layer, content_w, content_h
 
 
-def fit_sub_font(text: str, target_w: int, max_size: int, min_size: int = 12) -> ImageFont.FreeTypeFont:
-    """Largest size whose natural width <= target_w; then letter-space to exact width at draw."""
+def fit_sub_font(text: str, target_w: int, max_size: int, min_size: int = 12):
     best = font(REG, min_size)
     for size in range(max_size, min_size - 1, -1):
         f = font(REG, size)
@@ -118,36 +114,20 @@ def fit_sub_font(text: str, target_w: int, max_size: int, min_size: int = 12) ->
     return best
 
 
-def draw_text_exact_width(
-    draw: ImageDraw.ImageDraw,
-    xy: tuple[int, int],
-    text: str,
-    fnt: ImageFont.FreeTypeFont,
-    target_w: int,
-    fill,
-) -> None:
-    """Draw text so total advance equals target_w (extra space distributed between glyphs)."""
+def draw_text_exact_width(draw, xy, text, fnt, target_w, fill):
     x, y = xy
     if not text:
         return
-    # Measure each character
-    widths = []
-    for ch in text:
-        cw, _ = text_size(fnt, ch)
-        widths.append(max(cw, 1))
+    widths = [max(text_size(fnt, ch)[0], 1) for ch in text]
     natural = sum(widths)
     if natural <= 0:
         return
     if len(text) == 1 or natural >= target_w:
-        # just draw; if slightly over, still draw left-aligned
         draw.text((x, y), text, font=fnt, fill=fill)
         return
-    # Distribute leftover across gaps between characters
     gaps = len(text) - 1
     leftover = target_w - natural
-    # base gap + first leftover%gaps get +1
-    base = leftover // gaps
-    rem = leftover % gaps
+    base, rem = leftover // gaps, leftover % gaps
     cursor = x
     for i, ch in enumerate(text):
         draw.text((cursor, y), ch, font=fnt, fill=fill)
@@ -159,60 +139,47 @@ def draw_text_exact_width(
 def compose(w: int, h: int, out_path: Path) -> None:
     bg = make_bg(w, h)
 
-    # Shark (left); smaller so title can honor -20% left shift
+    # ── PURPLE ZONE: shark left column ──
     sh = shark.copy()
-    target_h = int(h * 0.58)
+    target_h = int(h * 0.72)
     ratio = target_h / sh.height
     sh = sh.resize((max(1, int(sh.width * ratio)), target_h), Image.Resampling.LANCZOS)
-    sx = int(w * 0.015)
-    sy = h - sh.height - int(h * 0.02)
+    sx = int(w * 0.03)
+    sy = h - sh.height - int(h * 0.015)
     bg.paste(sh, (sx, sy), sh)
+    shark_right = sx + sh.width
 
     draw = ImageDraw.Draw(bg)
     title = "WORLDWAVE"
     sub = "Persistent memory · Persistent autonomy · Persistent session"
-    margin_r = 24
+    margin_r = 36
+    pad = 14
 
-    # Base left from reference (~31%), then shift left 20% of canvas
-    ref_left = int(w * REF_TITLE_LEFT_FRAC)
-    text_left = int(ref_left - LEFT_SHIFT_FRAC * w)
-    # Allow mild overlap over shark body (mascot sits under/behind type)
-    min_left = sx + int(sh.width * 0.45)
-    text_left = max(min_left, text_left)
-    text_left = max(int(w * 0.08), text_left)
+    # ── RED ZONE: WORLDWAVE to the RIGHT of shark (clear gap) ──
+    text_left = shark_right + int(w * 0.025)
     max_w = w - text_left - margin_r
 
-    # IMPORTANT: only vertical stretch — do NOT grow overall point size when left-shifted.
-    # Fit base size against the *reference* right margin (same as approved frame), then stretch Y only.
-    ref_left_for_size = int(w * REF_TITLE_LEFT_FRAC)
-    ref_max_w = w - ref_left_for_size - margin_r
+    # Base size fit to red zone width only; vertical stretch later (no overall scale-up)
     size = int(h * 0.28)
     while size >= 40:
         f = font(BOLD, size)
         tw, th = text_size(f, title)
-        if tw <= ref_max_w and th <= int(h * 0.38):
+        if tw <= max_w and th <= int(h * 0.36):
             break
         size -= 2
     title_font = font(BOLD, size)
     natural_w, natural_h = text_size(title_font, title)
-    # If natural width exceeds available after left shift, shrink width-only by fitting size down
-    # (still no intentional overall "bigger"; only prevent clipping)
-    while natural_w > max_w and size > 40:
-        size -= 2
-        title_font = font(BOLD, size)
-        natural_w, natural_h = text_size(title_font, title)
 
     title_layer, content_w, content_h = render_title_layer(title, title_font, v_stretch=V_STRETCH)
-    # content_w should == natural_w (width unchanged by v_stretch)
-    pad = 14
     tx = text_left - pad
     ty = int(h * 0.22)
-    if ty + title_layer.height > h - 70:
-        ty = max(6, h - 70 - title_layer.height)
+    # keep title block in upper/mid red zone
+    if ty + title_layer.height > int(h * 0.72):
+        ty = max(8, int(h * 0.72) - title_layer.height)
     bg.paste(title_layer, (tx, ty), title_layer)
 
-    # Subtitle: letter-space to exact WORLDWAVE content width (not a bigger font for fill)
-    sub_font = fit_sub_font(sub, content_w, max_size=max(12, int(h * 0.048)), min_size=11)
+    # ── GREEN ZONE: promo under WORLDWAVE, same width as title ──
+    sub_font = fit_sub_font(sub, content_w, max_size=max(12, int(h * 0.046)), min_size=11)
     natural_sw, _ = text_size(sub_font, sub)
     sty = ty + pad + content_h + int(h * 0.04)
     draw_text_exact_width(draw, (text_left, sty), sub, sub_font, content_w, SUB_FILL)
@@ -220,9 +187,9 @@ def compose(w: int, h: int, out_path: Path) -> None:
     out = bg.convert("RGB")
     out.save(out_path, "PNG", optimize=True)
     print(
-        f"wrote {out_path} size={size} v={V_STRETCH} left={text_left}({text_left/w:.1%}) "
-        f"natural=({natural_w}x{natural_h}) stretched_h={content_h} "
-        f"title_w={content_w} sub_nat={natural_sw}->exact"
+        f"wrote {out_path} zones: shark=[{sx}-{shark_right}] "
+        f"title_left={text_left}({text_left/w:.0%}) size={size} "
+        f"natural=({natural_w}x{natural_h}) v_h={content_h} sub_nat={natural_sw}"
     )
 
 
