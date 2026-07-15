@@ -7,6 +7,7 @@ the Wavegate on_message callback.
 
 from __future__ import annotations
 
+import difflib
 import json
 import logging
 import os
@@ -14,7 +15,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from google.protobuf.timestamp_pb2 import Timestamp
 
@@ -28,6 +29,33 @@ log = logging.getLogger("gateway.telegram")
 TELEGRAM_API = "https://api.telegram.org/bot"
 # How many processed update_ids to retain for dedup
 _SEEN_UPDATE_MAX = 512
+
+# Direct bot commands handled in _handle_direct_command (no /update on TG).
+TELEGRAM_DIRECT_COMMANDS: tuple[str, ...] = (
+    "clear",
+    "help",
+    "memory",
+    "model",
+    "new",
+    "start",
+    "status",
+    "stop",
+    "tools",
+)
+_TELEGRAM_TYPO_CUTOFF = 0.55
+
+
+def suggest_telegram_commands(command: str, n: int = 3) -> List[str]:
+    """Return close Telegram command names (no slash) via stdlib difflib.
+
+    Empty list means no high-confidence match — caller should fall through to LLM.
+    """
+    c = (command or "").strip().lower().lstrip("/")
+    if not c or " " in c or len(c) > 24:
+        return []
+    return difflib.get_close_matches(
+        c, list(TELEGRAM_DIRECT_COMMANDS), n=n, cutoff=_TELEGRAM_TYPO_CUTOFF
+    )
 
 
 class TelegramAdapter(BaseAdapter):
@@ -574,6 +602,15 @@ class TelegramAdapter(BaseAdapter):
 
         if c == "clear":
             self.send_message(chat_id, "🧹 History cleared. Fresh start!")
+            return True
+
+        # Mistyped bot command — Did you mean (skip LLM only on close match)
+        close = suggest_telegram_commands(c)
+        if close:
+            lines = [f"Unknown command: /{c}", "Did you mean:"]
+            for name in close:
+                lines.append(f"  /{name}")
+            self.send_message(chat_id, "\n".join(lines))
             return True
 
         return False  # Not handled, route to LLM

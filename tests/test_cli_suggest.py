@@ -145,3 +145,175 @@ def test_help_mentions_typo_suggestions(cli, capsys):
     cli.cmd_help(cli.ArgsObj())
     out = capsys.readouterr().out
     assert "Did you mean" in out or "Typos:" in out
+
+
+# ── suggest_chat_commands (interactive REPL) ──────────────────────────
+
+
+def test_chat_suggest_updat_to_update(cli):
+    suggestions = cli.suggest_chat_commands("/updat")
+    assert suggestions is not None
+    assert "/update" in suggestions
+    for s in suggestions:
+        assert s.startswith("/")
+
+
+def test_chat_suggest_gataway_setup_phrase(cli):
+    suggestions = cli.suggest_chat_commands("gataway setup")
+    assert suggestions is not None
+    assert "/gateway setup" in suggestions
+    assert "/gateway" in suggestions
+
+
+def test_chat_suggest_ww_shell_form(cli):
+    suggestions = cli.suggest_chat_commands("ww updat")
+    assert suggestions is not None
+    assert "/update" in suggestions
+
+
+def test_chat_suggest_fullwidth_slash(cli):
+    suggestions = cli.suggest_chat_commands("／updat")
+    assert suggestions is not None
+    assert "/update" in suggestions
+
+
+def test_chat_natural_language_returns_none(cli):
+    """Natural free text without slash/close match → LLM path."""
+    assert cli.suggest_chat_commands("你好") is None
+    assert cli.suggest_chat_commands("write a hello world script") is None
+    assert cli.suggest_chat_commands("please help me draft an email") is None
+
+
+def test_chat_slash_unknown_skips_llm(cli):
+    """Slash with no close match still skips LLM (empty suggestion list)."""
+    sugs = cli.suggest_chat_commands("/zzzzzzzz")
+    assert sugs is not None
+    assert sugs == []
+
+
+def test_chat_print_suggestions(cli, capsys):
+    cli.print_chat_command_suggestions("/updat", ["/update"])
+    out = capsys.readouterr().out
+    assert "Unknown command: /updat" in out
+    assert "Did you mean:" in out
+    assert "/update" in out
+    assert "/help" in out
+
+
+def test_chat_repl_typo_does_not_call_api(cli, capsys, monkeypatch):
+    """`/updat` in chat must print Did you mean and never call api_post."""
+    inputs = iter(["/updat", "/exit"])
+
+    with monkeypatch.context() as m:
+        m.setattr(cli, "check_llm_api_key", lambda: "deepseek")
+        m.setattr(cli, "load_or_create_api_key", lambda: "k")
+        m.setattr(cli, "auto_start_server", lambda: True)
+        mock_api = __import__("unittest.mock", fromlist=["Mock"]).Mock()
+        m.setattr(cli, "api_post", mock_api)
+        m.setattr("builtins.input", lambda *_a, **_k: next(inputs))
+        args = type("Args", (), {"goal": [], "spirals": None})()
+        cli.cmd_run(args)
+
+    mock_api.assert_not_called()
+    out = capsys.readouterr().out
+    assert "Unknown command: /updat" in out
+    assert "Did you mean:" in out
+    assert "/update" in out
+
+
+def test_chat_help_mentions_typo_line(cli, capsys, monkeypatch):
+    inputs = iter(["/help", "/exit"])
+    with monkeypatch.context() as m:
+        m.setattr(cli, "check_llm_api_key", lambda: "deepseek")
+        m.setattr(cli, "load_or_create_api_key", lambda: "k")
+        m.setattr(cli, "auto_start_server", lambda: True)
+        m.setattr(cli, "api_post", lambda *a, **k: None)
+        m.setattr("builtins.input", lambda *_a, **_k: next(inputs))
+        args = type("Args", (), {"goal": [], "spirals": None})()
+        cli.cmd_run(args)
+    out = capsys.readouterr().out
+    assert "Did you mean" in out
+
+
+# ── Telegram direct-command suggestions ───────────────────────────────
+
+
+def test_telegram_suggest_staus_to_status():
+    from gateway.adapters.telegram import suggest_telegram_commands
+
+    hits = suggest_telegram_commands("staus")
+    assert "status" in hits
+
+
+def test_telegram_suggest_hepl_to_help():
+    from gateway.adapters.telegram import suggest_telegram_commands
+
+    hits = suggest_telegram_commands("hepl")
+    assert "help" in hits
+
+
+def test_telegram_suggest_unrelated_empty():
+    from gateway.adapters.telegram import suggest_telegram_commands
+
+    assert suggest_telegram_commands("zzzzzzzz") == []
+    assert suggest_telegram_commands("你好") == []
+
+
+def test_telegram_handle_typo_sends_did_you_mean(monkeypatch):
+    from gateway.adapters.telegram import TelegramAdapter
+
+    sent = []
+
+    class _T(TelegramAdapter):
+        def __init__(self):
+            # Minimal stub — skip real __init__ network/config
+            pass
+
+        def send_message(self, chat_id, text, **kwargs):
+            sent.append((chat_id, text))
+            return True
+
+    adapter = _T()
+    handled = adapter._handle_direct_command("123", "staus", "")
+    assert handled is True
+    assert sent
+    body = sent[0][1]
+    assert "Unknown command: /staus" in body
+    assert "Did you mean:" in body
+    assert "/status" in body
+
+
+def test_telegram_handle_exact_status_not_suggestion(monkeypatch):
+    from gateway.adapters.telegram import TelegramAdapter
+
+    sent = []
+
+    class _T(TelegramAdapter):
+        def __init__(self):
+            self._ww_api = "http://127.0.0.1:9"
+            self._ww_key = "k"
+
+        def send_message(self, chat_id, text, **kwargs):
+            sent.append(text)
+            return True
+
+    adapter = _T()
+    # Exact status path should not emit Did you mean
+    handled = adapter._handle_direct_command("1", "status", "")
+    assert handled is True
+    assert sent
+    assert "Did you mean" not in sent[0]
+
+
+def test_telegram_unknown_far_returns_false():
+    from gateway.adapters.telegram import TelegramAdapter
+
+    class _T(TelegramAdapter):
+        def __init__(self):
+            pass
+
+        def send_message(self, chat_id, text, **kwargs):
+            raise AssertionError("should not send for far mismatches")
+
+    adapter = _T()
+    assert adapter._handle_direct_command("1", "zzzzzzzz", "") is False

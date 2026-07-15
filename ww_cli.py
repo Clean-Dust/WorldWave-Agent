@@ -551,7 +551,8 @@ def cmd_run(args):
                     "  /gateway            Gateway status / setup (not an LLM goal)\n"
                     "  /gateway setup      Interactive Telegram gateway setup\n"
                     "  Also: update · upgrade · ww update · gateway · "
-                    "ww gateway · /ww gateway"
+                    "ww gateway · /ww gateway\n"
+                    "  Typos: close matches get Did you mean (no LLM)"
                 )
                 continue
             if line == "/clear":
@@ -566,6 +567,11 @@ def cmd_run(args):
             gateway_cmd = parse_chat_gateway_command(line)
             if gateway_cmd is not None:
                 handle_chat_gateway(gateway_cmd[0], gateway_cmd[1])
+                continue
+            # Mistyped meta-commands — Did you mean (never spiral/LLM)
+            chat_sugs = suggest_chat_commands(line)
+            if chat_sugs is not None:
+                print_chat_command_suggestions(line, chat_sugs)
                 continue
             print(f"{Colors.cyan('⟳')} Thinking...", end="", flush=True)
             payload = {"goal": line, "max_spirals": max_spirals}
@@ -2253,6 +2259,135 @@ def print_command_suggestions(
     print(f"  See: {Colors.cyan('ww help')}")
     tip_example = 'ww "write a script"'
     print(f"  Tip: multi-word goals as a task:  {Colors.cyan(tip_example)}")
+
+
+# Known interactive-chat vocabulary (commands the REPL actually intercepts).
+KNOWN_CHAT_COMMANDS: tuple[str, ...] = (
+    "clear",
+    "exit",
+    "gateway",
+    "help",
+    "q",
+    "quit",
+    "update",
+    "upgrade",
+)
+KNOWN_CHAT_PHRASES: tuple[str, ...] = (
+    "gateway list",
+    "gateway setup",
+    "gateway start",
+    "gateway stop",
+    "update --dry-run",
+    "update status",
+    "upgrade --dry-run",
+    "upgrade status",
+)
+
+
+def _suggest_chat_from_tokens(
+    token: str, rest: Optional[List[str]] = None
+) -> List[str]:
+    """Build slash-form suggestions from a token + rest (stdlib difflib)."""
+    rest = list(rest or [])
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _add(s: str) -> None:
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+
+    cmd_hits = difflib.get_close_matches(
+        token, list(KNOWN_CHAT_COMMANDS), n=3, cutoff=_TYPO_CUTOFF
+    )
+
+    if rest:
+        two = f"{token} {rest[0]}"
+        phrase_hits = difflib.get_close_matches(
+            two, KNOWN_CHAT_PHRASES, n=2, cutoff=_TYPO_CUTOFF
+        )
+        for phrase in phrase_hits:
+            head = phrase.split()[0]
+            if head in cmd_hits or difflib.SequenceMatcher(
+                None, token, head
+            ).ratio() >= _TYPO_CUTOFF:
+                _add(f"/{phrase}")
+                break
+        for cmd in cmd_hits:
+            candidate = f"{cmd} {rest[0]}"
+            if candidate in KNOWN_CHAT_PHRASES:
+                _add(f"/{candidate}")
+
+    for cmd in cmd_hits:
+        _add(f"/{cmd}")
+
+    return out
+
+
+def suggest_chat_commands(line: str) -> Optional[List[str]]:
+    """Suggest slash-form chat commands for a mistyped meta line.
+
+    Returns:
+      None — not a command typo; treat as free-text LLM goal
+      list — print Did-you-mean (possibly empty) and skip LLM
+    """
+    s = (line or "").strip().rstrip("\r").strip()
+    if not s:
+        return None
+
+    lower = s.lower()
+    had_slash = False
+    had_ww = False
+
+    # Normalize fullwidth solidus U+FF0F → ASCII slash
+    if lower.startswith("\uff0f"):
+        lower = "/" + lower[1:]
+    if lower.startswith("/"):
+        had_slash = True
+        lower = lower[1:].lstrip()
+    if lower.startswith("ww "):
+        had_ww = True
+        lower = lower[3:].lstrip()
+    elif lower == "ww":
+        had_ww = True
+        lower = ""
+
+    parts = lower.split()
+    looks_like_meta = had_slash or had_ww
+    if not parts:
+        return [] if looks_like_meta else None
+
+    token = parts[0]
+    rest = parts[1:]
+    if not token or len(token) > 24:
+        return [] if looks_like_meta else None
+    # Align shell: long free-text after a weak first word stays LLM
+    if len(rest) > _TYPO_MAX_REST:
+        return None
+
+    suggestions = _suggest_chat_from_tokens(token, rest)
+    if suggestions:
+        return suggestions
+    if looks_like_meta:
+        return []
+    return None
+
+
+def print_chat_command_suggestions(
+    line: str, suggestions: Optional[List[str]] = None
+) -> None:
+    """Print chat unknown-command message with Did you mean suggestions."""
+    display = (line or "").strip().rstrip("\r").strip()
+    if display.startswith("\uff0f"):
+        display = "/" + display[1:]
+    if suggestions is None:
+        suggestions = suggest_chat_commands(line) or []
+    print(f"{Colors.red('✗')} Unknown command: {display}")
+    if suggestions:
+        print("  Did you mean:")
+        for s in suggestions:
+            print(f"    {Colors.cyan(s)}")
+    print(f"  Type {Colors.cyan('/help')} for chat commands")
 
 
 def _maybe_apply_compat_alias():
