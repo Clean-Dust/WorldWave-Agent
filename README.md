@@ -5,11 +5,12 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Clean-Dust/worldwave/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-1f6feb" alt="License"></a>
-  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-0ea5e9" alt="Python"></a>
-  <a href="#quick-install"><img src="https://img.shields.io/badge/install-one_line-0284c7" alt="Install"></a>
-  <a href="#english"><img src="https://img.shields.io/badge/lang-English-334155" alt="English"></a>
-  <a href="#chinese"><img src="https://img.shields.io/badge/lang-中文-334155" alt="中文"></a>
+  <a href="https://github.com/Clean-Dust/worldwave/actions/workflows/ci.yml?branch=main"><img src="https://img.shields.io/github/actions/workflow/status/Clean-Dust/worldwave/ci.yml?branch=main&style=for-the-badge" alt="CI status"></a>
+  <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.10+-0ea5e9?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
+  <a href="https://github.com/Clean-Dust/worldwave/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-1f6feb?style=for-the-badge" alt="License: MIT"></a>
+  <a href="#quick-install"><img src="https://img.shields.io/badge/Install-one_line-0284c7?style=for-the-badge" alt="Install"></a>
+  <a href="#english"><img src="https://img.shields.io/badge/Lang-English-31D1F7?style=for-the-badge" alt="English"></a>
+  <a href="#chinese"><img src="https://img.shields.io/badge/Lang-%E4%B8%AD%E6%96%87-31D1F7?style=for-the-badge" alt="中文"></a>
 </p>
 
 <p align="center">
