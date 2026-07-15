@@ -803,17 +803,18 @@ app = FastAPI(
 )
 
 # ── API Security Middleware ──
-if os.environ.get("WW_API_KEY"):
-    WW_API_KEY = os.environ["WW_API_KEY"]
-else:
-    # Secure-by-default: Auto-generate random key IN-MEMORY only.
-    # NEVER write to .env — that would create duplicate keys and corrupt config.
-    # Export to process env so gateway adapters (Telegram slash cmds) can read it.
-    import secrets
-    _auto_key = secrets.token_urlsafe(32)
-    WW_API_KEY = _auto_key
-    os.environ["WW_API_KEY"] = _auto_key
-    logger.info("WW_API_KEY auto-generated — set it in .env to make it permanent")
+# WW_API_KEY (local HTTP auth) is distinct from LLM keys in .env.
+# Same source of truth as CLI: env → ~/.ww/api_key → generate+persist file.
+# Do NOT write WW_API_KEY into .env (avoid duplicate/corrupt comments).
+from core.ww_api_key import resolve_ww_api_key
+
+_had_env_key = bool((os.environ.get("WW_API_KEY") or "").strip())
+WW_API_KEY = resolve_ww_api_key()
+if not _had_env_key:
+    logger.info(
+        "WW_API_KEY resolved from ~/.ww/api_key (or generated) — "
+        "persisted under WW_CONFIG, not .env"
+    )
 
 if WW_API_KEY and len(WW_API_KEY) < 16:
     logger.warning(

@@ -30,7 +30,6 @@ import argparse
 import json
 import os
 import shutil
-import stat
 import subprocess
 import sys
 import time
@@ -170,49 +169,16 @@ def save_config(config: Dict):
 def load_or_create_api_key() -> str:
     """Load API key with env-first priority so CLI matches a running server.
 
-    Priority:
+    Priority (shared with server via core.ww_api_key):
       1. WW_API_KEY already set (e.g. from .env via load_dotenv) — use it and
          rewrite ~/.ww/api_key if the file differs so future runs stay consistent.
       2. Non-empty key file under WW_CONFIG — load into env and return.
       3. Generate a new key, persist to file, set env, return.
+
+    This is the local HTTP API key, not LLM provider keys in .env.
     """
-    key_file = os.path.join(WW_CONFIG, "api_key")
-
-    env_key = (os.environ.get("WW_API_KEY") or "").strip()
-    if env_key:
-        os.environ["WW_API_KEY"] = env_key
-        try:
-            file_key = ""
-            if os.path.exists(key_file):
-                with open(key_file) as f:
-                    file_key = f.read().strip()
-            if file_key != env_key:
-                os.makedirs(WW_CONFIG, exist_ok=True)
-                with open(key_file, "w") as f:
-                    f.write(env_key)
-                os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
-        except Exception:
-            pass
-        return env_key
-
-    if os.path.exists(key_file):
-        try:
-            with open(key_file) as f:
-                key = f.read().strip()
-            if key:
-                os.environ["WW_API_KEY"] = key
-                return key
-        except Exception:
-            pass
-
-    import secrets
-    key = secrets.token_urlsafe(32)
-    os.makedirs(WW_CONFIG, exist_ok=True)
-    with open(key_file, "w") as f:
-        f.write(key)
-    os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
-    os.environ["WW_API_KEY"] = key
-    return key
+    from core.ww_api_key import resolve_ww_api_key
+    return resolve_ww_api_key(WW_CONFIG)
 
 
 def ensure_server_running(timeout: float = 2.0) -> bool:
@@ -290,6 +256,15 @@ def check_llm_api_key() -> Optional[str]:
     return None
 
 
+def _warn_api_key_mismatch():
+    """On 401: do not invent a new key; point user at restart with file key."""
+    print(
+        f"{Colors.yellow('⚠')} API key mismatch (HTTP 401). "
+        f"Local server key may be out of sync with ~/.ww/api_key.\n"
+        f"  Restart server so it reloads the key:  ww server restart"
+    )
+
+
 def api_get(endpoint: str) -> Optional[Dict]:
     import urllib.request
     import urllib.error
@@ -303,6 +278,10 @@ def api_get(endpoint: str) -> Optional[Dict]:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        if e.code == 401:
+            _warn_api_key_mismatch()
+        return None
     except Exception:
         return None
 
@@ -326,6 +305,8 @@ def api_post(endpoint: str, data: Dict) -> Optional[Dict]:
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")[:200]
         print(f"{Colors.red('✗')} HTTP {e.code}: {body}")
+        if e.code == 401:
+            _warn_api_key_mismatch()
         return None
     except Exception as e:
         print(f"{Colors.red('✗')} {e}")
@@ -826,6 +807,8 @@ def cmd_server(args):
     if args.action == "start":
         # Proactive update check on server start
         _notify_if_update()
+        # Ensure ~/.ww/api_key exists and env is set before spawn (matches server).
+        load_or_create_api_key()
         running = ensure_server_running()
         if running:
             print(f"  {Colors.green('●')} Server is already running")
@@ -841,7 +824,7 @@ def cmd_server(args):
                 print(f"  {Colors.green('✓')} Server started (systemd)")
                 return
 
-        # Direct
+        # Direct — inherits WW_API_KEY from env (file-backed)
         print(f"  {Colors.cyan('⟳')} launching server...")
         server_script = os.path.join(WW_HOME, "server.py")
         if os.path.exists(server_script):

@@ -353,6 +353,22 @@ if [ "$CMD" = "update" ]; then
         done < "$ENV_FILE"
     fi
 
+    # WW_API_KEY (local HTTP auth) is distinct from LLM keys in .env.
+    # If .env has no WW_API_KEY, pass the stable key from ~/.ww/api_key so
+    # restart does not desync from the CLI (HTTP 401 after update).
+    # Server also reads this file; export here for older code / env inheritance.
+    _WW_KEY_FILE="${WW_CONFIG:-$HOME/.ww}/api_key"
+    if ! echo " $ENV " | grep -qE ' WW_API_KEY=[^ ]'; then
+        if [ -f "$_WW_KEY_FILE" ]; then
+            _WW_KEY_VAL=$(tr -d '\r\n' < "$_WW_KEY_FILE" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            if [ -n "$_WW_KEY_VAL" ]; then
+                ENV="$ENV WW_API_KEY=$_WW_KEY_VAL"
+            fi
+            unset _WW_KEY_VAL
+        fi
+    fi
+    unset _WW_KEY_FILE
+
     # Restart server only if already running — always background, never foreground logs
     SERVER_WAS_RUNNING=false
     if systemctl --user is-active --quiet ww.service 2>/dev/null; then
