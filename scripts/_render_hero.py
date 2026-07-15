@@ -81,6 +81,41 @@ def make_bg(w: int, h: int) -> Image.Image:
     return Image.alpha_composite(base, glow)
 
 
+def draw_text_outlined(
+    draw: ImageDraw.ImageDraw,
+    xy: tuple[int, int],
+    text: str,
+    fnt,
+    fill,
+    outline=(0, 0, 0, 255),
+    stroke: int = 1,
+) -> None:
+    """Draw text with a tight black outline hugging the glyph."""
+    x, y = xy
+    # 8-neighborhood offsets for a crisp, tight stroke (no soft blur)
+    if stroke <= 0:
+        draw.text((x, y), text, font=fnt, fill=fill)
+        return
+    offs = []
+    for dx in range(-stroke, stroke + 1):
+        for dy in range(-stroke, stroke + 1):
+            if dx == 0 and dy == 0:
+                continue
+            # ring only (tight hull), skip far corners when stroke>1 for slightly cleaner edge
+            if max(abs(dx), abs(dy)) == stroke or (abs(dx) + abs(dy) <= stroke + (stroke > 1)):
+                offs.append((dx, dy))
+    # denser fill of stroke disk for solid outline
+    offs = []
+    for dx in range(-stroke, stroke + 1):
+        for dy in range(-stroke, stroke + 1):
+            if dx * dx + dy * dy <= stroke * stroke + stroke:  # slight bias so 1px is full 3x3-ish
+                if dx or dy:
+                    offs.append((dx, dy))
+    for dx, dy in offs:
+        draw.text((x + dx, y + dy), text, font=fnt, fill=outline)
+    draw.text((x, y), text, font=fnt, fill=fill)
+
+
 def render_title(text: str, max_w: int, max_h: int) -> tuple[Image.Image, int, int, int]:
     """Largest bold title that fits max_w x max_h (uniform). Returns layer, content_w, content_h, pad."""
     lo, hi = 24, 360
@@ -95,16 +130,23 @@ def render_title(text: str, max_w: int, max_h: int) -> tuple[Image.Image, int, i
         else:
             hi = mid - 1
 
-    pad = 16
+    # pad must cover tight outline
+    stroke = max(1, min(3, int(best_f.size // 55)))
+    pad = int(8 + stroke * 2)
     layer = Image.new("RGBA", (best_tw + pad * 2, best_th + pad * 2), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
     bb = ImageDraw.Draw(Image.new("RGBA", (8, 8))).textbbox((0, 0), text, font=best_f)
     ox, oy = int(pad - bb[0]), int(pad - bb[1])
-    for r in range(4, 0, -1):
-        a = int(16 + (4 - r) * 10)
-        for dx, dy in [(-r, 0), (r, 0), (0, -r), (0, r), (-r, -r), (r, r)]:
-            d.text((ox + dx, oy + dy), text, font=best_f, fill=(*TITLE_GLOW, min(255, a)))
-    d.text((ox, oy), text, font=best_f, fill=TITLE_FILL)
+    # Tight black outline first (no soft cyan glow — keeps edge crisp)
+    draw_text_outlined(
+        d,
+        (ox, oy),
+        text,
+        best_f,
+        fill=TITLE_FILL,
+        outline=(0, 0, 0, 255),
+        stroke=stroke,
+    )
     return layer, best_tw, best_th, pad
 
 
@@ -170,7 +212,16 @@ def compose(w: int, h: int, out_path: Path) -> None:
     for line in lines:
         lw, _ = text_size(sub_font, line)
         x = glyph_cx - lw // 2
-        draw.text((x, y), line, font=sub_font, fill=SUB_FILL)
+        # tight black outline on promo lines too
+        draw_text_outlined(
+            draw,
+            (x, y),
+            line,
+            sub_font,
+            fill=SUB_FILL,
+            outline=(0, 0, 0, 255),
+            stroke=1,
+        )
         y += lh + gap
 
     out = bg.convert("RGB")
