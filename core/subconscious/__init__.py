@@ -1,6 +1,10 @@
 """
 ww/core/subconscious — Worldwave subconscious v7: Sybil defense + four-layer validation gateway
 
+Practical product role: three-layer memory (WM → hippocampus → LTM) stores
+facts; subconscious only referees/gates (BG action safety + optional numeric
+WM eviction tie-break). It does not replace working memory or hippocampus.
+
 v7 adds a complete Sybil attack defense system on v6 basis:
 
   features.py     — 12-dimensional feature extraction (does not read dialogue, only looks at numerical values)
@@ -130,12 +134,15 @@ class Subconscious:
         provider_id: str = "",
         self_hosted_config: Optional[Dict[str, Any]] = None,
     ):
-        self.enabled = enabled
+        self.enabled = bool(enabled)
         self.model_path = model_path
         self.auto_train_interval = auto_train_interval
         self._spiral_count = 0
         self._training_count = 0
         self._provider_id = provider_id
+        # Last numeric crash_risk (0..1) for optional WM eviction tie-break.
+        # Never stores dialogue text.
+        self.last_crash_risk: float = 0.0
 
         # Submodules
         self.feature_extractor = FeatureExtractor()
@@ -758,6 +765,7 @@ class Subconscious:
             TriageVector with crash_risk (0.0-1.0), compress_urgency, tool_downgrade, mode_switch
         """
         if not self.enabled:
+            self.last_crash_risk = 0.0
             return TriageVector(crash_risk=0.0, compress_urgency=0.0,
                                 tool_downgrade=0.0, mode_switch=0.0)
         if state_vector is None:
@@ -785,6 +793,7 @@ class Subconscious:
 
         if self.predictor.empty():
             risk = self._heuristic_risk(state_vector)
+            self.last_crash_risk = float(risk)
             return TriageVector(crash_risk=risk, compress_urgency=min(1.0, risk * 0.5),
                                 tool_downgrade=min(1.0, max(0.0, risk - 0.3) * 2),
                                 mode_switch=min(1.0, max(0.0, risk - 0.5) * 2))
@@ -795,6 +804,7 @@ class Subconscious:
         # CFR regret-matching adjustment on crash_risk
         if self.cfr is not None:
             triage.crash_risk = self.cfr.adjust(normalized, triage.crash_risk)
+        self.last_crash_risk = float(getattr(triage, "crash_risk", 0.0) or 0.0)
         return triage
 
     def _heuristic_risk(self, vector: List[float]) -> float:
@@ -1014,6 +1024,8 @@ class Subconscious:
             state_vector: line dynamic 12-dimensional state vector
             outcome: 0.0 = success, 1.0 = failure/crash
         """
+        if not self.enabled:
+            return
         if len(state_vector) < 12:
             return
         self._training_buffer_x.append(pad_vector(state_vector))

@@ -20,6 +20,8 @@ Memory stack (three layers):
   Working Memory (entity RAM, this module)
     → Hippocampus (episodic capacity + GC/protect)
     → sleep / promote (long-term memory)
+  Subconscious is referee/gating only (BG safe gate + optional WM
+  tie-break score); it never replaces WM or hippocampus storage.
 
 Lifecycle:
 1. Message arrives → entity_id resolved → state loaded from disk
@@ -76,6 +78,9 @@ ROLE_WEIGHT: Dict[str, float] = {
 
 # Callback: (entity_id, key, value) -> None; optional 4th meta dict may be passed
 OnWmEvict = Callable[..., None]
+# Optional WM eviction tie-break: (entity_id, key, meta) -> float.
+# Higher = more protect (evicted later). Used only when primary score ties.
+WmTiebreakFn = Callable[[str, str, Dict[str, Any]], float]
 
 
 def normalize_wm_kind(kind: Optional[str] = None) -> str:
@@ -299,10 +304,12 @@ class EntityStateManager:
 
     Working memory writes enforce a fixed capacity (default 32). Overflow
     evicts keys with lowest role-weighted score
-    (ROLE_WEIGHT[kind] * (1 + access_count)), then oldest updated_at.
-    Core keys and preference keys are not auto-evicted. On promote-worthy
-    eviction, optional on_wm_evict callback runs; all evictions are archived
-    to entities/<id>/wm_evicted.jsonl for recovery.
+    (ROLE_WEIGHT[kind] * (1 + access_count)), then optional subconscious
+    tie-break (higher protect first when scores equal), then oldest
+    updated_at. Core keys and preference keys are not auto-evicted.
+    On promote-worthy eviction, optional on_wm_evict callback runs; all
+    evictions are archived to entities/<id>/wm_evicted.jsonl for recovery.
+    Without a tie-break hook, eviction matches kind+access+updated only.
 
     Usage:
         esm = EntityStateManager(config=config)
@@ -325,6 +332,8 @@ class EntityStateManager:
         )
         self.working_memory_capacity = resolve_working_memory_capacity(config)
         self._on_wm_evict: Optional[OnWmEvict] = None
+        # Optional numeric tie-break only (never overrides kind/access score).
+        self._wm_tiebreak_fn: Optional[WmTiebreakFn] = None
         self._promote_min_access = WM_PROMOTE_MIN_ACCESS
         self._promote_long_len = WM_PROMOTE_LONG_VALUE_LEN
         self._init_db()
@@ -332,6 +341,20 @@ class EntityStateManager:
     def set_on_wm_evict(self, callback: Optional[OnWmEvict]) -> None:
         """Register promote-on-evict handler (e.g. MemorySystem.store_fact)."""
         self._on_wm_evict = callback
+
+    def set_wm_tiebreak_fn(self, fn: Optional[WmTiebreakFn]) -> None:
+        """Optional eviction tie-break: (entity_id, key, meta) -> float.
+
+        Higher return value = more protect (evicted later). Compared only
+        when primary score (kind weight × access) is equal. Pass None to
+        clear (same behavior as no hook / 640846e).
+        Alias: set_on_wm_score.
+        """
+        self._wm_tiebreak_fn = fn
+
+    def set_on_wm_score(self, fn: Optional[WmTiebreakFn]) -> None:
+        """Alias for set_wm_tiebreak_fn (contract naming)."""
+        self.set_wm_tiebreak_fn(fn)
 
     # ── Database ─────────────────────────────────────────────────
 
@@ -529,15 +552,33 @@ class EntityStateManager:
         return False
 
     def _wm_eviction_key(self, state: EntityState, key: str):
-        """Sort key: lower score first, then older updated_at.
+        """Sort key for eviction: lower tuple = evicted first (min victim).
 
-        score = ROLE_WEIGHT[kind] * (1 + access_count). Missing kind → outcome.
+        1) score = ROLE_WEIGHT[kind] * (1 + access_count)  (primary)
+        2) tiebreak  (optional; higher = more protect = larger = later)
+        3) updated_at (oldest first when still tied)
+
+        When primary scores differ (e.g. commitment vs rationale), tiebreak
+        cannot reorder them. Missing kind → outcome.
+
+        Note: second component is +tiebreak (not negated) so higher protect
+        sorts after lower protect under min().
         """
         meta = state.working_memory_meta.get(key) or {}
         access = int(meta.get("access_count", 0) or 0)
         updated = float(meta.get("updated_at", 0.0) or 0.0)
         score = wm_eviction_score(meta.get("kind"), access)
-        return (score, updated)
+        tiebreak = 0.0
+        if self._wm_tiebreak_fn is not None:
+            try:
+                tiebreak = float(
+                    self._wm_tiebreak_fn(state.entity_id, key, meta) or 0.0
+                )
+            except Exception as e:
+                log.debug("wm tiebreak fn failed for %s: %s", key, e)
+                tiebreak = 0.0
+        # Higher protect → larger second element → min() keeps it longer
+        return (score, tiebreak, updated)
 
     def _should_promote(self, value: str, meta: Dict[str, Any]) -> bool:
         """Numeric promote criteria only (no keyword lists)."""
@@ -596,7 +637,8 @@ class EntityStateManager:
         """Evict until len(working_memory) <= capacity. Returns evicted keys.
 
         Strategy (numeric only): among non-protected keys, prefer lowest
-        score = ROLE_WEIGHT[kind]*(1+access_count), then oldest updated_at.
+        score = ROLE_WEIGHT[kind]*(1+access_count), then lowest optional
+        subconscious tie-break protect, then oldest updated_at.
         If all remaining are protected, stop (may exceed capacity — same
         spirit as hippocampus protect).
         """

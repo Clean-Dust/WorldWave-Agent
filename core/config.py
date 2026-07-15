@@ -34,7 +34,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "provider": "deepseek",
     "provider_base_url": "https://api.deepseek.com",
     "memory_enabled": True,
+    # Subconscious referee/gate (BG + optional WM tie-break). Env: WW_SUBCONSCIOUS_ENABLED
     "subconscious_enabled": True,
+    # Optional WM eviction tie-break from numeric risk only. Env: WW_WM_SUBCONSCIOUS_TIEBREAK (default 0/off)
+    "wm_subconscious_tiebreak": False,
     "tools_enabled": True,
     "gateway_enabled": False,
     "server_port": 9300,
@@ -49,6 +52,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "sandbox_network": "none",
 }
 
+# Keys that env/config strings should coerce to bool (WW_<KEY>).
+_BOOL_CONFIG_KEYS = frozenset({
+    "subconscious_enabled",
+    "wm_subconscious_tiebreak",
+    "memory_enabled",
+    "tools_enabled",
+    "gateway_enabled",
+    "sandbox_enabled",
+})
+
 # Provider → default environment variable mapping
 PROVIDER_ENV_MAP: Dict[str, str] = {
     "deepseek": "DEEPSEEK_API_KEY",
@@ -59,6 +72,22 @@ PROVIDER_ENV_MAP: Dict[str, str] = {
 }
 
 ENV_PREFIX = "WW_"
+
+
+def coerce_bool(value: Any, default: bool = False) -> bool:
+    """Coerce config/env values to bool. Accepts 0/1, true/false, yes/no, on/off."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    s = str(value).strip().lower()
+    if s in ("", "0", "false", "no", "off", "n"):
+        return False
+    if s in ("1", "true", "yes", "on", "y"):
+        return True
+    return default
 
 
 class ConfigManager:
@@ -161,11 +190,12 @@ class ConfigManager:
         """Read configuration value (four-layer overlay + env override).
 
         Priority: environment variable > Profile > User Config > DEFAULT_CONFIG
+        Bool keys (e.g. subconscious_enabled) coerce env strings via coerce_bool.
         """
         # 1. Check environment variable (WW_<KEY> or TELEGRAM_* or *_API_KEY)
         env_key = ENV_PREFIX + key.upper()
         if env_key in self._env_cache:
-            return self._env_cache[env_key]
+            return self._coerce_value(key, self._env_cache[env_key], default)
         if key == "api_key":
             # Auto-resolve provider's API key
             provider = self.get("provider", "deepseek")
@@ -183,17 +213,26 @@ class ConfigManager:
         if profile != "default":
             profile_data = self.profile_get(profile) or {}
             if key in profile_data:
-                return profile_data[key]
+                return self._coerce_value(key, profile_data[key], default)
 
         # 3. Check user config
         if key in self._user_config:
-            return self._user_config[key]
+            return self._coerce_value(key, self._user_config[key], default)
 
         # 4. Check defaults
         if key in self._defaults:
             return self._defaults[key]
 
         return default
+
+    def _coerce_value(self, key: str, value: Any, default: Any = None) -> Any:
+        """Coerce known bool config keys from env/json strings."""
+        if key in _BOOL_CONFIG_KEYS:
+            fb = default if isinstance(default, bool) else bool(
+                self._defaults.get(key, False)
+            )
+            return coerce_bool(value, default=fb)
+        return value
 
     def set(self, key: str, value: Any) -> bool:
         """Write configuration (store in User Config layer)."""
@@ -220,11 +259,11 @@ class ConfigManager:
             profile_data = self.profile_get(profile) or {}
             merged.update(profile_data)
 
-        # Apply env overrides
+        # Apply env overrides (bool keys coerced)
         for key in list(merged.keys()):
             env_key = ENV_PREFIX + key.upper()
             if env_key in self._env_cache:
-                merged[key] = self._env_cache[env_key]
+                merged[key] = self._coerce_value(key, self._env_cache[env_key], merged.get(key))
 
         # Add API key from env
         provider = merged.get("provider", "deepseek")

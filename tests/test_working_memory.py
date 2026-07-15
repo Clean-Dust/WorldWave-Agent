@@ -348,6 +348,80 @@ def test_illegal_kind_normalized_to_outcome(esm):
     state = esm.get("ent_bad")
     assert state.working_memory_meta["k"]["kind"] == "outcome"
 
+
+# ── Optional subconscious WM tie-break ────────────────────────────
+
+
+def test_wm_tiebreak_decides_when_kind_and_access_equal(esm):
+    """Same kind + same access: higher tiebreak protect stays, lower leaves."""
+    esm.working_memory_capacity = 1
+    scores = {"keep": 10.0, "drop": 1.0}
+
+    def tb(entity_id, key, meta):
+        return float(scores.get(key, 0.0))
+
+    esm.set_wm_tiebreak_fn(tb)
+    eid = "ent_tb"
+    esm.set_working_memory(eid, "keep", "v-keep", kind="outcome")
+    time.sleep(0.02)
+    esm.set_working_memory(eid, "drop", "v-drop", kind="outcome")
+    # Both outcome/access=0 → primary score ties; drop has lower protect → victim
+    state = esm.get(eid)
+    assert "keep" in state.working_memory
+    assert "drop" not in state.working_memory
+
+
+def test_wm_tiebreak_cannot_override_commitment_over_rationale(esm):
+    """Different kind scores: commitment stays even if rationale has huge tiebreak."""
+    esm.working_memory_capacity = 1
+
+    def tb(entity_id, key, meta):
+        # Prefer rationale massively if tiebreak were primary (it must not be)
+        if key == "rat":
+            return 1e9
+        return 0.0
+
+    esm.set_wm_tiebreak_fn(tb)
+    eid = "ent_tb_kind"
+    esm.set_working_memory(eid, "cmt", "decide", kind="commitment")
+    time.sleep(0.02)
+    esm.set_working_memory(eid, "rat", "process", kind="rationale")
+    state = esm.get(eid)
+    assert "cmt" in state.working_memory
+    assert "rat" not in state.working_memory
+
+
+def test_wm_no_tiebreak_fn_matches_score_only(esm):
+    """Unset hook: behavior is kind+access+updated only (640846e)."""
+    esm.working_memory_capacity = 2
+    assert esm._wm_tiebreak_fn is None
+    eid = "ent_no_tb"
+    esm.set_working_memory(eid, "dec", "do A", kind="commitment")
+    time.sleep(0.02)
+    esm.set_working_memory(eid, "why", "because B", kind="rationale")
+    time.sleep(0.02)
+    esm.set_working_memory(eid, "new", "incoming", kind="outcome")
+    state = esm.get(eid)
+    assert "dec" in state.working_memory
+    assert "why" not in state.working_memory
+    assert "new" in state.working_memory
+
+
+def test_set_on_wm_score_alias(esm):
+    called = []
+
+    def tb(entity_id, key, meta):
+        called.append(key)
+        return 0.0
+
+    esm.set_on_wm_score(tb)
+    assert esm._wm_tiebreak_fn is tb
+    esm.working_memory_capacity = 1
+    esm.set_working_memory("e", "a", "1")
+    esm.set_working_memory("e", "b", "2")
+    assert called  # invoked during eviction
+
+
     esm.set_working_memory("ent_bad", "k2", "v2", kind="unknown")
     state = esm.get("ent_bad")
     assert state.working_memory_meta["k2"]["kind"] == "outcome"

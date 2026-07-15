@@ -2,7 +2,7 @@
 """WW Memory prove harness — mechanism + product modes.
 
 Modes:
-  --mechanism   L0 unit tests + L1 capacity/GC/promote + B3 WM (isolated data_dir)
+  --mechanism   L0 unit tests + L1 capacity/GC/promote + B3/B4 WM + B5 tiebreak
   --product     A1–A4 natural write/read on live server (no harness cheating)
   --all         mechanism then product (default if no flags)
 
@@ -648,6 +648,89 @@ def run_b4_wm_kind_eviction(report: Report) -> None:
         shutil.rmtree(td, ignore_errors=True)
 
 
+def run_b5_wm_tiebreak_switch(report: Report) -> None:
+    """B5: optional WM subconscious tie-break — off ≡ kind-only; on breaks ties."""
+    from unittest.mock import MagicMock
+
+    from core.entity_state import EntityStateManager
+
+    td = tempfile.mkdtemp(prefix="ww-mem-b5-")
+    try:
+        cfg = MagicMock()
+        cfg.get = MagicMock(return_value=None)
+        cfg.expand_path = MagicMock(side_effect=lambda p: os.path.expanduser(p))
+        esm = EntityStateManager(config=cfg, data_dir=td)
+        esm.working_memory_capacity = 1
+
+        # --- OFF (no hook): same kind/access → oldest updated_at loses ---
+        esm.set_wm_tiebreak_fn(None)
+        eid_off = "ent_b5_off"
+        esm.set_working_memory(eid_off, "old", "v-old", kind="outcome")
+        time.sleep(0.02)
+        esm.set_working_memory(eid_off, "new", "v-new", kind="outcome")
+        st_off = esm.get(eid_off)
+        off_ok = (
+            len(st_off.working_memory) == 1
+            and "new" in st_off.working_memory
+            and "old" not in st_off.working_memory
+            and esm._wm_tiebreak_fn is None
+        )
+        report.add(
+            "B5 WM tiebreak off (= kind/access/updated only)",
+            off_ok,
+            f"keys={list(st_off.working_memory.keys())} hook={esm._wm_tiebreak_fn}",
+            "EntityStateManager WM tiebreak",
+        )
+
+        # --- ON: same kind/access; higher protect stays even if older ---
+        protect = {"keep": 9.0, "drop": 0.0}
+
+        def tb(entity_id, key, meta):
+            return float(protect.get(key, 0.0))
+
+        esm.set_wm_tiebreak_fn(tb)
+        eid_on = "ent_b5_on"
+        esm.set_working_memory(eid_on, "keep", "v-keep", kind="outcome")
+        time.sleep(0.02)
+        esm.set_working_memory(eid_on, "drop", "v-drop", kind="outcome")
+        st_on = esm.get(eid_on)
+        on_ok = (
+            "keep" in st_on.working_memory
+            and "drop" not in st_on.working_memory
+            and esm._wm_tiebreak_fn is not None
+        )
+        report.add(
+            "B5 WM tiebreak on (numeric protect breaks ties)",
+            on_ok,
+            f"keys={list(st_on.working_memory.keys())}",
+            "EntityStateManager WM tiebreak",
+        )
+
+        # --- ON still cannot override commitment > rationale ---
+        esm.set_wm_tiebreak_fn(lambda e, k, m: 1e9 if k == "rat" else 0.0)
+        eid_kind = "ent_b5_kind"
+        esm.set_working_memory(eid_kind, "cmt", "decide", kind="commitment")
+        time.sleep(0.01)
+        esm.set_working_memory(eid_kind, "rat", "process", kind="rationale")
+        st_k = esm.get(eid_kind)
+        kind_ok = "cmt" in st_k.working_memory and "rat" not in st_k.working_memory
+        report.add(
+            "B5 WM tiebreak cannot override commitment>rationale",
+            kind_ok,
+            f"keys={list(st_k.working_memory.keys())}",
+            "EntityStateManager WM tiebreak",
+        )
+    except Exception as e:
+        report.add(
+            "B5 WM tiebreak switch",
+            False,
+            f"error: {e}",
+            "EntityStateManager WM tiebreak",
+        )
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
 def run_mechanism(report: Report) -> None:
     run_l0(report)
     run_b1_capacity(report)
@@ -655,6 +738,7 @@ def run_mechanism(report: Report) -> None:
     run_promote(report)
     run_b3_working_memory(report)
     run_b4_wm_kind_eviction(report)
+    run_b5_wm_tiebreak_switch(report)
 
 
 def _live_client() -> LiveClient:

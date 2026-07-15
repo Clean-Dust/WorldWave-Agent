@@ -15,6 +15,8 @@ Three layers (entity → episodic → LTM):
     with explicit roles (kind): commitment > outcome > rationale for eviction weight
   → Hippocampus (episodic cap + protect/GC) — short-term buffer
   → sleep / promote (LTM) — consolidation into durable knowledge
+Subconscious is referee/gating only (BG safe gate + optional WM score
+tie-break); it does not replace WM or hippocampus.
 
 Also within this package:
   Short-term Buffer (Hippocampus) -> Emotional Scoring (Amygdala) -> Sleep

@@ -102,12 +102,17 @@ class Worldwave:
         self._steps_total = 0
         self._steps_completed = 0
 
-        # Subconscious v4: Meta-learning observer (Pure decision tree ensemble, Do not read conversation) 
-        enabled = self.config.get("subconscious_enabled", True)
+        # Subconscious: numeric referee/gate only (does not read conversation).
+        # Env: WW_SUBCONSCIOUS_ENABLED=0|1 (via ConfigManager coerce_bool).
+        from core.config import coerce_bool
+        enabled = coerce_bool(self.config.get("subconscious_enabled", True), True)
         self.subconscious = Subconscious(
             enabled=enabled,
             rewind_threshold=self.config.get("subconscious_threshold", 0.7),
         )
+        # Optional WM eviction tie-break (numeric crash_risk only; default off).
+        # Env: WW_WM_SUBCONSCIOUS_TIEBREAK=0|1
+        self._maybe_wire_wm_subconscious_tiebreak()
 
         # Context window manager (Dynamic compression) 
         from core.context import ConversationManager
@@ -221,6 +226,36 @@ class Worldwave:
 
     # ── Entity continuity (P0) ──────────────────────────────────
 
+    def _maybe_wire_wm_subconscious_tiebreak(self) -> None:
+        """Wire optional WM tie-break from last crash_risk (higher risk → less protect).
+
+        Only when subconscious is enabled AND wm_subconscious_tiebreak is on.
+        Default off: eviction identical to kind+access+updated (640846e).
+        No LLM, no raw conversation text — scalar risk only.
+        """
+        if not self.entity_state_mgr or not getattr(self, "subconscious", None):
+            return
+        from core.config import coerce_bool
+        if not self.subconscious.enabled:
+            # Ensure hook is cleared when subconscious is off
+            if hasattr(self.entity_state_mgr, "set_wm_tiebreak_fn"):
+                self.entity_state_mgr.set_wm_tiebreak_fn(None)
+            return
+        flag = coerce_bool(
+            self.config.get("wm_subconscious_tiebreak", False), False
+        )
+        if not flag:
+            return
+        sc = self.subconscious
+
+        def _tiebreak(entity_id: str, key: str, meta: dict) -> float:
+            # protect = -crash_risk  (higher risk → lower protect → evict sooner)
+            # only used when primary score (kind×access) already ties
+            risk = float(getattr(sc, "last_crash_risk", 0.0) or 0.0)
+            return -risk
+
+        self.entity_state_mgr.set_wm_tiebreak_fn(_tiebreak)
+
     def set_entity(self, entity_id: str, platform: str = ""):
         """Set the current entity context before running a spiral.
 
@@ -241,6 +276,8 @@ class Worldwave:
                     entity_state_mgr=self.entity_state_mgr,
                     entity_id=entity_id,
                 )
+            # Re-wire optional WM tie-break if entity mgr arrived after __init__
+            self._maybe_wire_wm_subconscious_tiebreak()
 
     def _get_entity_context(self) -> str:
         """Get entity context to inject into the system prompt."""
