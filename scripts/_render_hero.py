@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Render Worldwave README hero — sizes locked to user's annotation circles.
+"""Render Worldwave README hero — annotation zones + rules.
 
-Measured from img_c03b2e573d40.jpg (1280x560):
-  PURPLE shark: x=96-447 (7.5%-34.9%)  y=96-489 (17.1%-87.3%)  ~351x393
-  RED    title: x=506-1220 (39.5%-95.3%) y=108-376 (19.3%-67.1%)  ~714x268
-  GREEN  sub:   x=530-1194 (41.4%-93.3%) y=410-530 (73.2%-94.6%)  ~664x120
+Zones (from user pen strokes on 1280x560 mock):
+  PURPLE shark: 7.5%-34.9% x, 17.1%-87.3% y
+  RED    title: 39.5%-95.3% x, 19.3%-67.1% y
+  GREEN  sub:   under title; three lines stacked
+
+Rules:
+  - Shark / WORLDWAVE sized to their boxes with UNIFORM scale (no squash)
+  - Three promo lines stacked; EACH line letter-spaced to WORLDWAVE width
 """
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageFilter
@@ -26,10 +30,11 @@ SUB_FILL = (240, 248, 255, 255)
 BG_TOP = (0, 21, 73)
 WAVE = (15, 77, 131)
 
-# Annotation fractions (from pen strokes)
 SHARK = dict(l=0.0750, r=0.3492, t=0.1714, b=0.8732)
 TITLE = dict(l=0.3953, r=0.9531, t=0.1929, b=0.6714)
-SUB = dict(l=0.4141, r=0.9336, t=0.7321, b=0.9464)
+# Green zone top from annotation; left/width follow title
+SUB_T = 0.7321
+SUB_B = 0.9464
 
 
 def font(path: str, size: int) -> ImageFont.FreeTypeFont:
@@ -70,7 +75,6 @@ def make_bg(w: int, h: int) -> Image.Image:
         draw.polygon(pts, fill=(*WAVE, alpha))
     glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     gd = ImageDraw.Draw(glow)
-    # glow under shark zone + title zone
     gx = int(w * (SHARK["l"] + SHARK["r"]) / 2)
     gy = int(h * (SHARK["t"] + SHARK["b"]) / 2)
     for rad, a in [(200, 28), (120, 40), (70, 50)]:
@@ -83,40 +87,74 @@ def make_bg(w: int, h: int) -> Image.Image:
     return Image.alpha_composite(base, glow)
 
 
-def render_title_to_box(text: str, box_w: int, box_h: int) -> Image.Image:
-    """Render WORLDWAVE so final bitmap fills box_w x box_h (may non-uniform scale)."""
-    # Find large bold size that fits width at natural aspect, then scale to exact box
-    size = 200
-    while size >= 20:
-        f = font(BOLD, size)
+def fit_uniform(img: Image.Image, box_w: int, box_h: int, fill: float = 0.98) -> Image.Image:
+    """Uniform scale to fit inside box (contain), using fill fraction of box."""
+    scale = min(box_w / img.width, box_h / img.height) * fill
+    nw = max(1, int(img.width * scale))
+    nh = max(1, int(img.height * scale))
+    return img.resize((nw, nh), Image.Resampling.LANCZOS)
+
+
+def render_title_uniform(text: str, box_w: int, box_h: int) -> tuple[Image.Image, int, int, int]:
+    """
+    Render WORLDWAVE with uniform scale to fill the red box as much as possible.
+    Prefer filling WIDTH of red box (user wants big title), height may be less than box.
+    Returns (layer, content_w, content_h, pad).
+    """
+    # Binary search font size so natural width ≈ box_w (uniform, no Y squash)
+    lo, hi = 20, 400
+    best = font(BOLD, 40)
+    best_tw = best_th = 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        f = font(BOLD, mid)
         tw, th = text_size(f, text)
-        if tw <= box_w * 1.05:  # slightly over ok before scale
-            break
-        size -= 2
-    f = font(BOLD, size)
-    tw, th = text_size(f, text)
-    pad = 20
-    layer = Image.new("RGBA", (tw + pad * 2, th + pad * 2), (0, 0, 0, 0))
+        if tw <= box_w and th <= box_h:
+            best, best_tw, best_th = f, tw, th
+            lo = mid + 1
+        else:
+            hi = mid - 1
+
+    pad = 18
+    layer = Image.new("RGBA", (best_tw + pad * 2, best_th + pad * 2), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
-    bb = ImageDraw.Draw(Image.new("RGBA", (8, 8))).textbbox((0, 0), text, font=f)
+    bb = ImageDraw.Draw(Image.new("RGBA", (8, 8))).textbbox((0, 0), text, font=best)
     ox, oy = int(pad - bb[0]), int(pad - bb[1])
     glow_r = 5
     for r in range(glow_r, 0, -1):
         a = int(18 + (glow_r - r) * 10)
         for dx, dy in [(-r, 0), (r, 0), (0, -r), (0, r), (-r, -r), (r, r)]:
-            d.text((ox + dx, oy + dy), text, font=f, fill=(*TITLE_GLOW, min(255, a)))
-    d.text((ox, oy), text, font=f, fill=TITLE_FILL)
-    # Scale to exact annotation box (hits BOTH width and height of red circle)
-    return layer.resize((max(1, box_w), max(1, box_h)), Image.Resampling.LANCZOS)
+            d.text((ox + dx, oy + dy), text, font=best, fill=(*TITLE_GLOW, min(255, a)))
+    d.text((ox, oy), text, font=best, fill=TITLE_FILL)
+
+    # If still smaller than box, uniform upscale to max fit
+    scale = min(box_w / layer.width, box_h / layer.height)
+    if scale > 1.01:
+        nw = max(1, int(layer.width * scale))
+        nh = max(1, int(layer.height * scale))
+        layer = layer.resize((nw, nh), Image.Resampling.LANCZOS)
+        # content scales same (pad included in layer; content ≈ layer minus pad*scale)
+        content_w = int(best_tw * scale)
+        content_h = int(best_th * scale)
+    else:
+        content_w, content_h = best_tw, best_th
+    return layer, content_w, content_h, pad
 
 
 def draw_text_exact_width(draw, xy, text, fnt, target_w, fill):
+    """Letter-space glyphs so total width == target_w (WORLDWAVE rule)."""
     x, y = xy
+    if not text:
+        return
     widths = [max(text_size(fnt, ch)[0], 1) for ch in text]
     natural = sum(widths)
     if natural <= 0:
         return
-    if len(text) == 1 or natural >= target_w:
+    if len(text) == 1:
+        draw.text((x, y), text, font=fnt, fill=fill)
+        return
+    if natural >= target_w:
+        # shrink tracking: still draw natural (overflow slightly ok) or scale font externally
         draw.text((x, y), text, font=fnt, fill=fill)
         return
     gaps = len(text) - 1
@@ -130,92 +168,80 @@ def draw_text_exact_width(draw, xy, text, fnt, target_w, fill):
             cursor += base + (1 if i < rem else 0)
 
 
-def fit_sub_font(text: str, target_w: int, max_size: int, min_size: int = 14):
-    for size in range(max_size, min_size - 1, -1):
-        f = font(REG, size)
-        if text_size(f, text)[0] <= target_w:
-            return f
-    return font(REG, min_size)
-
-
 def compose(w: int, h: int, out_path: Path) -> None:
     bg = make_bg(w, h)
 
-    # ── PURPLE: shark fills annotation box ──
+    # ── PURPLE: shark — uniform fit into annotation box, centered ──
     sx0, sx1 = int(w * SHARK["l"]), int(w * SHARK["r"])
     sy0, sy1 = int(h * SHARK["t"]), int(h * SHARK["b"])
     sw, sh = sx1 - sx0, sy1 - sy0
-    # fit shark into box preserving aspect, centered
-    src = shark_src.copy()
-    scale = min(sw / src.width, sh / src.height)
-    nw, nh = max(1, int(src.width * scale)), max(1, int(src.height * scale))
-    src = src.resize((nw, nh), Image.Resampling.LANCZOS)
-    # if still short of box height, allow slight vertical fill (user wants circle size)
-    # prefer filling the box more aggressively: scale to cover min dimension then center-crop? 
-    # User said hit circle SIZE — use contain then optional upscale to cover 95% of box
-    cover = 0.95
-    scale2 = min((sw * cover) / src.width, (sh * cover) / max(src.height, 1))
-    # recompute from original for quality
-    src = shark_src.copy()
-    scale = min(sw / src.width, sh / src.height) * 0.98
-    nw, nh = max(1, int(src.width * scale)), max(1, int(src.height * scale))
-    src = src.resize((nw, nh), Image.Resampling.LANCZOS)
+    sprite = fit_uniform(shark_src, sw, sh, fill=0.98)
+    nw, nh = sprite.size
     px = sx0 + (sw - nw) // 2
     py = sy0 + (sh - nh) // 2
-    bg.paste(src, (px, py), src)
+    bg.paste(sprite, (px, py), sprite)
 
     draw = ImageDraw.Draw(bg)
 
-    # ── RED: WORLDWAVE fills annotation box exactly ──
+    # ── RED: WORLDWAVE — uniform fit into red box, centered ──
     tx0, tx1 = int(w * TITLE["l"]), int(w * TITLE["r"])
     ty0, ty1 = int(h * TITLE["t"]), int(h * TITLE["b"])
     tw, th = tx1 - tx0, ty1 - ty0
-    title_img = render_title_to_box("WORLDWAVE", tw, th)
-    bg.paste(title_img, (tx0, ty0), title_img)
+    title_layer, content_w, content_h, pad = render_title_uniform("WORLDWAVE", tw, th)
+    # Center title layer in red box
+    tpx = tx0 + (tw - title_layer.width) // 2
+    tpy = ty0 + (th - title_layer.height) // 2
+    bg.paste(title_layer, (tpx, tpy), title_layer)
+    # WORLDWAVE left edge of glyphs (approx): layer left + pad scaled
+    # After possible upscale, pad in layer coords:
+    scale_pad = title_layer.width / max(1, content_w + 2 * pad) if content_w else 1
+    # Simpler: content is centered in layer; glyph left = tpx + (layer_w - content_w)//2
+    title_glyph_left = tpx + (title_layer.width - content_w) // 2
+    title_glyph_bottom = tpy + (title_layer.height + content_h) // 2
 
-    # ── GREEN: three promo lines stacked (not side-by-side) ──
-    gx0, gx1 = int(w * SUB["l"]), int(w * SUB["r"])
-    gy0, gy1 = int(h * SUB["t"]), int(h * SUB["b"])
-    gw, gh = gx1 - gx0, gy1 - gy0
+    # ── GREEN / under title: 3 lines stacked, EACH width == WORLDWAVE ──
     lines = [
         "Persistent memory",
         "Persistent autonomy",
         "Persistent session",
     ]
-    # Fit font: 3 lines + gaps inside green box height; each line ≤ green width
+    target_w = content_w  # same length rule as WORLDWAVE
+    gx0 = title_glyph_left
+    # vertical band from annotation green top/bottom
+    gy0, gy1 = int(h * SUB_T), int(h * SUB_B)
+    # if title bottom is lower, start below title with gap
+    gy0 = max(gy0, title_glyph_bottom + int(h * 0.025))
+    gh = max(40, gy1 - gy0)
+
     n = len(lines)
-    gap_ratio = 0.22  # gap between lines as fraction of line height
-    # total = n*lh + (n-1)*gap*lh = lh * (n + (n-1)*gap_ratio)
-    size = max(12, int(gh / (n + (n - 1) * gap_ratio) * 0.92))
+    gap_ratio = 0.28
+    size = max(14, int(gh / (n + (n - 1) * gap_ratio) * 0.90))
     while size >= 10:
         f = font(REG, size)
+        # natural widths must be < target_w so we can letter-space out
         max_lw = max(text_size(f, line)[0] for line in lines)
         lh = text_size(f, "Hg")[1]
-        gap = max(2, int(lh * gap_ratio))
+        gap = max(3, int(lh * gap_ratio))
         total_h = n * lh + (n - 1) * gap
-        if max_lw <= gw and total_h <= gh:
+        if max_lw <= target_w and total_h <= gh:
             break
         size -= 1
     sub_font = font(REG, size)
     lh = text_size(sub_font, "Hg")[1]
-    gap = max(2, int(lh * gap_ratio))
+    gap = max(3, int(lh * gap_ratio))
     total_h = n * lh + (n - 1) * gap
     y = gy0 + max(0, (gh - total_h) // 2)
     for line in lines:
-        lw, _ = text_size(sub_font, line)
-        # left-align to green box (same as title column feel); optional slight indent
-        x = gx0
-        # if much shorter than box, still left-align (not letter-spaced across full width)
-        draw.text((x, y), line, font=sub_font, fill=SUB_FILL)
+        draw_text_exact_width(draw, (gx0, y), line, sub_font, target_w, SUB_FILL)
         y += lh + gap
 
     out = bg.convert("RGB")
     out.save(out_path, "PNG", optimize=True)
     print(
         f"wrote {out_path}\n"
-        f"  shark box {sw}x{sh} @({sx0},{sy0}) sprite {nw}x{nh}\n"
-        f"  title box {tw}x{th} @({tx0},{ty0})\n"
-        f"  sub   box {gw}x{gh} @({gx0},{gy0}) stacked x3 font={size}"
+        f"  shark box {sw}x{sh} sprite {nw}x{nh} @({px},{py})\n"
+        f"  title box {tw}x{th} layer {title_layer.size} content_w={content_w}\n"
+        f"  sub x3 each width={target_w} font={size} @x={gx0}"
     )
 
 
