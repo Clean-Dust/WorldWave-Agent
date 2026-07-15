@@ -1,0 +1,12 @@
+# Default owner for all paths — PR reviews require code owner approval
+# when branch protection / rulesets enable require_code_owner_review.
+*       @Clean-Dust
+
+# Core runtime
+/core/              @Clean-Dust
+/gateway/           @Clean-Dust
+/server.py          @Clean-Dust
+/tools/             @Clean-Dust
+
+# CI / supply chain
+/.github/           @Clean-Dust
