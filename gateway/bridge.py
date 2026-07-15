@@ -88,10 +88,17 @@ class TelegramGateway:
                 if task_handler:
                     # One user-visible text send per inbound message (chat_id).
                     # Covers adapter.send_message and tools/telegram path.
-                    from gateway.outbound import clear_budget, set_budget
+                    # begin_inbound is atomic busy+budget; refuses concurrent
+                    # handlers for the same chat (poll must not fire-and-forget).
+                    from gateway.outbound import begin_inbound, end_inbound
 
-                    if chat_id:
-                        set_budget(str(chat_id), 1)
+                    cid = str(chat_id) if chat_id else ""
+                    if cid and not begin_inbound(cid):
+                        log.warning(
+                            "skip concurrent inbound for chat=%s (already busy)",
+                            cid,
+                        )
+                        return
                     try:
                         result = task_handler(text, context)
                         if result and chat_id:
@@ -104,8 +111,8 @@ class TelegramGateway:
                                 chat_id,
                             )
                     finally:
-                        if chat_id:
-                            clear_budget(str(chat_id))
+                        if cid:
+                            end_inbound(cid)
             except Exception as e:
                 log.exception("BRIDGE handler error: %s", e)
 

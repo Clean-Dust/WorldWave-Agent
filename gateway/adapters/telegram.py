@@ -13,6 +13,7 @@ import os
 import threading
 import time
 import uuid
+from collections import deque
 from typing import Callable, Optional
 
 from google.protobuf.timestamp_pb2 import Timestamp
@@ -25,6 +26,8 @@ from gateway.adapters import BaseAdapter, AdapterRegistry
 log = logging.getLogger("gateway.telegram")
 
 TELEGRAM_API = "https://api.telegram.org/bot"
+# How many processed update_ids to retain for dedup
+_SEEN_UPDATE_MAX = 512
 
 
 class TelegramAdapter(BaseAdapter):
@@ -75,6 +78,7 @@ class TelegramAdapter(BaseAdapter):
             self._pairing = PairingManager()
 
         self._bot_username: str = ""
+        self._bot_id: str = ""  # cached from getMe; used to skip self-echo
         self._offset: int = 0
         self._thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -82,6 +86,13 @@ class TelegramAdapter(BaseAdapter):
         self._pending_approvals: dict = {}  # HITL approval tracking
         self._stream_state: dict = {}       # Streaming debounce state
         self.STREAM_DEBOUNCE_SEC = 1.5      # blueprint: 1.5-2s debounce
+
+        # Per-chat inbound serialization (poll thread + any extra entry points)
+        self._chat_locks: dict = {}
+        self._chat_locks_guard = threading.Lock()
+        # update_id dedup: set for O(1) lookup + deque for eviction order
+        self._seen_update_ids: set = set()
+        self._seen_update_order: deque = deque()
 
         # WW local API URL for slash commands (key may be auto-set by server)
         _port = os.environ.get("WW_PORT", "9300")
@@ -122,11 +133,14 @@ class TelegramAdapter(BaseAdapter):
 
         if not allow_text_send(str(chat_id), text or ""):
             return False
-        return self._api_call("sendMessage", {
+        payload = {
             "chat_id": str(chat_id),
             "text": text[:4000],
-            "parse_mode": kwargs.get("parse_mode", "Markdown"),
-        }).get("ok", False)
+        }
+        parse_mode = kwargs.get("parse_mode", "Markdown")
+        if parse_mode:
+            payload["parse_mode"] = parse_mode
+        return self._api_call("sendMessage", payload).get("ok", False)
 
     def send_stream_chunk(self, chat_id: str, chunk) -> bool:
         """Send a streaming chunk with debounced editMessageText.
@@ -135,7 +149,7 @@ class TelegramAdapter(BaseAdapter):
         streams, setting updates to every 1.5-2s to avoid 429 errors."
         
         Maintains per-chat state: current message ID, accumulator buffer,
-        last edit timestamp.
+        last edit timestamp. First sendMessage is gated by allow_text_send.
         """
         if not chunk:
             return True
@@ -145,8 +159,12 @@ class TelegramAdapter(BaseAdapter):
         state = self._stream_state.get(key)
 
         if state is None or state.get("done"):
-            # New stream: send initial message
+            # New stream: send initial message (counts as user-visible text)
+            from gateway.outbound import allow_text_send
+
             text = chunk if isinstance(chunk, str) else str(chunk)
+            if not allow_text_send(key, text):
+                return False
             result = self._api_call("sendMessage", {
                 "chat_id": str(chat_id),
                 "text": text[:4000],
@@ -162,7 +180,7 @@ class TelegramAdapter(BaseAdapter):
                 return True
             return False
 
-        # Accumulate and debounce
+        # Accumulate and debounce (edits do not open a new bubble)
         new_text = chunk if isinstance(chunk, str) else str(chunk)
         state["buffer"] = new_text
         elapsed = now - state["last_edit"]
@@ -364,14 +382,57 @@ class TelegramAdapter(BaseAdapter):
         try:
             data = self._api_call("getMe")
             if data.get("ok"):
-                self._bot_username = data["result"].get("username", "").lower()
-                log.info("Bot username resolved: @%s", self._bot_username)
+                result = data["result"]
+                self._bot_username = result.get("username", "").lower()
+                self._bot_id = str(result.get("id", "") or "")
+                log.info(
+                    "Bot username resolved: @%s id=%s",
+                    self._bot_username,
+                    self._bot_id or "?",
+                )
             else:
                 log.error("getMe failed: %s", data)
         except Exception as e:
             log.error("Cannot resolve bot username (getMe failed): %s", e)
             log.error("Bot will NOT respond to @mentions until this is fixed.")
             log.error("Check TELEGRAM_WW_TOKEN — current value length: %d", len(self._token) if self._token else 0)
+
+    def _chat_lock(self, chat_id) -> threading.RLock:
+        """Return a re-entrant lock for this chat_id (created on first use)."""
+        key = str(chat_id)
+        with self._chat_locks_guard:
+            lock = self._chat_locks.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                self._chat_locks[key] = lock
+            return lock
+
+    def _mark_seen_update(self, update_id) -> bool:
+        """Record update_id; return True if it was already processed (skip)."""
+        if update_id is None:
+            return False
+        try:
+            uid = int(update_id)
+        except (TypeError, ValueError):
+            uid = update_id
+        if uid in self._seen_update_ids:
+            return True
+        self._seen_update_ids.add(uid)
+        self._seen_update_order.append(uid)
+        while len(self._seen_update_order) > _SEEN_UPDATE_MAX:
+            old = self._seen_update_order.popleft()
+            self._seen_update_ids.discard(old)
+        return False
+
+    def _is_self_sender(self, sender: dict) -> bool:
+        """True if message is from this bot (is_bot flag or matching bot id)."""
+        if not sender:
+            return False
+        if sender.get("is_bot"):
+            return True
+        if self._bot_id and str(sender.get("id", "")) == str(self._bot_id):
+            return True
+        return False
 
     def _register_commands(self):
         """Register bot commands with Telegram so they appear in the menu."""
@@ -520,6 +581,14 @@ class TelegramAdapter(BaseAdapter):
     def _api_call(self, method: str, data: dict = None, raw: bool = False):
         import urllib.request
         import urllib.parse
+
+        if method == "sendMessage" and data:
+            snippet = str(data.get("text", "") or "").replace("\n", " ")[:120]
+            log.info(
+                "raw sendMessage chat=%s text=%s",
+                data.get("chat_id", ""),
+                snippet,
+            )
 
         url = f"{TELEGRAM_API}{self._token}/{method}"
         try:
@@ -822,8 +891,137 @@ class TelegramAdapter(BaseAdapter):
     def _send_typing(self, chat_id: int):
         self._api_call("sendChatAction", {"chat_id": chat_id, "action": "typing"})
 
+    def _dispatch_on_message(self, unified) -> None:
+        """Run on_message to completion in this thread (no fire-and-forget).
+
+        Poll must never schedule concurrent handlers for the same chat; wait
+        fully so only one inbound is active before the next update is handled.
+        """
+        if not self._on_message:
+            log.debug("No message handler registered")
+            return
+        import asyncio
+        import inspect
+
+        try:
+            result = self._on_message(unified)
+            if inspect.isawaitable(result):
+                # Always run to completion in this thread — never
+                # run_coroutine_threadsafe without waiting.
+                asyncio.run(result)
+        except Exception:
+            log.exception("on_message handler failed")
+
+    def _process_message_update(self, message: dict) -> None:
+        """Handle a single Telegram message (caller holds per-chat lock)."""
+        chat = message.get("chat", {})
+        chat_id = chat.get("id")
+        is_private = chat.get("type") == "private"
+
+        # Only enforce workspace filter for group chats (not DMs)
+        if not is_private and self._workspace_id and chat_id != self._workspace_id:
+            return
+
+        sender = message.get("from", {})
+        user_id = str(sender.get("id", ""))
+        display_name = sender.get("first_name", sender.get("username", "?"))
+
+        # Skip bot self-messages (is_bot flag or matching getMe id)
+        if self._is_self_sender(sender):
+            log.debug(
+                "skip self/bot sender id=%s is_bot=%s",
+                sender.get("id"),
+                sender.get("is_bot"),
+            )
+            return
+
+        # ── Voice/audio: bypass @mention, but still check pairing ──
+        has_voice = bool(message.get("voice")) or bool(message.get("audio"))
+
+        # ── Photo: bypass @mention in groups, process like voice ──
+        has_photo = bool(message.get("photo"))
+
+        # DMs (private chats) don't need @mention — direct message is the mention
+        if not has_voice and not has_photo and not is_private and not self._is_mention(message):
+            return
+
+        # ── DM Pairing: whitelist check ──────────────
+        if not self._pairing.is_allowed("telegram", user_id):
+            # Only true/1/yes/on auto-whitelist. "false" must not approve.
+            _auto = str(os.environ.get("WW_PAIRING_AUTO_APPROVE", "")).strip().lower()
+            if _auto in ("1", "true", "yes", "on", "y"):
+                self._pairing.add_to_whitelist("telegram", user_id, display_name)
+                log.info("Auto-approved user %s (%s)", display_name, user_id)
+            else:
+                code = self._pairing.request_pairing(
+                    "telegram", user_id, display_name, str(chat_id),
+                )
+                log.info(
+                    "Unknown user %s (%s) — not processed, pairing code: %s",
+                    display_name, user_id, code,
+                )
+                # Tell the user they need admin approval (rate-limited).
+                # No inbound budget yet → allow_text_send permits this notice.
+                if self._pairing.should_notify_user(code):
+                    notice = self._pairing.pairing_notice_text(code)
+                    from gateway.outbound import allow_text_send
+
+                    if allow_text_send(str(chat_id), notice):
+                        # Plain text only — avoid Markdown parse failures
+                        self._api_call("sendMessage", {
+                            "chat_id": str(chat_id),
+                            "text": notice[:4000],
+                        })
+                # Do not process the task until approved
+                return
+
+        log.info("Message from %s", display_name)
+
+        # ── Voice/audio message: STT transcription ───
+        if has_voice:
+            self._handle_voice_message(message)
+            if not message.get("text"):
+                # Transcription failed — skip silently
+                log.info(
+                    "Voice message from %s — transcription unavailable",
+                    display_name,
+                )
+                return
+
+        # ── Photo message: download for vision analysis ───
+        if has_photo:
+            self._handle_photo_message(message)
+            if not message.get("text"):
+                log.info(
+                    "Photo message from %s — download failed",
+                    display_name,
+                )
+                return
+
+        # ── Direct command interception (fast path, no LLM) ──
+        text = (message.get("text") or "").strip()
+        if text.startswith("/"):
+            parts = text.split(None, 1)
+            raw_cmd = parts[0].lower()
+            args = parts[1] if len(parts) > 1 else ""
+            # Strip @bot suffix from command (/help@Cleandust_MemberNo3_bot)
+            cmd_name = raw_cmd.split("@")[0].lstrip("/")
+            if self._handle_direct_command(chat_id, cmd_name, args, message):
+                return  # Handled directly, skip LLM
+
+        # Show typing indicator
+        self._send_typing(chat_id)
+
+        # Normalize and route — wait for full handler completion
+        unified = self._normalize_message(message)
+        self._dispatch_on_message(unified)
+
     def _poll_loop(self):
-        """Main polling loop."""
+        """Main polling loop.
+
+        Processes one update fully before the next. Never fire-and-forget
+        handlers (no run_coroutine_threadsafe without waiting).
+        """
         log.info("Telegram poll loop started (workspace=%s)", self._workspace_id)
 
         while not self._stop_event.is_set():
@@ -835,6 +1033,11 @@ class TelegramAdapter(BaseAdapter):
                 continue
 
             for update in updates:
+                update_id = update.get("update_id")
+                if self._mark_seen_update(update_id):
+                    log.info("skip duplicate update_id=%s", update_id)
+                    continue
+
                 # Handle callback queries (inline button presses)
                 callback = update.get("callback_query")
                 if callback:
@@ -842,113 +1045,18 @@ class TelegramAdapter(BaseAdapter):
                     continue
 
                 message = update.get("message", {})
-                chat = message.get("chat", {})
-                chat_id = chat.get("id")
-                is_private = chat.get("type") == "private"
-
-                # Only enforce workspace filter for group chats (not DMs)
-                if not is_private and self._workspace_id and chat_id != self._workspace_id:
+                if not message:
                     continue
 
-                sender = message.get("from", {})
-                user_id = str(sender.get("id", ""))
-                display_name = sender.get("first_name", sender.get("username", "?"))
-
-                # Skip messages from the bot itself to prevent echo loops
-                if sender.get("is_bot"):
-                    continue
-
-                # ── Voice/audio: bypass @mention, but still check pairing ──
-                has_voice = bool(message.get("voice")) or bool(message.get("audio"))
-
-                # ── Photo: bypass @mention in groups, process like voice ──
-                has_photo = bool(message.get("photo"))
-
-                # DMs (private chats) don't need @mention — direct message is the mention
-                if not has_voice and not has_photo and not is_private and not self._is_mention(message):
-                    continue
-
-                # ── DM Pairing: whitelist check ──────────────
-                if not self._pairing.is_allowed("telegram", user_id):
-                    # Only true/1/yes/on auto-whitelist. "false" must not approve.
-                    _auto = str(os.environ.get("WW_PAIRING_AUTO_APPROVE", "")).strip().lower()
-                    if _auto in ("1", "true", "yes", "on", "y"):
-                        self._pairing.add_to_whitelist("telegram", user_id, display_name)
-                        log.info("Auto-approved user %s (%s)", display_name, user_id)
-                    else:
-                        code = self._pairing.request_pairing(
-                            "telegram", user_id, display_name, str(chat_id),
-                        )
-                        log.info(
-                            "Unknown user %s (%s) — not processed, pairing code: %s",
-                            display_name, user_id, code,
-                        )
-                        # Tell the user they need admin approval (rate-limited)
-                        if self._pairing.should_notify_user(code):
-                            notice = self._pairing.pairing_notice_text(code)
-                            # Plain text only — avoid Markdown parse failures
-                            self._api_call("sendMessage", {
-                                "chat_id": str(chat_id),
-                                "text": notice[:4000],
-                            })
-                        # Do not process the task until approved
-                        continue
-
-                log.info("Message from %s", display_name)
-
-                # ── Voice/audio message: STT transcription ───
-                if has_voice:
-                    self._handle_voice_message(message)
-                    if not message.get("text"):
-                        # Transcription failed — skip silently
-                        log.info(
-                            "Voice message from %s — transcription unavailable",
-                            display_name,
-                        )
-                        continue
-
-                # ── Photo message: download for vision analysis ───
-                if has_photo:
-                    self._handle_photo_message(message)
-                    if not message.get("text"):
-                        log.info(
-                            "Photo message from %s — download failed",
-                            display_name,
-                        )
-                        continue
-
-                # ── Direct command interception (fast path, no LLM) ──
-                text = (message.get("text") or "").strip()
-                if text.startswith("/"):
-                    parts = text.split(None, 1)
-                    raw_cmd = parts[0].lower()
-                    args = parts[1] if len(parts) > 1 else ""
-                    # Strip @bot suffix from command (/help@Cleandust_MemberNo3_bot)
-                    cmd_name = raw_cmd.split("@")[0].lstrip("/")
-                    if self._handle_direct_command(chat_id, cmd_name, args, message):
-                        continue  # Handled directly, skip LLM
-
-                # Show typing indicator
-                self._send_typing(chat_id)
-
-                # Normalize and route
-                unified = self._normalize_message(message)
-
-                if self._on_message:
-                    import asyncio
-                    try:
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            asyncio.run_coroutine_threadsafe(
-                                self._on_message(unified), loop,
-                            )
-                        else:
-                            loop.run_until_complete(self._on_message(unified))
-                    except RuntimeError:
-                        # No event loop in this thread; run in a new one
-                        asyncio.run(self._on_message(unified))
+                chat_id = message.get("chat", {}).get("id")
+                # Per-chat lock wraps full inbound so concurrent entry points
+                # cannot interleave set_budget/send/clear for the same chat.
+                # Bridge does not take this lock (adapter-only) to avoid deadlock.
+                if chat_id is not None:
+                    with self._chat_lock(chat_id):
+                        self._process_message_update(message)
                 else:
-                    log.debug("No message handler registered")
+                    self._process_message_update(message)
 
             time.sleep(self._poll_interval)
 
