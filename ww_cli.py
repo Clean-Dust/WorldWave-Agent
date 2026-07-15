@@ -168,11 +168,33 @@ def save_config(config: Dict):
 
 
 def load_or_create_api_key() -> str:
-    """Load API key from config dir, or generate and persist a new one.
+    """Load API key with env-first priority so CLI matches a running server.
 
-    Ensures CLI and server share the same key across multiple invocations.
+    Priority:
+      1. WW_API_KEY already set (e.g. from .env via load_dotenv) — use it and
+         rewrite ~/.ww/api_key if the file differs so future runs stay consistent.
+      2. Non-empty key file under WW_CONFIG — load into env and return.
+      3. Generate a new key, persist to file, set env, return.
     """
     key_file = os.path.join(WW_CONFIG, "api_key")
+
+    env_key = (os.environ.get("WW_API_KEY") or "").strip()
+    if env_key:
+        os.environ["WW_API_KEY"] = env_key
+        try:
+            file_key = ""
+            if os.path.exists(key_file):
+                with open(key_file) as f:
+                    file_key = f.read().strip()
+            if file_key != env_key:
+                os.makedirs(WW_CONFIG, exist_ok=True)
+                with open(key_file, "w") as f:
+                    f.write(env_key)
+                os.chmod(key_file, stat.S_IRUSR | stat.S_IWUSR)
+        except Exception:
+            pass
+        return env_key
+
     if os.path.exists(key_file):
         try:
             with open(key_file) as f:
@@ -277,6 +299,7 @@ def api_get(endpoint: str) -> Optional[Dict]:
         api_key = os.environ.get("WW_API_KEY", "")
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+            headers["X-API-Key"] = api_key
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as resp:
             return json.loads(resp.read())
@@ -294,6 +317,7 @@ def api_post(endpoint: str, data: Dict) -> Optional[Dict]:
         api_key = os.environ.get("WW_API_KEY", "")
         if api_key:
             headers["Authorization"] = f"Bearer {api_key}"
+            headers["X-API-Key"] = api_key
         req = urllib.request.Request(url, data=body,
             headers=headers,
             method="POST")
