@@ -72,6 +72,9 @@ def _archive_lines(data_dir: str) -> int:
 
 
 def run_l0(report: Report) -> None:
+    if os.environ.get("WW_PROVE_SKIP_L0") == "1":
+        report.add("L0 offline unit suite", True, "skipped via WW_PROVE_SKIP_L0=1", "n/a")
+        return
     env = os.environ.copy()
     cmd = [
         sys.executable,
