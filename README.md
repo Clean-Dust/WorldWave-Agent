@@ -32,14 +32,7 @@ Linux, macOS, WSL2 (Python 3.10+):
 bash <(curl -fsSL https://raw.githubusercontent.com/Clean-Dust/worldwave/main/deploy.sh)
 ```
 
-Then:
-
-```bash
-ww key set sk-...   # if not prompted; free key: https://platform.deepseek.com
-ww                  # chat
-```
-
-That is the whole path: **install → key → talk**. The installer sets up Python/Git if needed, a venv, and the `ww` command.
+One line. The installer asks for an LLM API key (DeepSeek · OpenAI · Anthropic · OpenRouter), then you chat — **install → key → talk**.
 
 <details>
 <summary><b>Advanced — manual install, server mode, platforms, extras</b></summary>
@@ -50,9 +43,11 @@ That is the whole path: **install → key → talk**. The installer sets up Pyth
 git clone https://github.com/Clean-Dust/worldwave.git
 cd worldwave
 pip install -e .
-cp .env.example .env   # set DEEPSEEK_API_KEY (or another provider key)
+cp .env.example .env   # set any provider key (see .env.example)
 ww run "Hello, what can you do?"
 ```
+
+**Change / set key later** (if install skipped the prompt): `ww key set <key> [deepseek|openai|anthropic|openrouter]`
 
 **Server mode** (API + Web UI + Telegram gateway)
 
@@ -215,14 +210,7 @@ Linux、macOS、WSL2（Python 3.10+）：
 bash <(curl -fsSL https://raw.githubusercontent.com/Clean-Dust/worldwave/main/deploy.sh)
 ```
 
-然后：
-
-```bash
-ww key set sk-...   # 若安装时未提示；免费 key：https://platform.deepseek.com
-ww                  # 进入对话
-```
-
-整条路径就这三步：**安装 → key → 聊天**。安装脚本会按需装 Python/Git、建 venv、装好 `ww` 命令。
+一行搞定。安装时会要 LLM API key（DeepSeek · OpenAI · Anthropic · OpenRouter），然后直接聊天 — **安装 → key → 聊天**。
 
 <details>
 <summary><b>高级 — 手动安装、服务器模式、平台与可选依赖</b></summary>
@@ -233,9 +221,11 @@ ww                  # 进入对话
 git clone https://github.com/Clean-Dust/worldwave.git
 cd worldwave
 pip install -e .
-cp .env.example .env   # 至少设置 DEEPSEEK_API_KEY（或其他厂商 key）
+cp .env.example .env   # 写入任意厂商 LLM key（见 .env.example）
 ww run "你好，你能做什么？"
 ```
+
+**之后改 / 补 key**（安装时跳过提示时）：`ww key set <key> [deepseek|openai|anthropic|openrouter]`
 
 **服务器模式**（API + Web UI + Telegram 网关）
 
