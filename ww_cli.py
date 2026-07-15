@@ -27,13 +27,14 @@ Environment Variables:
 
 from __future__ import annotations
 import argparse
+import difflib
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 # Load .env for API keys (before any WW imports)
 try:
@@ -1822,6 +1823,17 @@ def cmd_gateway(args):
         api_post("/ww/gateway/stop", {"platform": platform})
         print(f"  {Colors.yellow('○')} {platform} gateway stopped")
 
+    else:
+        # Unknown gateway subaction — suggest closest known action
+        known = list(_GATEWAY_ACTIONS)
+        close = difflib.get_close_matches(str(action), known, n=3, cutoff=0.55)
+        print(f"{Colors.red('✗')} Unknown gateway action: {action}")
+        if close:
+            print(f"  Did you mean: {' | '.join(close)}")
+        else:
+            print(f"  Did you mean: {' | '.join(known)}")
+        print(f"  See: {Colors.cyan('ww gateway setup')} | {Colors.cyan('ww help')}")
+
 
 def _upsert_env(path, key, value):
     """Update or add a key=value line in a .env file."""
@@ -2062,6 +2074,9 @@ def cmd_help(args):
   -h, --help             Show this help
   ww help                Same as --help (WW commands, not bash)
 
+  Typos: unknown short commands get "Did you mean" suggestions.
+  Multi-word natural-language goals still run as tasks.
+
   Note: In a shell, bare "help" is the bash builtin — use ww --help or ww help.
 """)
 
@@ -2122,6 +2137,122 @@ COMMANDS = {
     "identity": cmd_identity,
     "whoami": cmd_whoami,
 }
+
+# Known CLI vocabulary for typo suggestions (stdlib difflib only).
+KNOWN_CLI_COMMANDS: tuple[str, ...] = tuple(sorted(COMMANDS.keys()))
+KNOWN_CLI_PHRASES: tuple[str, ...] = (
+    "gateway setup",
+    "gateway list",
+    "gateway start",
+    "gateway stop",
+    "server start",
+    "server stop",
+    "server restart",
+    "server status",
+    "update status",
+    "telegram status",
+    "memory stats",
+    "memory search",
+    "memory sleep",
+    "pairing list",
+    "pairing approve",
+    "pairing reject",
+    "identity primary",
+    "identity link",
+    "identity show",
+)
+_GATEWAY_ACTIONS = ("setup", "list", "start", "stop")
+_TYPO_CUTOFF = 0.55
+_TYPO_MAX_REST = 2
+
+
+def suggest_cli_commands(
+    token: str, rest: Optional[List[str]] = None
+) -> List[str]:
+    """Return full ``ww …`` suggestion strings for a mistyped token.
+
+    Prefer multi-word phrase matches when a second token is present, then
+    single-command matches from COMMANDS.
+    """
+    rest = list(rest or [])
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def _add(s: str) -> None:
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+
+    cmd_hits = difflib.get_close_matches(
+        token, list(KNOWN_CLI_COMMANDS), n=3, cutoff=_TYPO_CUTOFF
+    )
+
+    if rest:
+        two = f"{token} {rest[0]}"
+        # Best phrase only — avoid flooding with sibling subcommands
+        # (e.g. gataway setup → gateway setup, not list/stop/start too).
+        phrase_hits = difflib.get_close_matches(
+            two, KNOWN_CLI_PHRASES, n=2, cutoff=_TYPO_CUTOFF
+        )
+        for phrase in phrase_hits:
+            head = phrase.split()[0]
+            # Keep phrase if its command head is a close match for token
+            if head in cmd_hits or difflib.SequenceMatcher(
+                None, token, head
+            ).ratio() >= _TYPO_CUTOFF:
+                _add(f"ww {phrase}")
+                break  # top qualifying phrase is enough
+        # Exact reconstructed phrase from corrected command + rest[0]
+        for cmd in cmd_hits:
+            candidate = f"{cmd} {rest[0]}"
+            if candidate in KNOWN_CLI_PHRASES:
+                _add(f"ww {candidate}")
+
+    for cmd in cmd_hits:
+        _add(f"ww {cmd}")
+
+    return out
+
+
+def is_likely_command_typo(
+    token: str, rest: Optional[List[str]] = None
+) -> bool:
+    """True when ``token`` looks like a misspelled WW command (not free-text task).
+
+    Typo path when close command/phrase matches exist and remaining tokens
+    are few (``<= 2``). Longer free-text after a weak match stays LLM goal.
+    """
+    rest = list(rest or [])
+    if not token or " " in token or len(token) > 24:
+        return False
+    if len(rest) > _TYPO_MAX_REST:
+        return False
+
+    matches = difflib.get_close_matches(
+        token, list(KNOWN_CLI_COMMANDS), n=1, cutoff=_TYPO_CUTOFF
+    )
+    phrase_matches: List[str] = []
+    if rest:
+        two = f"{token} {rest[0]}"
+        phrase_matches = difflib.get_close_matches(
+            two, KNOWN_CLI_PHRASES, n=1, cutoff=_TYPO_CUTOFF
+        )
+    return bool(matches or phrase_matches)
+
+
+def print_command_suggestions(
+    token: str, rest: Optional[List[str]] = None
+) -> None:
+    """Print unknown-command message with Did you mean suggestions."""
+    suggestions = suggest_cli_commands(token, rest)
+    print(f"{Colors.red('✗')} Unknown command: {token}")
+    if suggestions:
+        print("  Did you mean:")
+        for s in suggestions:
+            print(f"    {Colors.cyan(s)}")
+    print(f"  See: {Colors.cyan('ww help')}")
+    tip_example = 'ww "write a script"'
+    print(f"  Tip: multi-word goals as a task:  {Colors.cyan(tip_example)}")
 
 
 def _maybe_apply_compat_alias():
@@ -2329,13 +2460,18 @@ def main():
         cmd_run(args)
 
     else:
-        # Unrecognized command → treat everything as a task goal
+        # Unrecognized command → typo suggestions, else one-shot LLM task
+        # e.g. 'ww updat' → Did you mean: ww update
         # e.g. 'ww write a script' → goal = "write a script"
         goal_words = [cmd]
         if extra:
             goal_words += extra
         elif args.goal:
             goal_words += args.goal
+        rest_tokens = goal_words[1:]
+        if is_likely_command_typo(cmd, rest_tokens):
+            print_command_suggestions(cmd, rest_tokens)
+            sys.exit(1)
         args.goal = goal_words
         args.spirals = 5
         for i, e in enumerate(extra):
