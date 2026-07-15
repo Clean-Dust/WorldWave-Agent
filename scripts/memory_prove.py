@@ -570,12 +570,91 @@ def run_product(report: Report) -> None:
     )
 
 
+def run_b4_wm_kind_eviction(report: Report) -> None:
+    """B4: WM kind-weighted eviction order (isolated EntityStateManager, no LLM)."""
+    from unittest.mock import MagicMock
+
+    from core.entity_state import (
+        EntityStateManager,
+        normalize_wm_kind,
+        wm_eviction_score,
+    )
+
+    td = tempfile.mkdtemp(prefix="ww-mem-b4-")
+    prev_cap = os.environ.get("WW_WORKING_MEMORY_CAPACITY")
+    try:
+        os.environ["WW_WORKING_MEMORY_CAPACITY"] = "2"
+        cfg = MagicMock()
+        cfg.get = MagicMock(return_value=None)
+        cfg.expand_path = MagicMock(side_effect=lambda p: os.path.expanduser(p))
+        esm = EntityStateManager(config=cfg, data_dir=td)
+        esm.working_memory_capacity = 2
+
+        eid = "ent_b4"
+        esm.set_working_memory(eid, "dec", "do A", kind="commitment")
+        time.sleep(0.01)
+        esm.set_working_memory(eid, "why", "because B", kind="rationale")
+        time.sleep(0.01)
+        esm.set_working_memory(eid, "new", "incoming", kind="outcome")
+
+        st = esm.get(eid)
+        size_ok = len(st.working_memory) == 2
+        cmt_kept = "dec" in st.working_memory
+        rat_gone = "why" not in st.working_memory
+        new_kept = "new" in st.working_memory
+
+        # Same access: commitment score > rationale
+        score_ok = wm_eviction_score("commitment", 0) > wm_eviction_score(
+            "rationale", 0
+        )
+        # Illegal kind → outcome
+        norm_ok = normalize_wm_kind("nope") == "outcome"
+        # Legacy missing kind ≡ outcome score
+        legacy_ok = wm_eviction_score(None, 1) == wm_eviction_score("outcome", 1)
+
+        # Meta kind written for commitment
+        meta_kind = (st.working_memory_meta.get("dec") or {}).get("kind")
+        meta_ok = meta_kind == "commitment"
+
+        ok = (
+            size_ok
+            and cmt_kept
+            and rat_gone
+            and new_kept
+            and score_ok
+            and norm_ok
+            and legacy_ok
+            and meta_ok
+        )
+        report.add(
+            "B4 WM kind-weighted eviction",
+            ok,
+            f"size={size_ok} cmt={cmt_kept} rat_gone={rat_gone} new={new_kept} "
+            f"score={score_ok} norm={norm_ok} legacy={legacy_ok} meta={meta_ok}",
+            "EntityStateManager WM kind",
+        )
+    except Exception as e:
+        report.add(
+            "B4 WM kind-weighted eviction",
+            False,
+            f"error: {e}",
+            "EntityStateManager WM kind",
+        )
+    finally:
+        if prev_cap is None:
+            os.environ.pop("WW_WORKING_MEMORY_CAPACITY", None)
+        else:
+            os.environ["WW_WORKING_MEMORY_CAPACITY"] = prev_cap
+        shutil.rmtree(td, ignore_errors=True)
+
+
 def run_mechanism(report: Report) -> None:
     run_l0(report)
     run_b1_capacity(report)
     run_b2_gc(report)
     run_promote(report)
     run_b3_working_memory(report)
+    run_b4_wm_kind_eviction(report)
 
 
 def _live_client() -> LiveClient:

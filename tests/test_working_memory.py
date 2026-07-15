@@ -8,6 +8,7 @@ Offline only (no network). Covers:
 - capacity=1 boundary
 - is_core / preferences protected from eviction
 - context injection only contains current RAM set
+- Memory roles (kind): commitment / rationale / outcome weighted eviction
 """
 
 from __future__ import annotations
@@ -21,9 +22,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from core.entity_state import (
+    DEFAULT_WM_KIND,
     DEFAULT_WORKING_MEMORY_CAPACITY,
+    ROLE_WEIGHT,
     EntityStateManager,
+    normalize_wm_kind,
     resolve_working_memory_capacity,
+    wm_eviction_score,
 )
 
 
@@ -238,3 +243,120 @@ def test_memory_tools_is_core_and_promote_wire(tmp_path, cfg, monkeypatch):
         "hot" in f["fact"] and "wm_evict" in (f.get("entities") or [])
         for f in mem.facts
     )
+
+
+# ── Memory roles (kind) ──────────────────────────────────────────
+
+
+def test_normalize_wm_kind():
+    assert normalize_wm_kind(None) == "outcome"
+    assert normalize_wm_kind("") == "outcome"
+    assert normalize_wm_kind("unknown") == "outcome"
+    assert normalize_wm_kind("garbage") == "outcome"
+    assert normalize_wm_kind("COMMITMENT") == "commitment"
+    assert normalize_wm_kind("rationale") == "rationale"
+    assert normalize_wm_kind("outcome") == "outcome"
+    assert DEFAULT_WM_KIND == "outcome"
+    assert ROLE_WEIGHT["commitment"] > ROLE_WEIGHT["outcome"] > ROLE_WEIGHT["rationale"]
+
+
+def test_rationale_evicted_before_commitment(esm):
+    """Full capacity: rationale is squeezed before commitment (same access)."""
+    esm.working_memory_capacity = 2
+    eid = "ent_kind_order"
+    esm.set_working_memory(eid, "dec", "do A", kind="commitment")
+    time.sleep(0.02)
+    esm.set_working_memory(eid, "why", "because B", kind="rationale")
+    time.sleep(0.02)
+    esm.set_working_memory(eid, "new", "incoming", kind="outcome")
+
+    state = esm.get(eid)
+    assert len(state.working_memory) == 2
+    assert "dec" in state.working_memory
+    assert "why" not in state.working_memory
+    assert "new" in state.working_memory
+
+
+def test_same_access_commitment_stays_rationale_goes(esm):
+    """Equal access_count: commitment score higher → rationale leaves first."""
+    esm.working_memory_capacity = 1
+    eid = "ent_kind_access"
+    esm.set_working_memory(eid, "cmt", "decide X", kind="commitment")
+    esm.set_working_memory(eid, "rat", "reason Y", kind="rationale")
+    # Both access 0; rationale weight 1 < commitment 3 → rat evicted when only one slot
+    # After second write capacity is 1: only one remains — must be commitment if both eligible
+    # Write order: cmt first, then rat forces eviction of lower score among {cmt, rat}.
+    # After rat write, size=2 > 1, victim = min(score): rat score=1, cmt score=3 → rat goes,
+    # but wait we just wrote rat — both are in WM then eviction runs. Victim is rat.
+    # Final: only cmt? Actually both were candidates; rat has lower score so rat is victim.
+    # Result: cmt remains. But we wanted rat to be the new write... eviction removes lowest
+    # score among ALL keys including the new one. So rat (new) gets removed if score lower.
+    state = esm.get(eid)
+    assert "cmt" in state.working_memory
+    assert "rat" not in state.working_memory
+
+    # Flip order: write rationale first, then commitment under pressure
+    esm.working_memory_capacity = 1
+    eid2 = "ent_kind_access2"
+    esm.set_working_memory(eid2, "rat2", "process", kind="rationale")
+    esm.set_working_memory(eid2, "cmt2", "decide", kind="commitment")
+    state2 = esm.get(eid2)
+    assert "cmt2" in state2.working_memory
+    assert "rat2" not in state2.working_memory
+
+
+def test_remember_kind_commitment_writes_meta(tmp_path, cfg, monkeypatch):
+    monkeypatch.delenv("WW_WORKING_MEMORY_CAPACITY", raising=False)
+    esm = EntityStateManager(config=cfg, data_dir=str(tmp_path / "entities2"))
+    from core.memory.tools import MemoryTools
+
+    tools = MemoryTools(memory_system=None, entity_state_mgr=esm, entity_id="ent_rk")
+    out = tools.remember("plan", "use docker", kind="commitment")
+    assert out.get("kind") == "commitment"
+    state = esm.get("ent_rk")
+    assert state.working_memory_meta["plan"]["kind"] == "commitment"
+
+
+def test_legacy_meta_without_kind_uses_outcome_weight(esm):
+    """Old data missing meta.kind scores as outcome."""
+    esm.working_memory_capacity = 2
+    eid = "ent_legacy"
+    esm.set_working_memory(eid, "legacy", "old-fact")  # default kind outcome
+    # Simulate pre-kind data: strip kind field
+    state = esm.get(eid)
+    state.working_memory_meta["legacy"] = {
+        "updated_at": state.working_memory_meta["legacy"]["updated_at"],
+        "access_count": 0,
+    }
+    esm.save(state)
+
+    # Add a rationale (lower weight) and a new key → rationale should go first
+    esm.set_working_memory(eid, "why", "process note", kind="rationale")
+    time.sleep(0.02)
+    esm.set_working_memory(eid, "extra", "pressure", kind="outcome")
+
+    state = esm.get(eid)
+    assert "legacy" in state.working_memory  # outcome-weight default
+    assert "why" not in state.working_memory
+    assert "extra" in state.working_memory
+    # score equality check: missing kind ≡ outcome
+    assert wm_eviction_score(None, 0) == wm_eviction_score("outcome", 0)
+
+
+def test_illegal_kind_normalized_to_outcome(esm):
+    esm.set_working_memory("ent_bad", "k", "v", kind="not-a-role")
+    state = esm.get("ent_bad")
+    assert state.working_memory_meta["k"]["kind"] == "outcome"
+
+    esm.set_working_memory("ent_bad", "k2", "v2", kind="unknown")
+    state = esm.get("ent_bad")
+    assert state.working_memory_meta["k2"]["kind"] == "outcome"
+
+
+def test_context_injection_includes_kind_tag(esm):
+    eid = "ent_ctx_kind"
+    esm.set_working_memory(eid, "decision", "ship it", kind="commitment")
+    text = esm.get_context_for(eid)
+    assert "[commitment]" in text
+    assert "decision" in text
+    assert "ship it" in text

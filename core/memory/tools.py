@@ -6,15 +6,18 @@ the agent transitions from "passive consumer of recall results" to
 "active manager of its knowledge".
 
 Two core tools:
-- remember(key, value): Store a fact in memory. Agent calls this when it
-  learns something new or detects a change.
+- remember(key, value, kind=...): Store a fact in memory. Agent calls this
+  when it learns something new or detects a change. kind is an explicit
+  memory role (commitment / rationale / outcome) — never inferred from
+  keywords.
 - forget(key): Mark a fact as no longer valid. Superseded, not deleted.
 
 These are the mechanism that makes entity continuity possible — the agent
 can say "I'll remember that" and actually do it.
 
 Integration:
-- EntityStateManager: bounded working memory (RAM, capacity-evicted)
+- EntityStateManager: bounded working memory (RAM, capacity-evicted by
+  role weight)
 - MemorySystem: durable atoms; also receives promote-on-evict from WM
 """
 
@@ -22,7 +25,9 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Any, Dict, Optional
+
+from core.entity_state import normalize_wm_kind
 
 log = logging.getLogger("ww.memory.tools")
 
@@ -53,21 +58,35 @@ class MemoryTools:
         if getattr(self._entity_mgr, "_wm_evict_wired", False):
             return
 
-        def _on_wm_evict(entity_id: str, key: str, value: str) -> None:
+        def _on_wm_evict(
+            entity_id: str,
+            key: str,
+            value: str,
+            meta: Optional[Dict[str, Any]] = None,
+        ) -> None:
             fact = f"{key}: {value}"
+            kind = "outcome"
+            if isinstance(meta, dict):
+                kind = normalize_wm_kind(meta.get("kind"))
+            kind_tag = f"wm_kind:{kind}"
             try:
                 if hasattr(self._memory, "store_fact"):
                     self._memory.store_fact(
                         fact=fact,
-                        entities=[key, "wm_evict"],
-                        context_id=f"wm_evict:{entity_id}",
+                        entities=[key, "wm_evict", kind_tag],
+                        context_id=f"wm_evict:{entity_id}:{kind}",
                     )
                 elif hasattr(self._memory, "store_text"):
                     self._memory.store_text(
-                        fact, source="wm_evict", entities=[key, "wm_evict"]
+                        fact,
+                        source="wm_evict",
+                        entities=[key, "wm_evict", kind_tag],
                     )
                 log.info(
-                    "WM promote→LTM entity=%s key=%s", entity_id[:12], key
+                    "WM promote→LTM entity=%s key=%s kind=%s",
+                    entity_id[:12],
+                    key,
+                    kind,
                 )
             except Exception as e:
                 log.warning("WM promote store failed for %s: %s", key, e)
@@ -83,6 +102,7 @@ class MemoryTools:
         value: str,
         category: str = "general",
         is_core: bool = False,
+        kind: str = "",
     ) -> dict:
         """Store a fact in entity memory. Called by the agent when it learns something.
 
@@ -92,6 +112,11 @@ class MemoryTools:
             category: Optional category tag (general, preference, technical, etc.)
             is_core: If True, mark as core memory (never auto-evicted / GC'd).
                      Always dual-writes to MemorySystem atoms; WM key is protected.
+            kind: Explicit memory role for WM eviction weight (not keyword-inferred):
+                  - commitment: a decision ("we decided to do A") — highest protect
+                  - rationale: process/why ("we used method B because...") — easiest squeeze
+                  - outcome: a result ("A is done") — high protect
+                  Empty/illegal → outcome (default).
 
         Returns:
             {"status": "stored", "key": key, "previous": old_value or None}
@@ -103,35 +128,52 @@ class MemoryTools:
             return {"status": "error", "message": "key and value are required"}
 
         previous = None
+        # Empty kind → None so set_working_memory preserves existing / defaults outcome
+        kind_arg: Optional[str] = kind if (kind is not None and str(kind).strip()) else None
+        resolved_kind = normalize_wm_kind(kind_arg)
 
         # 1. Entity working memory (bounded RAM; is_core keys are not auto-evicted)
         if self._entity_mgr:
             state = self._entity_mgr.get(self._entity_id)
             previous = state.working_memory.get(key)
             self._entity_mgr.set_working_memory(
-                self._entity_id, key, value, is_core=bool(is_core)
+                self._entity_id,
+                key,
+                value,
+                kind=kind_arg,
+                is_core=bool(is_core),
             )
-            log.info("Entity %s: remember '%s' = '%s' (was: %s, is_core=%s)",
-                     self._entity_id[:12], key, value[:50], previous, is_core)
+            meta = state.working_memory_meta.get(key) or {}
+            resolved_kind = normalize_wm_kind(meta.get("kind"))
+            log.info(
+                "Entity %s: remember '%s' = '%s' (was: %s, is_core=%s, kind=%s)",
+                self._entity_id[:12],
+                key,
+                value[:50],
+                previous,
+                is_core,
+                resolved_kind,
+            )
 
         # 2. Semantic / atom memory (durable). is_core always goes to MemorySystem
         #    so core facts are not only in the volatile WM buffer.
         if self._memory:
             fact_text = self._format_fact(key, value, category)
+            kind_tag = f"wm_kind:{resolved_kind}"
             if is_core and hasattr(self._memory, "_do_store"):
                 self._memory._do_store(
                     content=fact_text,
                     source="inference",
                     atom_type="semantic",
-                    tags=[key, category],
-                    context_id=f"remember:{self._entity_id}",
+                    tags=[key, category, kind_tag],
+                    context_id=f"remember:{self._entity_id}:{resolved_kind}",
                     is_core=True,
                 )
             else:
                 self._memory.store_fact(
                     fact=fact_text,
-                    entities=[key, category],
-                    context_id=f"remember:{self._entity_id}",
+                    entities=[key, category, kind_tag],
+                    context_id=f"remember:{self._entity_id}:{resolved_kind}",
                 )
 
         return {
@@ -140,6 +182,7 @@ class MemoryTools:
             "key": key,
             "previous": previous,
             "is_core": bool(is_core),
+            "kind": resolved_kind,
             "timestamp": time.time(),
             "output": f"Remembered {key}: {value}",
         }
@@ -248,13 +291,34 @@ class MemoryTools:
                     "Store a fact in your memory. Use this when you learn something "
                     "new about the user or the current task. The fact will persist "
                     "across all conversations and platforms. "
-                    "Example: remember(key='user_name', value='Chung')"
+                    "Set kind explicitly (never guess from keywords): "
+                    "commitment = a decision (\"we will do A\"); "
+                    "rationale = process/why (\"we chose method B because...\"); "
+                    "outcome = a result (\"A is done\"). "
+                    "Default kind is outcome. "
+                    "Example: remember(key='user_name', value='Chung', kind='outcome')"
                 ),
                 "parameters": {
                     "key": {"type": "string", "description": "Short label for the fact"},
                     "value": {"type": "string", "description": "The fact content"},
-                    "category": {"type": "string", "description": "Optional: general, preference, technical, contact, project"},
-                    "is_core": {"type": "boolean", "description": "Optional: mark as core (never auto-evicted)"},
+                    "category": {
+                        "type": "string",
+                        "description": "Optional: general, preference, technical, contact, project",
+                    },
+                    "is_core": {
+                        "type": "boolean",
+                        "description": "Optional: mark as core (never auto-evicted)",
+                    },
+                    "kind": {
+                        "type": "string",
+                        "description": (
+                            "Optional memory role for eviction weight: "
+                            "commitment (decision, highest protect), "
+                            "rationale (process/why, easiest to squeeze), "
+                            "outcome (result, high protect). "
+                            "Empty or unknown → outcome. Explicit only; no keyword inference."
+                        ),
+                    },
                 },
                 "category": "memory",
             },

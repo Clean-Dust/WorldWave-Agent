@@ -12,6 +12,7 @@ Core principles:
 
 Three layers (entity → episodic → LTM):
   Working Memory (entity RAM, core/entity_state.py) — fixed-capacity online facts
+    with explicit roles (kind): commitment > outcome > rationale for eviction weight
   → Hippocampus (episodic cap + protect/GC) — short-term buffer
   → sleep / promote (LTM) — consolidation into durable knowledge
 

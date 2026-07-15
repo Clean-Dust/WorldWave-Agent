@@ -1157,7 +1157,13 @@ def _memory_stats_handler() -> Dict:
 
 # ── 8b. SELF-EDITING MEMORY HANDLERS ───────────────────
 
-def _remember_handler(key: str, value: str, category: str = "general") -> Dict:
+def _remember_handler(
+    key: str,
+    value: str,
+    category: str = "general",
+    is_core: bool = False,
+    kind: str = "",
+) -> Dict:
     """Store a fact in entity memory (self-editing)."""
     try:
         # Access the Worldwave instance via module-level reference
@@ -1166,7 +1172,9 @@ def _remember_handler(key: str, value: str, category: str = "general") -> Dict:
         if ww_module and hasattr(ww_module, '_active_ww_instance'):
             ww = ww_module._active_ww_instance
             if ww._memory_tools:
-                return ww._memory_tools.remember(key, value, category)
+                return ww._memory_tools.remember(
+                    key, value, category, is_core=bool(is_core), kind=kind or ""
+                )
         return {"status": "stored", "key": key, "note": "stored in-memory only (no entity context)"}
     except Exception as e:
         return {"status": "error", "message": str(e)}
@@ -1663,14 +1671,29 @@ def default_registry(guardrails=None) -> ToolRegistry:
         "Store a fact in your persistent memory. Use this when you learn something "
         "new about the user or need to remember information across conversations. "
         "Facts stored with 'remember' persist across ALL platforms (Telegram, terminal, etc.) "
-        "and survive server restarts. Example: remember(key='user_name', value='Chung')",
+        "and survive server restarts. "
+        "Set kind explicitly: commitment=decision (highest protect), "
+        "rationale=process/why (easiest to squeeze), outcome=result (high protect; default). "
+        "Example: remember(key='user_name', value='Chung', kind='outcome')",
         _remember_handler,
         parameters={
             "key": {"type": "string", "description": "Short label for this fact"},
             "value": {"type": "string", "description": "The fact content to store"},
             "category": {"type": "string", "description": "Optional: general, preference, technical, contact, project", "default": "general"},
+            "is_core": {"type": "boolean", "description": "Optional: mark as core (never auto-evicted)", "default": False},
+            "kind": {
+                "type": "string",
+                "description": (
+                    "Optional memory role: commitment (decision), rationale (process/why), "
+                    "outcome (result). Empty/unknown → outcome. Explicit only; no keyword inference."
+                ),
+                "default": "",
+            },
         },
-        examples=['remember(key="user_preferred_model", value="deepseek-v4-pro")'],
+        examples=[
+            'remember(key="user_preferred_model", value="deepseek-v4-pro", kind="outcome")',
+            'remember(key="plan_choice", value="use Docker sandbox", kind="commitment")',
+        ],
         category="memory")
 
     r.register_from_def("forget",

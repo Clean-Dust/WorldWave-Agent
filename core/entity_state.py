@@ -7,10 +7,14 @@ server restarts. This replaces the old "session" concept — there is no
 
 Working Memory (entity RAM):
   Fixed-capacity online fact buffer (default 32). Full buffer → evict
-  least-used + oldest keys (numeric scores only; no keyword importance).
-  Important evictions promote via on_wm_evict (MemorySystem) and/or
-  archive to ~/.ww/entities/<id>/wm_evicted.jsonl. Does not promise an
-  infinite LLM prompt — only the current RAM set is injected into context.
+  by role-weighted score then oldest keys (numeric only; no keyword
+  importance). Memory roles (kind): commitment (decisions, highest
+  protect), outcome (results, high), rationale (process, easiest to
+  squeeze). Kind is set only via explicit remember(kind=...)/set_working_memory;
+  never inferred from content keywords. Important evictions promote via
+  on_wm_evict (MemorySystem) and/or archive to
+  ~/.ww/entities/<id>/wm_evicted.jsonl. Does not promise an infinite LLM
+  prompt — only the current RAM set is injected into context.
 
 Memory stack (three layers):
   Working Memory (entity RAM, this module)
@@ -59,8 +63,48 @@ WM_PROMOTE_MIN_ACCESS = int(os.environ.get("WW_WM_PROMOTE_MIN_ACCESS", "2"))
 # Or when value is long and has been accessed at least once
 WM_PROMOTE_LONG_VALUE_LEN = int(os.environ.get("WW_WM_PROMOTE_LONG_LEN", "80"))
 
-# Callback: (entity_id, key, value) -> None
-OnWmEvict = Callable[[str, str, str], None]
+# Memory roles (kind) — explicit only; illegal/missing → DEFAULT_WM_KIND
+WM_KINDS = frozenset({"commitment", "rationale", "outcome"})
+DEFAULT_WM_KIND = "outcome"
+# Eviction protection weights: higher score stays longer.
+# score = ROLE_WEIGHT[kind] * (1 + access_count); lowest score evicted first.
+ROLE_WEIGHT: Dict[str, float] = {
+    "commitment": float(os.environ.get("WW_WM_WEIGHT_COMMITMENT", "3.0")),
+    "outcome": float(os.environ.get("WW_WM_WEIGHT_OUTCOME", "2.0")),
+    "rationale": float(os.environ.get("WW_WM_WEIGHT_RATIONALE", "1.0")),
+}
+
+# Callback: (entity_id, key, value) -> None; optional 4th meta dict may be passed
+OnWmEvict = Callable[..., None]
+
+
+def normalize_wm_kind(kind: Optional[str] = None) -> str:
+    """Normalize WM kind to commitment | rationale | outcome.
+
+    Empty, missing, unknown, or 'unknown' → outcome (backward compatible).
+    No keyword inference from fact content — only explicit kind values.
+    """
+    if kind is None:
+        return DEFAULT_WM_KIND
+    k = str(kind).strip().lower()
+    if not k or k == "unknown":
+        return DEFAULT_WM_KIND
+    if k in WM_KINDS:
+        return k
+    return DEFAULT_WM_KIND
+
+
+def wm_role_weight(kind: Optional[str] = None) -> float:
+    """Protection weight for a kind (commitment > outcome > rationale)."""
+    return float(ROLE_WEIGHT.get(normalize_wm_kind(kind), ROLE_WEIGHT[DEFAULT_WM_KIND]))
+
+
+def wm_eviction_score(kind: Optional[str] = None, access_count: int = 0) -> float:
+    """Pure numeric eviction score; lower is evicted first.
+
+    score = role_weight * (1 + access_count)
+    """
+    return wm_role_weight(kind) * (1.0 + max(0, int(access_count or 0)))
 
 
 def resolve_working_memory_capacity(config: Optional["ConfigManager"] = None) -> int:
@@ -102,9 +146,10 @@ class EntityState(BaseModel):
     time — the entity's working memory, preferences, and context summary
     are always restored.
 
-    Working memory is a fixed-capacity RAM buffer. Overflow evicts low-access
-    + older keys; core keys (working_memory_core) are retained. Meta
-    (updated_at, access_count) is persisted with the state.
+    Working memory is a fixed-capacity RAM buffer. Overflow evicts by
+    role-weighted score (kind) then older keys; core keys
+    (working_memory_core) are retained. Meta (updated_at, access_count,
+    kind) is persisted with the state. Missing kind defaults to outcome.
     """
 
     entity_id: str
@@ -113,7 +158,7 @@ class EntityState(BaseModel):
     # ── Working memory (agent can self-edit via remember/forget tools) ──
     # Bounded RAM facts — capacity enforced by EntityStateManager on write.
     working_memory: Dict[str, str] = Field(default_factory=dict)
-    # Per-key meta for eviction scoring (numeric only).
+    # Per-key meta: updated_at, access_count, kind (commitment|rationale|outcome).
     working_memory_meta: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     # Keys that must not be auto-evicted (is_core path; no keyword lists).
     working_memory_core: Set[str] = Field(default_factory=set)
@@ -167,8 +212,14 @@ class EntityState(BaseModel):
             if key not in self.working_memory:
                 continue
             meta = self.working_memory_meta.setdefault(
-                key, {"updated_at": now, "access_count": 0}
+                key,
+                {
+                    "updated_at": now,
+                    "access_count": 0,
+                    "kind": DEFAULT_WM_KIND,
+                },
             )
+            meta.setdefault("kind", DEFAULT_WM_KIND)
             meta["access_count"] = int(meta.get("access_count", 0)) + 1
 
     def get_context_injection(self, bump_access: bool = True) -> str:
@@ -177,6 +228,7 @@ class EntityState(BaseModel):
         Only injects facts currently in the working-memory RAM buffer
         (capacity-bounded). Title: "Working memory (online facts)".
         When bump_access is True, increments access_count for injected keys.
+        Fact lines include a kind tag: ``- [commitment] key: value``.
         """
         parts: List[str] = []
 
@@ -186,7 +238,12 @@ class EntityState(BaseModel):
         if self.working_memory:
             if bump_access:
                 self.bump_wm_access()
-            facts = "\n".join(f"- {k}: {v}" for k, v in self.working_memory.items())
+            fact_lines: List[str] = []
+            for k, v in self.working_memory.items():
+                meta = self.working_memory_meta.get(k) or {}
+                kind = normalize_wm_kind(meta.get("kind"))
+                fact_lines.append(f"- [{kind}] {k}: {v}")
+            facts = "\n".join(fact_lines)
             parts.append(f"Working memory (online facts):\n{facts}")
 
         if self.last_context:
@@ -241,10 +298,11 @@ class EntityStateManager:
     Thread-safe. Uses SQLite (WAL mode) for persistence, in-memory dict for active entities.
 
     Working memory writes enforce a fixed capacity (default 32). Overflow
-    evicts keys with lowest access_count then oldest updated_at. Core keys
-    and preference keys are not auto-evicted. On promote-worthy eviction,
-    optional on_wm_evict callback runs; all evictions are archived to
-    entities/<id>/wm_evicted.jsonl for recovery.
+    evicts keys with lowest role-weighted score
+    (ROLE_WEIGHT[kind] * (1 + access_count)), then oldest updated_at.
+    Core keys and preference keys are not auto-evicted. On promote-worthy
+    eviction, optional on_wm_evict callback runs; all evictions are archived
+    to entities/<id>/wm_evicted.jsonl for recovery.
 
     Usage:
         esm = EntityStateManager(config=config)
@@ -371,9 +429,15 @@ class EntityStateManager:
             for key, value in updates.items():
                 state.working_memory[key] = value
                 meta = state.working_memory_meta.setdefault(
-                    key, {"updated_at": now, "access_count": 0}
+                    key,
+                    {
+                        "updated_at": now,
+                        "access_count": 0,
+                        "kind": DEFAULT_WM_KIND,
+                    },
                 )
                 meta["updated_at"] = now
+                meta.setdefault("kind", DEFAULT_WM_KIND)
             self._enforce_wm_capacity(state)
         self.save(state)
 
@@ -382,20 +446,36 @@ class EntityStateManager:
         entity_id: str,
         key: str,
         value: str,
+        kind: Optional[str] = None,
         is_core: bool = False,
     ):
         """Set a working memory key (called by remember tool).
 
-        Enforces capacity: if over capacity, evict least-accessed + oldest
-        non-core keys. is_core marks the key so it is not auto-evicted.
+        Enforces capacity: if over capacity, evict lowest role-weighted score
+        then oldest non-core keys. is_core marks the key so it is not
+        auto-evicted.
+
+        kind: optional memory role — commitment | rationale | outcome.
+        Explicit only (no keyword inference). Empty/illegal/unknown → outcome.
+        When kind is None and the key already has meta.kind, existing kind
+        is preserved; new keys default to outcome.
         """
         state = self.get(entity_id)
         now = time.time()
         state.working_memory[key] = value
         meta = state.working_memory_meta.setdefault(
-            key, {"updated_at": now, "access_count": 0}
+            key,
+            {
+                "updated_at": now,
+                "access_count": 0,
+                "kind": DEFAULT_WM_KIND,
+            },
         )
         meta["updated_at"] = now
+        if kind is not None and str(kind).strip() != "":
+            meta["kind"] = normalize_wm_kind(kind)
+        else:
+            meta["kind"] = normalize_wm_kind(meta.get("kind"))
         if is_core:
             state.working_memory_core.add(key)
         self._enforce_wm_capacity(state)
@@ -449,11 +529,15 @@ class EntityStateManager:
         return False
 
     def _wm_eviction_key(self, state: EntityState, key: str):
-        """Sort key: lower access_count first, then older updated_at."""
+        """Sort key: lower score first, then older updated_at.
+
+        score = ROLE_WEIGHT[kind] * (1 + access_count). Missing kind → outcome.
+        """
         meta = state.working_memory_meta.get(key) or {}
         access = int(meta.get("access_count", 0) or 0)
         updated = float(meta.get("updated_at", 0.0) or 0.0)
-        return (access, updated)
+        score = wm_eviction_score(meta.get("kind"), access)
+        return (score, updated)
 
     def _should_promote(self, value: str, meta: Dict[str, Any]) -> bool:
         """Numeric promote criteria only (no keyword lists)."""
@@ -472,12 +556,15 @@ class EntityStateManager:
             archive_dir = self._data_dir / entity_id
             archive_dir.mkdir(parents=True, exist_ok=True)
             path = archive_dir / "wm_evicted.jsonl"
+            # Ensure kind present in archived meta for recovery / analytics
+            meta_out = dict(meta or {})
+            meta_out["kind"] = normalize_wm_kind(meta_out.get("kind"))
             record = {
                 "ts": time.time(),
                 "entity_id": entity_id,
                 "key": key,
                 "value": value,
-                "meta": meta,
+                "meta": meta_out,
             }
             with open(path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -494,7 +581,12 @@ class EntityStateManager:
         if self._on_wm_evict is None:
             return
         try:
-            self._on_wm_evict(entity_id, key, value)
+            # Prefer 4-arg (entity_id, key, value, meta) when accepted;
+            # fall back to 3-arg for older callbacks.
+            try:
+                self._on_wm_evict(entity_id, key, value, meta)
+            except TypeError:
+                self._on_wm_evict(entity_id, key, value)
         except Exception as e:
             log.warning(
                 "on_wm_evict failed for %s key=%s: %s", entity_id[:12], key, e
@@ -504,8 +596,9 @@ class EntityStateManager:
         """Evict until len(working_memory) <= capacity. Returns evicted keys.
 
         Strategy (numeric only): among non-protected keys, prefer lowest
-        access_count, then oldest updated_at. If all remaining are protected,
-        stop (may exceed capacity — same spirit as hippocampus protect).
+        score = ROLE_WEIGHT[kind]*(1+access_count), then oldest updated_at.
+        If all remaining are protected, stop (may exceed capacity — same
+        spirit as hippocampus protect).
         """
         cap = self.working_memory_capacity
         evicted: List[str] = []
@@ -526,10 +619,13 @@ class EntityStateManager:
             state.wm_evicted_total = int(state.wm_evicted_total) + 1
             evicted.append(victim)
             log.info(
-                "WM evict entity=%s key=%s access=%s (size→%d cap=%d)",
+                "WM evict entity=%s key=%s kind=%s access=%s score=%.2f "
+                "(size→%d cap=%d)",
                 state.entity_id[:12],
                 victim,
+                normalize_wm_kind(meta.get("kind")),
                 meta.get("access_count", 0),
+                wm_eviction_score(meta.get("kind"), int(meta.get("access_count", 0) or 0)),
                 len(state.working_memory),
                 cap,
             )
