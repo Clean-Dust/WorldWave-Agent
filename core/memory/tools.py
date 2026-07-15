@@ -47,13 +47,20 @@ class MemoryTools:
 
     # ── remember ─────────────────────────────────────────────────
 
-    def remember(self, key: str, value: str, category: str = "general") -> dict:
+    def remember(
+        self,
+        key: str,
+        value: str,
+        category: str = "general",
+        is_core: bool = False,
+    ) -> dict:
         """Store a fact in entity memory. Called by the agent when it learns something.
 
         Args:
             key: Short label for the fact (e.g., "user_name", "preferred_model")
             value: The fact content (e.g., "Chung", "deepseek-v4-pro")
             category: Optional category tag (general, preference, technical, etc.)
+            is_core: If True, mark as core memory (never auto-evicted / GC'd)
 
         Returns:
             {"status": "stored", "key": key, "previous": old_value or None}
@@ -77,17 +84,28 @@ class MemoryTools:
         # 2. Store in semantic memory (durable, recallable)
         if self._memory:
             fact_text = self._format_fact(key, value, category)
-            self._memory.store_fact(
-                fact=fact_text,
-                entities=[key, category],
-                context_id=f"remember:{self._entity_id}",
-            )
+            if is_core and hasattr(self._memory, "_do_store"):
+                self._memory._do_store(
+                    content=fact_text,
+                    source="inference",
+                    atom_type="semantic",
+                    tags=[key, category],
+                    context_id=f"remember:{self._entity_id}",
+                    is_core=True,
+                )
+            else:
+                self._memory.store_fact(
+                    fact=fact_text,
+                    entities=[key, category],
+                    context_id=f"remember:{self._entity_id}",
+                )
 
         return {
             "success": True,
             "status": "stored",
             "key": key,
             "previous": previous,
+            "is_core": bool(is_core),
             "timestamp": time.time(),
             "output": f"Remembered {key}: {value}",
         }
@@ -202,6 +220,7 @@ class MemoryTools:
                     "key": {"type": "string", "description": "Short label for the fact"},
                     "value": {"type": "string", "description": "The fact content"},
                     "category": {"type": "string", "description": "Optional: general, preference, technical, contact, project"},
+                    "is_core": {"type": "boolean", "description": "Optional: mark as core (never auto-evicted)"},
                 },
                 "category": "memory",
             },

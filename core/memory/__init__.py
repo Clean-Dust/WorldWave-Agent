@@ -28,7 +28,7 @@ Usage:
     mem.sleep()  # manual consolidation trigger
 """
 
-from .atom import MemoryAtom, FactStore, EntityResolver
+from .atom import MemoryAtom, FactStore, EntityResolver, maybe_promote_core
 from .encoder import EncodingLayer, EmotionMapper
 from .hippocampus import Hippocampus
 from .amygdala import Amygdala
@@ -39,7 +39,7 @@ from .reconsolidation import Reconsolidation
 from .system import MemorySystem
 
 __all__ = [
-    "MemoryAtom", "FactStore", "EntityResolver",
+    "MemoryAtom", "FactStore", "EntityResolver", "maybe_promote_core",
     "EncodingLayer", "EmotionMapper", "Hippocampus", "Amygdala",
     "SleepConsolidation", "DailyScheduler", "SleepDaemon", "IdleDetector",
     "RecallEngine", "Reconsolidation", "MemorySystem",

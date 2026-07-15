@@ -109,8 +109,8 @@ class SleepConsolidation:
             1 for a in atoms if a.timestamp > time.time() - 60
         )
 
-        # Phase 5: GC
-        gc_count = self._phase_gc(atoms, hippocampus)
+        # Phase 5: GC (orphan + age + low salience; never core/immutable)
+        gc_count = self._phase_gc(atoms, hippocampus, amygdala)
         stats["gc_removed"] = gc_count
         self._gc_removed += gc_count
 
@@ -336,19 +336,35 @@ class SleepConsolidation:
                     if boost_b > 0:
                         b.links[a.atom_id] = min(1.0, b.links.get(a.atom_id, 0) + boost_b)
 
-    # ── Phase 5: orphannode GC ──
+    # ── Phase 5: orphan node GC ──
 
-    def _phase_gc(self, atoms: List[MemoryAtom], hippocampus: Hippocampus) -> int:
+    def _phase_gc(
+        self,
+        atoms: List[MemoryAtom],
+        hippocampus: Hippocampus,
+        amygdala: Optional[Amygdala] = None,
+        salience_fn: Optional[Callable[[MemoryAtom], float]] = None,
+    ) -> int:
         """Reclaim orphan nodes.
 
-        Orphan conditions (all must be met):
-        1. Links are empty (all links pruned away)
-        2. salience < gc_salience_threshold
+        All conditions must be met before reclaim:
+        1. not is_core, not is_immutable
+        2. orphan (len(links) == 0)
         3. age > gc_age_days
-        4. is_core = False (core memories are never reclaimed)
+        4. amygdala salience < gc_salience_threshold
+
+        Always archive to archive.jsonl before remove.
         """
         now = time.time()
         removed = 0
+
+        def _salience(atom: MemoryAtom) -> float:
+            if salience_fn is not None:
+                return float(salience_fn(atom))
+            if amygdala is not None:
+                return float(amygdala.score(atom))
+            # Fallback when no scorer: use importance as proxy
+            return float(atom.importance)
 
         orphans = []
         for atom in atoms:
@@ -359,15 +375,17 @@ class SleepConsolidation:
             if len(atom.links) > 0:
                 continue
             age_days = (now - atom.timestamp) / 86400
-            if age_days < self.gc_age_days:
+            if age_days <= self.gc_age_days:
                 continue
-            # Conditions met: isolated + old enough → mark for reclamation
-            orphans.append((atom, age_days))
+            sal = _salience(atom)
+            if sal >= self.gc_salience_threshold:
+                continue
+            orphans.append((atom, age_days, sal))
 
-        # Remove isolated nodes from hippocampus (write archive.jsonl, avoid fragmented I/O)
+        # Remove isolated nodes from hippocampus (write archive.jsonl first)
         # Also clean up associated multimodal files (screenshots, etc.)
         archive_path = os.path.join(self.data_dir, "archive.jsonl")
-        for atom, age_days in orphans:
+        for atom, age_days, sal in orphans:
             try:
                 # Clean up screenshot file associated with visual memory
                 if atom.visual_data:
@@ -385,18 +403,24 @@ class SleepConsolidation:
                             )
 
                 entry = json.dumps(
-                    {"atom": atom.to_dict(), "archived_at": time.time()},
+                    {
+                        "atom": atom.to_dict(),
+                        "archived_at": time.time(),
+                        "reason": "gc",
+                        "salience": round(sal, 4),
+                        "age_days": round(age_days, 2),
+                    },
                     ensure_ascii=False,
                 )
-                # Append-only write to single file (JSON Lines), threading.Lock prevents race condition
+                # Append-only write to single file (JSON Lines), lock for races
                 with _archive_lock:
-                    with open(archive_path, "a") as f:
+                    with open(archive_path, "a", encoding="utf-8") as f:
                         f.write(entry + "\n")
                 hippocampus.remove(atom.atom_id)
                 removed += 1
                 logger.info(
                     f"GC: Reclaiming orphan node {atom.atom_id[:8]} "
-                    f"(age={round(age_days, 1)}d)"
+                    f"(age={round(age_days, 1)}d, sal={round(sal, 3)})"
                 )
             except Exception as e:
                 logger.error(f"GC archiving failed {atom.atom_id[:8]}: {e}")

@@ -21,7 +21,7 @@ import os
 import time
 from typing import Dict, List, Optional
 
-from .atom import FactStore, MemoryAtom
+from .atom import FactStore, MemoryAtom, maybe_promote_core
 from .encoder import EncodingLayer
 from .hippocampus import Hippocampus
 from .amygdala import Amygdala
@@ -165,6 +165,7 @@ class MemorySystem:
         tags: Optional[List[str]] = None,
         urgency: float = 0.0,
         emotion_tag: str = "",  # LLM auxiliary emotion tag
+        is_core: bool = False,
     ) -> dict:
         """Save an experience/knowledge to memory system.
 
@@ -176,6 +177,7 @@ class MemorySystem:
             tags: custom tags
             urgency: urgency [0,1]
             emotion_tag: LLM assisted emotion tag
+            is_core: if True, mark atom as core (never auto-deleted)
 
         Returns:
             {"atom_id": "...", "atom_type": "...", "sleep_triggered": bool, ...}
@@ -190,6 +192,8 @@ class MemorySystem:
             urgency=urgency,
             emotion_tag=emotion_tag,
         )
+        if is_core:
+            atom.is_core = True
 
         # 2. Store into hippocampus
         sleep_result = self.hippocampus.store(atom)
@@ -272,13 +276,31 @@ class MemorySystem:
         results = self.recall_engine.recall(query, top_k=top_k,
                                             max_tokens=max_tokens)
 
-        # Update recalled memory (reconsolidation)
+        # Update recalled memory (reconsolidation) + opportunistic core promotion
         for r in results:
             atom_id = r.get("atom", {}).get("atom_id", "")
             if atom_id:
                 atom = self.hippocampus.get(atom_id)
                 if atom:
                     self.reconsolidation.on_recall(atom)
+                    # Persist stability / recall bump from reconsolidation
+                    self.hippocampus.update(
+                        atom_id,
+                        stability=atom.stability,
+                        recall_count=atom.recall_count,
+                        last_recalled=atom.last_recalled,
+                    )
+                    # Promote frequently recalled high-value atoms to is_core
+                    if maybe_promote_core(
+                        atom,
+                        core_count=self.hippocampus.count_core(),
+                        cap=self.hippocampus.cap,
+                    ):
+                        self.hippocampus.update(atom_id, is_core=True)
+                        logger.info(
+                            "Promoted atom %s to is_core (recall=%d, stab=%.2f, imp=%.2f)",
+                            atom_id[:8], atom.recall_count, atom.stability, atom.importance,
+                        )
 
         return {
             "results": results,

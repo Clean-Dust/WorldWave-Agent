@@ -153,40 +153,41 @@ class Hippocampus:
     # ── CRUD ──
 
     def store(self, atom: MemoryAtom) -> Optional[dict]:
-        # Cache invalidation
-        self._cache.clear()
-        self._cache_dirty = False
         """
         Save a memory atom.
 
         Full load logic:
-          1. First check if there are low importance atoms to evict
-          2. if all protected, emit on_capacity event
-          3. Event listener (SleepConsolidation) optionally performs partial consolidation
+          1. Evict unprotected low-importance atoms (FIFO)
+          2. If nothing can be evicted, emit on_capacity / request sleep
+          3. Force-evict oldest unprotected only (never core/immutable)
+          4. If still only protected remain, still store (may exceed cap);
+             never hard-delete protected atoms
 
         Returns:
             if consolidation triggered, return dict summary
         """
+        # Cache invalidation
+        self._cache.clear()
+        self._cache_dirty = False
         with self._lock:
             count = self._count()
             consolidation_result = None
 
             if count >= self.cap:
-                # Try to evict unimportant atoms
+                # Try to evict unprotected low-importance atoms
                 evicted = self._fifo_evict()
                 if not evicted:
-                    # all protected → trigger capacity event
+                    # all protected or none eligible → capacity event / sleep request
                     stats = self._capacity_stats(count)
                     self.on_capacity.emit(self, stats)
                     self._sleep_counter += 1
                     consolidation_result = stats
 
-                    # Check capacity again
+                    # Force-evict oldest unprotected only (no-op if all protected)
                     if self._count() >= self.cap:
-                        # Force evict oldest (regardless of importance)
                         self._force_evict_oldest()
 
-            # write
+            # write (may exceed cap when every resident atom is protected)
             self._insert(atom)
 
             # if event triggered, return summary
@@ -211,8 +212,12 @@ class Hippocampus:
 
     def update(self, atom_id: str, **kwargs) -> bool:
         with self._lock:
-            allowed = {"content", "emotion", "importance", "stability",
-                       "links", "context_trace", "tags", "atom_type"}
+            allowed = {
+                "content", "emotion", "importance", "stability",
+                "links", "context_trace", "tags", "atom_type",
+                "is_core", "is_archived", "is_immutable",
+                "recall_count", "last_recalled",
+            }
             updates = {k: v for k, v in kwargs.items() if k in allowed}
             if not updates:
                 return False
@@ -316,13 +321,25 @@ class Hippocampus:
         return row["n"]
 
     def _count_protected(self) -> int:
+        """Count atoms protected by importance, is_core, or is_immutable."""
         c = self._connect()
         row = c.execute(
-            "SELECT COUNT(*) as n FROM atoms WHERE importance >= ?",
+            "SELECT COUNT(*) as n FROM atoms WHERE importance >= ? "
+            "OR COALESCE(is_core, 0) = 1 OR COALESCE(is_immutable, 0) = 1",
             (self.protect_threshold,)
         ).fetchone()
         c.close()
         return row["n"]
+
+    def count_core(self) -> int:
+        """Count atoms flagged is_core."""
+        with self._lock:
+            c = self._connect()
+            row = c.execute(
+                "SELECT COUNT(*) as n FROM atoms WHERE COALESCE(is_core, 0) = 1"
+            ).fetchone()
+            c.close()
+            return row["n"]
 
     def _oldest_age(self) -> float:
         c = self._connect()
@@ -355,22 +372,45 @@ class Hippocampus:
             ],
         }
 
+    def _archive_atom_row(self, row, reason: str = "evict") -> None:
+        """Append atom row to archive.jsonl before removal (best-effort)."""
+        archive_path = os.path.join(self.data_dir, "archive.jsonl")
+        try:
+            atom = self._row_to_atom(row)
+            entry = json.dumps(
+                {
+                    "atom": atom.to_dict(),
+                    "archived_at": time.time(),
+                    "reason": reason,
+                },
+                ensure_ascii=False,
+            )
+            with open(archive_path, "a", encoding="utf-8") as f:
+                f.write(entry + "\n")
+        except Exception as e:
+            logger.warning("archive before evict failed: %s", e)
+
     def _fifo_evict(self) -> bool:
         """
-        FIFO eviction (skip high importance).
+        FIFO eviction with protection.
+
+        Only evicts atoms that are NOT is_core, NOT is_immutable, and
+        importance < protect_threshold. Oldest first.
 
         Returns:
-            True=evicted an atom, False=all protected
+            True=evicted an atom, False=no eligible unprotected atom
         """
         c = self._connect()
-        # Find the first atom below importance threshold (sorted ASC)
         row = c.execute(
-            "SELECT atom_id FROM atoms "
+            "SELECT * FROM atoms "
             "WHERE importance < ? "
+            "AND COALESCE(is_core, 0) = 0 "
+            "AND COALESCE(is_immutable, 0) = 0 "
             "ORDER BY timestamp ASC LIMIT 1",
             (self.protect_threshold,)
         ).fetchone()
         if row:
+            self._archive_atom_row(row, reason="fifo_evict")
             c.execute("DELETE FROM atoms WHERE atom_id=?", (row["atom_id"],))
             c.commit()
             c.close()
@@ -378,15 +418,27 @@ class Hippocampus:
         c.close()
         return False
 
-    def _force_evict_oldest(self):
-        """Force evict oldest (emergency case)."""
+    def _force_evict_oldest(self) -> bool:
+        """Force-evict oldest unprotected atom (emergency capacity relief).
+
+        Never deletes is_core or is_immutable atoms. Prefer archive-to-jsonl
+        before remove. If every atom is protected, no-op (return False).
+        """
         c = self._connect()
-        c.execute(
-            "DELETE FROM atoms WHERE atom_id IN "
-            "(SELECT atom_id FROM atoms ORDER BY timestamp ASC LIMIT 1)"
-        )
+        row = c.execute(
+            "SELECT * FROM atoms "
+            "WHERE COALESCE(is_core, 0) = 0 "
+            "AND COALESCE(is_immutable, 0) = 0 "
+            "ORDER BY timestamp ASC LIMIT 1"
+        ).fetchone()
+        if not row:
+            c.close()
+            return False
+        self._archive_atom_row(row, reason="force_evict")
+        c.execute("DELETE FROM atoms WHERE atom_id=?", (row["atom_id"],))
         c.commit()
         c.close()
+        return True
 
     def _insert(self, atom: MemoryAtom):
         c = self._connect()
@@ -439,6 +491,8 @@ class Hippocampus:
             col = k  # SQL column name matches attr name
             if isinstance(v, (dict, list)):
                 v = self._ser(v)
+            elif isinstance(v, bool):
+                v = int(v)
             sets.append(f"{col}=?")
             vals.append(v)
         vals.append(atom_id)

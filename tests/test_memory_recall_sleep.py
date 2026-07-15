@@ -29,12 +29,12 @@ def tmp_data_dir():
 
 
 @pytest.fixture
-def mock_hippocampus():
-    """Create a Hippocampus with test atoms."""
+def mock_hippocampus(tmp_data_dir):
+    """Create a Hippocampus with test atoms (isolated temp DB)."""
     from core.memory.hippocampus import Hippocampus
     from core.memory.atom import MemoryAtom
 
-    h = Hippocampus(cap=100)
+    h = Hippocampus(cap=100, data_dir=tmp_data_dir)
 
     # Add test atoms
     atoms = [

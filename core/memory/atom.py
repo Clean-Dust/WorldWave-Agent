@@ -212,6 +212,48 @@ class MemoryAtom(BaseModel):
         return self.summary()
 
 
+# ── Core promotion (numeric signals only; no keyword lists) ──
+
+
+def maybe_promote_core(
+    atom: "MemoryAtom",
+    *,
+    core_count: int,
+    cap: int,
+    min_recall: int = 5,
+    min_stability: float = 3.0,
+    min_importance: float = 0.8,
+    max_core_fraction: float = 0.10,
+    max_cores: int = 20,
+) -> bool:
+    """Promote an atom to is_core using numeric signals only.
+
+    Conditions (all required):
+      - not already is_core / is_immutable
+      - recall_count >= min_recall
+      - stability >= min_stability OR importance >= min_importance
+      - core_count under cap (min of max_cores and max_core_fraction * hippocampus.cap)
+
+    Returns:
+        True if atom.is_core was set on this call.
+    """
+    if atom.is_core or atom.is_immutable:
+        return False
+
+    max_allowed = min(max_cores, max(1, int(cap * max_core_fraction)))
+    if core_count >= max_allowed:
+        return False
+
+    if atom.recall_count < min_recall:
+        return False
+
+    if not (atom.stability >= min_stability or atom.importance >= min_importance):
+        return False
+
+    atom.is_core = True
+    return True
+
+
 # ── entity resolve ──
 
 
