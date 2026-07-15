@@ -86,16 +86,26 @@ class TelegramGateway:
                 )
 
                 if task_handler:
-                    result = task_handler(text, context)
-                    if result and chat_id:
-                        sent = self._adapter.send_message(chat_id, result)
-                        log.info("send_message(%s) -> %s", chat_id, sent)
-                    else:
-                        log.warning(
-                            "No reply sent: result=%r chat_id=%r",
-                            (result[:80] if result else result),
-                            chat_id,
-                        )
+                    # One user-visible text send per inbound message (chat_id).
+                    # Covers adapter.send_message and tools/telegram path.
+                    from gateway.outbound import clear_budget, set_budget
+
+                    if chat_id:
+                        set_budget(str(chat_id), 1)
+                    try:
+                        result = task_handler(text, context)
+                        if result and chat_id:
+                            sent = self._adapter.send_message(chat_id, result)
+                            log.info("send_message(%s) -> %s", chat_id, sent)
+                        else:
+                            log.warning(
+                                "No reply sent: result=%r chat_id=%r",
+                                (result[:80] if result else result),
+                                chat_id,
+                            )
+                    finally:
+                        if chat_id:
+                            clear_budget(str(chat_id))
             except Exception as e:
                 log.exception("BRIDGE handler error: %s", e)
 

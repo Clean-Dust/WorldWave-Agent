@@ -61,6 +61,14 @@ class TelegramPublisher:
             parse_mode: Markdown or HTML
             disable_preview: whether to disable link preview
         """
+        from gateway.outbound import allow_text_send
+
+        if not allow_text_send(str(chat_id), text or ""):
+            return {
+                "ok": False,
+                "error": "outbound gate suppressed (budget or time-window)",
+                "suppressed": True,
+            }
         params = {
             "chat_id": chat_id,
             "text": text,

@@ -1,0 +1,179 @@
+"""Telegram outbound gate: per-inbound budget + time-window dedup.
+
+Covers success criteria for double-bubble prevention:
+- budget=1: second send for same chat_id suppressed
+- 6s time-window: second send without budget also suppressed
+- clear_budget / different chat_id do not false-block
+"""
+
+from __future__ import annotations
+
+import time
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from gateway import outbound
+
+
+@pytest.fixture(autouse=True)
+def _reset_gate():
+    outbound.reset_for_tests()
+    yield
+    outbound.reset_for_tests()
+
+
+# ── budget ───────────────────────────────────────────────────────
+
+
+def test_budget_allows_first_send():
+    outbound.set_budget("chat1", 1)
+    assert outbound.allow_text_send("chat1", "hello") is True
+    assert outbound.get_budget("chat1") == 0
+
+
+def test_budget_suppresses_second_send():
+    outbound.set_budget("chat1", 1)
+    assert outbound.allow_text_send("chat1", "first bubble") is True
+    assert outbound.allow_text_send("chat1", "second bubble") is False
+
+
+def test_budget_independent_per_chat():
+    outbound.set_budget("a", 1)
+    outbound.set_budget("b", 1)
+    assert outbound.allow_text_send("a", "hi a") is True
+    assert outbound.allow_text_send("b", "hi b") is True
+    assert outbound.allow_text_send("a", "again a") is False
+    assert outbound.allow_text_send("b", "again b") is False
+
+
+def test_clear_budget_removes_limit():
+    """After clear, budget no longer blocks (time-window still may)."""
+    outbound.set_budget("chat1", 1)
+    assert outbound.allow_text_send("chat1", "one") is True
+    outbound.clear_budget("chat1")
+    assert outbound.get_budget("chat1") is None
+    # Time window still holds within 6s
+    assert outbound.allow_text_send("chat1", "two") is False
+
+
+def test_no_budget_allows_send():
+    """Without budget, first send is allowed (only time-window applies later)."""
+    assert outbound.allow_text_send("free", "ok") is True
+
+
+def test_empty_chat_id_suppressed():
+    assert outbound.allow_text_send("", "x") is False
+    assert outbound.allow_text_send("  ", "x") is False
+
+
+# ── time-window dedup ────────────────────────────────────────────
+
+
+def test_time_window_suppresses_second_within_6s():
+    assert outbound.allow_text_send("c", "first") is True
+    assert outbound.allow_text_send("c", "second") is False
+
+
+def test_time_window_allows_after_expiry(monkeypatch):
+    clock = {"t": 1000.0}
+
+    def fake_mono():
+        return clock["t"]
+
+    monkeypatch.setattr(outbound.time, "monotonic", fake_mono)
+    assert outbound.allow_text_send("c", "first") is True
+    clock["t"] += outbound.DEDUP_WINDOW_SEC + 0.1
+    assert outbound.allow_text_send("c", "second") is True
+
+
+def test_time_window_blocks_even_with_fresh_budget(monkeypatch):
+    """Budget set again still cannot beat the 6s window."""
+    clock = {"t": 50.0}
+    monkeypatch.setattr(outbound.time, "monotonic", lambda: clock["t"])
+    outbound.set_budget("c", 1)
+    assert outbound.allow_text_send("c", "a") is True
+    outbound.clear_budget("c")
+    outbound.set_budget("c", 1)
+    # Same second — time window wins
+    assert outbound.allow_text_send("c", "b") is False
+
+
+# ── adapter / publisher wiring ───────────────────────────────────
+
+
+def test_telegram_adapter_send_message_uses_gate():
+    from gateway.adapters.telegram import TelegramAdapter
+
+    adapter = TelegramAdapter(token="fake-token")
+    adapter._api_call = MagicMock(return_value={"ok": True})
+
+    outbound.set_budget("99", 1)
+    assert adapter.send_message("99", "bubble one") is True
+    assert adapter.send_message("99", "bubble two") is False
+    # Only first call hits the API
+    assert adapter._api_call.call_count == 1
+    assert adapter._api_call.call_args[0][0] == "sendMessage"
+
+
+def test_telegram_publisher_send_message_uses_gate():
+    from tools.telegram import TelegramPublisher
+
+    pub = TelegramPublisher(token="fake-token")
+    outbound.set_budget("42", 1)
+
+    with patch("tools.telegram.requests.post") as post:
+        post.return_value = MagicMock(json=lambda: {"ok": True, "result": {}})
+        r1 = pub.send_message("42", "tool path first")
+        r2 = pub.send_message("42", "tool path second")
+
+    assert r1.get("ok") is True
+    assert r2.get("ok") is False
+    assert r2.get("suppressed") is True
+    assert post.call_count == 1
+
+
+def test_bridge_sets_and_clears_budget():
+    """task_handler path: budget active during handler, cleared after."""
+    from gateway.bridge import TelegramGateway
+
+    seen = {}
+
+    def handler(text, context):
+        seen["budget_during"] = outbound.get_budget(context["chat_id"])
+        # Simulate tool send consuming budget
+        outbound.allow_text_send(context["chat_id"], "from tool")
+        return "from bridge"
+
+    with patch("gateway.adapters.telegram.TelegramAdapter") as MockAdapter:
+        mock_adapter = MagicMock()
+        mock_adapter.send_message = MagicMock(return_value=True)
+        MockAdapter.return_value = mock_adapter
+
+        gw = TelegramGateway(token="t", task_handler=handler)
+        # Drive the wrapped on_message via the constructor's callback
+        on_message = MockAdapter.call_args.kwargs.get("on_message")
+        assert on_message is not None
+
+        # Build a minimal unified-like object
+        class U:
+            content = type("C", (), {
+                "text": type("T", (), {"clean_text": "你好", "body": "你好"})(),
+            })()
+            routing = type("R", (), {"photo_path": ""})()
+            sender = type("S", (), {
+                "display_name": "User",
+                "user_id": "1",
+                "id": "1",
+            })()
+            platform = "telegram"
+            session_key = "telegram:1:555"
+
+        import asyncio
+        asyncio.run(on_message(U()))
+
+    assert seen["budget_during"] == 1
+    # Budget cleared after handler
+    assert outbound.get_budget("555") is None
+    # send_message attempted once (second would be gated inside adapter if wired)
+    mock_adapter.send_message.assert_called_once()

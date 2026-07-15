@@ -446,7 +446,10 @@ class Worldwave:
             "   call tools for simple working-memory / recall questions.\n"
             "4. Only use tools when the user explicitly asks you to DO something\n"
             "   (run a command, read a file, search the web, send a message, etc).\n"
-            "5. If you're unsure, reply with text rather than calling a tool.\n\n"
+            "5. If you're unsure, reply with text rather than calling a tool.\n"
+            "6. Greetings: ONE short sentence only. Never two greetings / two bubbles.\n"
+            "   Do not call telegram_send (or any send tool) for chat replies — the\n"
+            "   gateway delivers your text. Never send the same reply twice.\n\n"
             "Available tools (use ONLY when user explicitly requests an action):\n" + tool_descriptions
         )
         
@@ -1534,7 +1537,15 @@ class Worldwave:
                         )
                         response_text = self.llm.chat(
                             messages=[
-                                {"role": "system", "content": "Answer concisely. One sentence for simple questions. Be human, not a bot."},
+                                {
+                                    "role": "system",
+                                    "content": (
+                                        "Answer concisely. One sentence for simple questions. "
+                                        "Be human, not a bot. "
+                                        "Greetings: ONE short sentence only. "
+                                        "Never two greetings / two bubbles."
+                                    ),
+                                },
                                 {"role": "user", "content": full_prompt},
                             ],
                             json_mode=False,

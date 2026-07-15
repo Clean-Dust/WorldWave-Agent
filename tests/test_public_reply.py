@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core.public_reply import (
+    collapse_multi_greeting,
     extract_user_response,
     is_internal_response_text,
     public_reply,
@@ -186,6 +187,45 @@ def test_extract_non_dict_returns_empty():
     assert extract_user_response(None) == ""
     assert extract_user_response("nope") == ""
     assert extract_user_response([]) == ""
+
+
+# ── collapse_multi_greeting ──────────────────────────────────────
+
+
+def test_collapse_multi_greeting_keeps_first_short_paragraphs():
+    text = "你好！有什么需要帮忙的吗？😊\n\n嗨！好久不见，近来可好？"
+    assert collapse_multi_greeting(text) == "你好！有什么需要帮忙的吗？😊"
+
+
+def test_collapse_multi_greeting_single_paragraph_unchanged():
+    text = "你好！有什么需要帮忙的吗？😊"
+    assert collapse_multi_greeting(text) == text
+
+
+def test_collapse_multi_greeting_keeps_long_paragraphs():
+    """If any paragraph is ≥100 chars, do not collapse (not pure greets)."""
+    long_a = "A" * 100
+    long_b = "B" * 100
+    text = f"{long_a}\n\n{long_b}"
+    assert collapse_multi_greeting(text) == text
+
+
+def test_collapse_multi_greeting_mixed_length_not_collapsed():
+    short = "Hi!"
+    long = "x" * 120
+    text = f"{short}\n\n{long}"
+    assert collapse_multi_greeting(text) == text
+
+
+def test_collapse_via_extract_user_response():
+    result = {
+        "response": "你好！\n\n嗨！好久不见。",
+    }
+    assert extract_user_response(result) == "你好！"
+
+
+def test_collapse_via_public_reply():
+    assert public_reply("嗨\n\n你好呀") == "嗨"
 
 
 # ── public_reply ─────────────────────────────────────────────────

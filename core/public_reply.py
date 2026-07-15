@@ -16,10 +16,14 @@ must go through this module.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, Mapping, Optional
 
 # Tools that intentionally produce user-facing chat text
 _REPLY_TOOLS = frozenset({"reflex_text", "respond", "reply", "final_answer"})
+
+# Short multi-paragraph greets (each para under this length) collapse to first
+_GREETING_PARA_MAX = 100
 
 # Top-level keys clients may already populate
 _TOP_LEVEL_KEYS = ("response", "reply", "output", "message")
@@ -50,6 +54,29 @@ def is_internal_response_text(text: Any) -> bool:
     return False
 
 
+def collapse_multi_greeting(text: Any) -> str:
+    """Keep only the first paragraph when the reply is multi short greets.
+
+    If the reply has ≥2 paragraphs (split on blank lines), and every
+    paragraph is shorter than 100 characters (typical multi-bubble
+    small-talk), return the first paragraph only. Otherwise return
+    the original stripped text unchanged.
+
+    Pure function — no I/O. Safe to apply on all user-facing replies.
+    """
+    if not isinstance(text, str):
+        return ""
+    s = text.strip()
+    if not s:
+        return ""
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", s) if p.strip()]
+    if len(paragraphs) < 2:
+        return s
+    if all(len(p) < _GREETING_PARA_MAX for p in paragraphs):
+        return paragraphs[0]
+    return s
+
+
 def _clean(val: Any) -> str:
     """Return stripped user-safe string, or empty if unusable/internal."""
     if not isinstance(val, str):
@@ -57,7 +84,7 @@ def _clean(val: Any) -> str:
     s = val.strip()
     if not s or is_internal_response_text(s):
         return ""
-    return s
+    return collapse_multi_greeting(s)
 
 
 def _iter_spirals(result: Mapping[str, Any]):
@@ -160,4 +187,4 @@ def public_reply(text: Any, fallback: str = "") -> str:
     )
     if any(t.startswith(p) for p in bad_prefixes):
         return fallback or ""
-    return t
+    return collapse_multi_greeting(t)

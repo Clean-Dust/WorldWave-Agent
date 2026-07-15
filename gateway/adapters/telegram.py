@@ -118,6 +118,10 @@ class TelegramAdapter(BaseAdapter):
         self._running = False
 
     def send_message(self, chat_id: str, text: str, **kwargs) -> bool:
+        from gateway.outbound import allow_text_send
+
+        if not allow_text_send(str(chat_id), text or ""):
+            return False
         return self._api_call("sendMessage", {
             "chat_id": str(chat_id),
             "text": text[:4000],
