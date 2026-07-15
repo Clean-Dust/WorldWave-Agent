@@ -70,42 +70,65 @@ def make_bg(w: int, h: int) -> Image.Image:
         draw.polygon(pts, fill=(*WAVE, alpha))
         crest_lines.append(ridge)
 
-    # White sea foam along wave crests
+    # White sea foam along wave crests (more volume, still soft ribbon style)
     foam = Image.new("RGBA", (w, h), (0, 0, 0, 0))
     fd = ImageDraw.Draw(foam)
     for i, ridge in enumerate(crest_lines):
-        # soft white ribbon hugging the crest
+        # primary soft white ribbon
         ribbon = []
         for x, yy in ridge:
-            ribbon.append((x, yy - 1))
-        # go back lower for a thin band
+            ribbon.append((x, yy - 2))
         for x, yy in reversed(ridge):
-            ribbon.append((x, yy + 4 + i))
-        a = 70 - i * 12
-        fd.polygon(ribbon, fill=(255, 255, 255, max(28, a)))
-        # crest highlight line
+            ribbon.append((x, yy + 7 + i * 2))
+        a = 95 - i * 14
+        fd.polygon(ribbon, fill=(255, 255, 255, max(40, a)))
+        # secondary thinner foam sheet slightly below
+        ribbon2 = []
+        for x, yy in ridge:
+            ribbon2.append((x, yy + 3 + i))
+        for x, yy in reversed(ridge):
+            ribbon2.append((x, yy + 12 + i * 2))
+        fd.polygon(ribbon2, fill=(255, 255, 255, max(22, 50 - i * 10)))
+        # crest highlight lines
         if len(ridge) >= 2:
-            fd.line(ridge, fill=(255, 255, 255, 110 - i * 20), width=2)
-        # scattered whitecap dots / flecks along crest
-        step = 18 + i * 6
-        for j in range(0, len(ridge), max(1, step // 8)):
+            fd.line(ridge, fill=(255, 255, 255, 140 - i * 20), width=2)
+            # offset highlight for extra foam volume
+            ridge_up = [(x, yy - 2) for x, yy in ridge]
+            fd.line(ridge_up, fill=(255, 255, 255, 70 - i * 12), width=1)
+        # denser whitecap flecks along whole ridge (not only peaks)
+        step = max(2, 4 + i)
+        for j in range(0, len(ridge), step):
             x, yy = ridge[j]
-            # only near local crests (high points)
-            if j > 0 and j < len(ridge) - 1:
-                prev_y = ridge[j - 1][1]
-                next_y = ridge[j + 1][1]
-                if yy <= prev_y and yy <= next_y:
-                    r = 2 + (j % 3)
-                    fd.ellipse(
-                        [x - r, yy - r - 1, x + r + 2, yy + r],
-                        fill=(255, 255, 255, 150),
+            hsh = (x * 131 + j * 17 + i * 9) & 255
+            r = 2 + (hsh % 4)
+            fd.ellipse(
+                [x - r, yy - r - 1, x + r + 3, yy + r + 1],
+                fill=(255, 255, 255, 120 + (hsh % 60)),
+            )
+            # spray cluster
+            fd.ellipse(
+                [x + 3, yy - 6, x + 8, yy - 2],
+                fill=(255, 255, 255, 80 + (hsh % 50)),
+            )
+            if hsh % 2 == 0:
+                fd.ellipse(
+                    [x - 6, yy - 4, x - 2, yy],
+                    fill=(255, 255, 255, 70),
+                )
+            if hsh % 3 == 0:
+                for s in range(4):
+                    fd.point(
+                        (x + s * 2 - 3, yy - 5 - s),
+                        fill=(255, 255, 255, 140),
                     )
-                    # tiny spray
-                    fd.ellipse(
-                        [x + 4, yy - 5, x + 7, yy - 2],
-                        fill=(255, 255, 255, 90),
-                    )
-    foam = foam.filter(ImageFilter.GaussianBlur(0.8))
+        # extra flecks mid-band between ridges
+        for j in range(1, len(ridge), 3):
+            x, yy = ridge[j]
+            fd.ellipse(
+                [x - 2, yy + 5, x + 4, yy + 9],
+                fill=(255, 255, 255, 45 + (j % 40)),
+            )
+    foam = foam.filter(ImageFilter.GaussianBlur(0.9))
     base = Image.alpha_composite(base, foam)
 
     glow = Image.new("RGBA", (w, h), (0, 0, 0, 0))
