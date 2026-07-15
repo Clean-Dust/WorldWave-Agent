@@ -159,12 +159,12 @@ def draw_text_exact_width(
 def compose(w: int, h: int, out_path: Path) -> None:
     bg = make_bg(w, h)
 
-    # Shark (left), same spirit as base frame
+    # Shark (left); smaller so title can honor -20% left shift
     sh = shark.copy()
-    target_h = int(h * 0.70)
+    target_h = int(h * 0.58)
     ratio = target_h / sh.height
     sh = sh.resize((max(1, int(sh.width * ratio)), target_h), Image.Resampling.LANCZOS)
-    sx = int(w * 0.02)
+    sx = int(w * 0.015)
     sy = h - sh.height - int(h * 0.02)
     bg.paste(sh, (sx, sy), sh)
 
@@ -173,11 +173,13 @@ def compose(w: int, h: int, out_path: Path) -> None:
     sub = "Persistent memory · Persistent autonomy · Persistent session"
     margin_r = 24
 
-    # Base left from reference, then shift left 20% of canvas
+    # Base left from reference (~31%), then shift left 20% of canvas
     ref_left = int(w * REF_TITLE_LEFT_FRAC)
     text_left = int(ref_left - LEFT_SHIFT_FRAC * w)
-    min_left = sx + sh.width + int(w * 0.008)
+    # Allow mild overlap over shark body (mascot sits under/behind type)
+    min_left = sx + int(sh.width * 0.45)
     text_left = max(min_left, text_left)
+    text_left = max(int(w * 0.08), text_left)
     max_w = w - text_left - margin_r
 
     # Title size: as large as fits width after left shift
