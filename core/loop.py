@@ -282,7 +282,7 @@ class Worldwave:
             # Re-wire optional WM tie-break if entity mgr arrived after __init__
             self._maybe_wire_wm_subconscious_tiebreak()
 
-    def _get_entity_context(self) -> str:
+    def _get_entity_context(self, query: str = "") -> str:
         """Get entity + memory context for the turn.
 
         Single memory picture: when MemoryVNext is active, labeled facts and
@@ -290,6 +290,7 @@ class Worldwave:
         parallel EntityState flat-WM dump (legacy dual inject retired).
 
         System persona stays separate; this returns continuity + memory blocks.
+        Progressive inject prefers Abstract LTM; expands Overview under budget.
         """
         parts = []
         vnext_active = False
@@ -341,7 +342,10 @@ class Worldwave:
         # ── Single memory system: one block (prompt isolation from persona) ──
         if self.memory is not None and hasattr(self.memory, "memory_context_block"):
             try:
-                mem_block = self.memory.memory_context_block("")
+                mem_block = self.memory.memory_context_block(
+                    query or "",
+                    entity_id=self._current_entity_id or "",
+                )
                 if mem_block:
                     parts.append("[Memory context]\n" + mem_block)
             except Exception:
@@ -699,8 +703,24 @@ class Worldwave:
         # Per-user/chat conversation window (do not share default session across users)
         conv_window = conversation_window or self.state.session_id
 
+        # Raw user goal (before entity wrap) — used for passive memory ingest + topic split
+        user_goal_raw = goal
+
+        # ── Passive lossless track + auto topic split (single memory system) ──
+        # Detect independent topic (markers / gap / lexical); park current to STM.
+        try:
+            if self.memory is not None and hasattr(self.memory, "ingest_turn"):
+                ing = self.memory.ingest_turn("user", user_goal_raw)
+                if isinstance(ing, dict) and ing.get("switched"):
+                    self._log(
+                        f"## Topic auto-split → {ing.get('title', '')[:60]} "
+                        f"({ing.get('switch_reason') or 'new'})"
+                    )
+        except Exception as e:
+            logger.debug("ingest_turn (user) skipped: %s", e)
+
         # ── Entity continuity injection ──
-        entity_ctx = self._get_entity_context()
+        entity_ctx = self._get_entity_context(query=user_goal_raw)
         if entity_ctx:
             self._log("## Entity context loaded")
             goal = f"[Entity Context]\n{entity_ctx}\n\n[Current Request]\n{goal}"
@@ -1250,6 +1270,31 @@ class Worldwave:
         if self._current_entity_id:
             summary_text = summary.get("result_summary", summary.get("final_response", "")) if isinstance(summary, dict) else str(summary)
             self._record_entity_interaction(summary_text)
+
+        # ── Passive lossless: assistant/outcome turn into topic body ──
+        try:
+            if self.memory is not None and hasattr(self.memory, "ingest_turn"):
+                asst_text = ""
+                if isinstance(summary, dict):
+                    asst_text = str(
+                        summary.get("final_response")
+                        or summary.get("result_summary")
+                        or summary.get("response")
+                        or ""
+                    )
+                if not asst_text and results:
+                    # Best-effort from last spiral evaluation
+                    last = results[-1] if results else {}
+                    ev = last.get("evaluation") or {}
+                    asst_text = str(ev.get("response") or last.get("summary") or "")
+                if asst_text:
+                    self.memory.ingest_turn(
+                        "assistant",
+                        asst_text[:2000],
+                        new_topic=False,
+                    )
+        except Exception as e:
+            logger.debug("ingest_turn (assistant) skipped: %s", e)
 
         return {
             "status": "interrupted" if (self.state.get_last_checkpoint() and 

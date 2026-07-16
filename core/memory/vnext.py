@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +41,9 @@ from .topic import Topic, WorkingTopicStore, looks_like_topic_switch
 from .topic_stm import TopicHippocampus, evaluate_topic
 
 logger = logging.getLogger("ww.memory.vnext")
+
+# Progressive inject: reserve for core/persona always
+_CORE_RESERVE_CHARS = 400
 
 
 def memory_vnext_enabled() -> bool:
@@ -309,14 +313,26 @@ class MemoryVNext:
         topic_title: str = "",
         auto_switch: bool = True,
     ) -> dict:
-        """Land conversation turn as Experience raw + topic body (no dual LLM)."""
+        """Land conversation turn as Experience raw + topic body (no dual LLM).
+
+        Auto topic split (user turns): explicit markers, long gap + subject
+        change, or low lexical overlap → park current topic to STM fully,
+        start new topic body.
+        """
         switched = False
+        switch_reason = ""
         if auto_switch and not new_topic and self.wm.active and role == "user":
             prev = self.wm.active.full_text()
-            if looks_like_topic_switch(prev, content):
+            gap = 0.0
+            try:
+                gap = max(0.0, time.time() - float(self.wm.active.updated_at or 0))
+            except (TypeError, ValueError):
+                gap = 0.0
+            if looks_like_topic_switch(prev, content, gap_seconds=gap):
                 new_topic = True
                 topic_title = topic_title or content[:80]
                 switched = True
+                switch_reason = "heuristic"
 
         topic = self.wm.append_turn(
             role,
@@ -338,6 +354,7 @@ class MemoryVNext:
             "topic_id": topic.topic_id,
             "title": topic.title,
             "switched": switched or new_topic,
+            "switch_reason": switch_reason if switched else ("forced" if new_topic else ""),
             "turns": len(topic.turns),
             "digests": len(topic.digests),
             "tokens": topic.token_estimate(),
@@ -375,24 +392,32 @@ class MemoryVNext:
 
         Progressive: LTM returns Abstract first.
         Invalid atoms never win as current truth.
+        Optional RRF (WW_MEMORY_RRF=1): fuse BM25 STM + atom text + labeled facts.
         """
-        # Optional modules
+        # Optional modules — cross-encoder / HRR fail-loud if enabled incomplete
         if optional_module_enabled("hrr"):
             raise HRRUnavailableError(
                 "WW_MEMORY_HRR=1 but HRR backend is not fully configured. "
                 "Fail-loud: disable WW_MEMORY_HRR or install complete HRR with "
                 "full write verbs (add/replace/remove). No silent FTS fallback."
             )
+        if optional_module_enabled("cross_encoder"):
+            raise RuntimeError(
+                "WW_MEMORY_CROSS_ENCODER=1 but cross-encoder backend is not "
+                "configured. Fail-loud stub: disable the flag or install a "
+                "complete reranker. Default retrieval path remains fast FTS/BM25."
+            )
 
         stm_hits = self.topic_stm.search(query, top_k=top_k)
         atom_hits = self.atoms.current_truth(query, limit=top_k)
         ltm_tier = ContentTier.ABSTRACT if progressive else ContentTier.DETAIL
         ltm_hits = self.ltm.search(query, top_k=top_k, tier=ltm_tier)
+        fact_hits = self._rank_labeled_facts(query, limit=top_k)
 
-        # Optional RRF fusion (default OFF)
+        # Optional RRF fusion (default OFF) — STM + atoms + labeled facts (+ LTM)
         fused = None
         if optional_module_enabled("rrf"):
-            fused = self._rrf_fuse(stm_hits, atom_hits, ltm_hits)
+            fused = self._rrf_fuse(stm_hits, atom_hits, ltm_hits, fact_hits)
 
         return {
             "query": query,
@@ -408,12 +433,37 @@ class MemoryVNext:
             ],
             "atoms": [a.to_dict() for a in atom_hits],
             "ltm": ltm_hits,
+            "facts": fact_hits,
             "fused": fused,
             "progressive": progressive,
             "tier": ltm_tier.value,
         }
 
-    def _rrf_fuse(self, stm, atoms, ltm, k: int = 60) -> List[dict]:
+    def _rank_labeled_facts(self, query: str, limit: int = 5) -> List[dict]:
+        """Rank labeled facts by simple term overlap (for RRF / inject)."""
+        eid = self.entity_id or "default"
+        facts = self.facts.get_facts(eid)
+        if not facts:
+            return []
+        q = (query or "").lower().strip()
+        q_tokens = set(re.findall(r"[a-zA-Z0-9_\u4e00-\u9fff]{2,}", q)) if q else set()
+        scored: List[tuple] = []
+        for k, v in facts.items():
+            blob = f"{k} {v}".lower()
+            if not q_tokens:
+                scored.append((0.0, k, v))
+                continue
+            hits = sum(1 for t in q_tokens if t in blob)
+            if hits:
+                scored.append((float(hits), k, v))
+        scored.sort(key=lambda x: -x[0])
+        return [
+            {"key": k, "value": v, "score": s}
+            for s, k, v in scored[:limit]
+        ]
+
+    def _rrf_fuse(self, stm, atoms, ltm, facts=None, k: int = 60) -> List[dict]:
+        """Reciprocal rank fusion over STM BM25 + atom text + labeled facts (+ LTM)."""
         scores: Dict[str, float] = {}
         labels: Dict[str, dict] = {}
         for rank, h in enumerate(stm):
@@ -424,10 +474,18 @@ class MemoryVNext:
             key = f"atom:{a.atom_id}"
             scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
             labels[key] = {"source": "atom", "id": a.atom_id, "content": a.content[:120]}
-        for rank, h in enumerate(ltm):
+        for rank, h in enumerate(ltm or []):
             key = f"ltm:{h['uri']}"
             scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
             labels[key] = {"source": "ltm", "uri": h["uri"], "title": h.get("title")}
+        for rank, f in enumerate(facts or []):
+            key = f"fact:{f.get('key')}"
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+            labels[key] = {
+                "source": "fact",
+                "key": f.get("key"),
+                "value": str(f.get("value") or "")[:120],
+            }
         ordered = sorted(scores.items(), key=lambda x: -x[1])
         return [{**labels[i], "rrf": s} for i, s in ordered]
 
@@ -474,31 +532,106 @@ class MemoryVNext:
     ) -> str:
         """Build the single non-system memory context block for this turn.
 
-        One memory picture: labeled facts + active topic + progressive recall.
+        Progressive inject discipline:
+          - Core / persona always included (reserved slice)
+          - Labeled facts + working topic next
+          - LTM hits: Abstract tier first; expand Overview only if budget allows
+          - Soft truncate remaining retrieval under max_chars
+
         No parallel legacy flat-key dump.
         """
-        parts = []
+        budget = max(200, int(max_chars))
+        parts: List[str] = []
+        used = 0
+
         blocks = self.build_context_blocks(entity_id=entity_id)
+
+        # 1) Core / persona — always
         if blocks["core_identity"]:
-            parts.append("## Core identity (protected)\n" + blocks["core_identity"])
+            core_block = "## Core identity (protected)\n" + blocks["core_identity"]
+            parts.append(core_block)
+            used += len(core_block)
+        else:
+            # Still reserve a little headroom for late core hydration
+            used += min(_CORE_RESERVE_CHARS, budget // 10)
+
+        # 2) Labeled facts (online)
         if blocks.get("labeled_facts"):
-            parts.append(blocks["labeled_facts"])
-        if blocks["working_topic"]:
-            parts.append(blocks["working_topic"])
-        if query:
+            lf = blocks["labeled_facts"]
+            remain = budget - used
+            if remain > 80:
+                if len(lf) > remain:
+                    lf = lf[: remain - 20] + "\n… [truncated]"
+                parts.append(lf)
+                used += len(lf)
+
+        # 3) Active working topic (trim if tight)
+        if blocks.get("working_topic"):
+            wt = blocks["working_topic"]
+            remain = budget - used
+            if remain > 120:
+                if len(wt) > remain:
+                    wt = wt[: remain - 20] + "\n… [truncated]"
+                parts.append(wt)
+                used += len(wt)
+
+        # 4) Progressive retrieval: Abstract first; Overview only if budget allows
+        if query and (budget - used) > 100:
             rec = self.recall(query, top_k=3, progressive=True)
-            mem_lines = []
+            mem_lines: List[str] = []
             for a in rec.get("atoms") or []:
-                mem_lines.append(f"- [atom/{a.get('logical_net')}] {a.get('content', '')[:200]}")
+                mem_lines.append(
+                    f"- [atom/{a.get('logical_net')}] {a.get('content', '')[:200]}"
+                )
             for h in rec.get("ltm") or []:
-                mem_lines.append(f"- [ltm abstract] {h.get('uri')}: {h.get('abstract', '')[:160]}")
+                # Prefer abstract field; expand overview only under remaining budget
+                abstract = (h.get("abstract") or h.get("content") or "")[:160]
+                line = f"- [ltm abstract] {h.get('uri')}: {abstract}"
+                mem_lines.append(line)
+                uri = h.get("uri") or ""
+                # Overview expand if room
+                if uri and (budget - used - sum(len(x) for x in mem_lines)) > 400:
+                    try:
+                        overview = self.expand_ltm(uri, tier="overview")
+                        if overview and len(overview) > len(abstract) + 40:
+                            # Cap overview snippet
+                            snip = overview[:280].replace("\n", " ")
+                            mem_lines.append(f"  · overview: {snip}")
+                    except Exception:
+                        pass
             for h in rec.get("stm") or []:
-                mem_lines.append(f"- [stm] {h.get('title')}: {h.get('preview', '')[:160]}")
+                mem_lines.append(
+                    f"- [stm] {h.get('title')}: {h.get('preview', '')[:160]}"
+                )
+            # Optional RRF lines (when enabled) for transparency
+            if rec.get("fused"):
+                for item in (rec["fused"] or [])[:3]:
+                    src = item.get("source")
+                    if src == "fact":
+                        mem_lines.append(
+                            f"- [fact/rrf] {item.get('key')}: {item.get('value', '')[:120]}"
+                        )
             if mem_lines:
-                parts.append("## Retrieved memory\n" + "\n".join(mem_lines))
+                mem_block = "## Retrieved memory\n" + "\n".join(mem_lines)
+                remain = budget - used
+                if remain > 60:
+                    if len(mem_block) > remain:
+                        mem_block = mem_block[: remain - 20] + "\n… [truncated]"
+                    parts.append(mem_block)
+                    used += len(mem_block)
+
         text = "\n\n".join(parts)
-        if len(text) > max_chars:
-            text = text[: max_chars - 20] + "\n… [truncated]"
+        if len(text) > budget:
+            # Never drop core identity block if present
+            if parts and parts[0].startswith("## Core identity"):
+                core = parts[0]
+                rest_budget = max(0, budget - len(core) - 30)
+                rest = "\n\n".join(parts[1:])
+                if len(rest) > rest_budget:
+                    rest = rest[:rest_budget] + "\n… [truncated]"
+                text = core + ("\n\n" + rest if rest else "")
+            else:
+                text = text[: budget - 20] + "\n… [truncated]"
         return text
 
     # ── Status / maintenance ──

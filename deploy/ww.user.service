@@ -1,0 +1,30 @@
+# Worldwave user systemd unit (template)
+#
+# Install (from repo root, after .venv exists):
+#   mkdir -p ~/.config/systemd/user
+#   sed "s|@WW_HOME@|$HOME/worldwave|g" deploy/ww.user.service \
+#     > ~/.config/systemd/user/ww.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now ww.service
+#   loginctl enable-linger "$USER"   # optional: survive logout
+#
+# Or let deploy.sh enable when this file is present (partner path safe).
+
+[Unit]
+Description=Worldwave AI Agent Server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@WW_HOME@
+EnvironmentFile=-@WW_HOME@/.env
+ExecStart=@WW_HOME@/.venv/bin/python @WW_HOME@/server.py
+Restart=always
+RestartSec=10
+# Soft resource limits — avoid silent OOM thrash from evolution storms
+MemoryMax=2G
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

@@ -165,8 +165,163 @@ class AtomLink:
 
 # ── Rule-based extract (no LLM on hot path) ────────────────────────
 
-_FACT_SPLIT = re.compile(r"(?<=[.!?。；;])\s+|\n+")
-_ENTITY_RE = re.compile(r"\b([A-Z][a-zA-Z0-9_\-]{1,}(?:\s+[A-Z][a-zA-Z0-9_\-]{1,})*)\b")
+# Sentence / clause boundaries (EN + CJK punctuation)
+_FACT_SPLIT = re.compile(
+    r"(?<=[.!?。！？；;])\s+|"
+    r"(?<=\n)[-*•]\s+|"  # bullet starts
+    r"\n+"
+)
+# Multi-fact blob glue words → secondary split
+_BLOB_SPLIT = re.compile(
+    r"\s+(?:and also|also,|additionally,|furthermore,|plus,|moreover,)\s+",
+    re.IGNORECASE,
+)
+# Capitalized entity-ish tokens (proper nouns / product names)
+_ENTITY_RE = re.compile(
+    r"\b([A-Z][a-zA-Z0-9_\-]{1,}(?:\s+[A-Z][a-zA-Z0-9_\-]{1,}){0,3})\b"
+)
+# Lowercase technical identifiers often worth indexing
+_TECH_TOKEN_RE = re.compile(
+    r"\b([a-z][a-z0-9]+(?:[_-][a-z0-9]+)+|[A-Z]{2,}[a-z0-9]*|[a-z]+(?:API|SDK|CLI|URL|ID))\b"
+)
+_CHATTER = frozenset({
+    "ok", "okay", "thanks", "thank you", "hi", "hello", "hey", "lol",
+    "sure", "yep", "yeah", "nope", "nm", "cool", "nice", "great",
+    "got it", "sounds good", "alright", "fine", "嗯", "好的", "哈哈",
+    "ok.", "okay.", "thanks.", "sure.",
+})
+# Pronoun-only / near-empty content (no durable fact)
+_PRONOUN_ONLY = re.compile(
+    r"^(?:i|you|he|she|it|we|they|me|him|her|us|them|this|that|these|those|"
+    r"my|your|his|her|its|our|their|the|a|an|is|are|was|were|be|been|"
+    r"am|do|does|did|have|has|had|will|would|can|could|should|may|might|"
+    r"not|no|yes|and|or|but|so|if|then|than|to|of|in|on|at|for|with|"
+    r"about|from|as|by|up|out|"
+    r"我|你|他|她|它|我们|你们|他们|这|那|是|的|了|吗|呢|吧)+"
+    r"(?:\s+|$|[.!?。])*$",
+    re.IGNORECASE,
+)
+_ROLE_PREFIX = re.compile(r"^(?:user|assistant|system|tool)\s*:\s*", re.IGNORECASE)
+
+
+def atom_llm_extract_enabled() -> bool:
+    """Optional background LLM extract. Default OFF (WW_ATOM_LLM_EXTRACT=1)."""
+    raw = os.environ.get("WW_ATOM_LLM_EXTRACT")
+    if raw is None or str(raw).strip() == "":
+        return False
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _is_chatter(chunk: str) -> bool:
+    s = chunk.strip().lower().rstrip(".!?,;: ")
+    if not s:
+        return True
+    if s in _CHATTER:
+        return True
+    # Multi-token pure affirmations: "ok thanks", "sure cool", …
+    tokens = re.findall(r"[a-zA-Z\u4e00-\u9fff]+", s)
+    if tokens and all(t in _CHATTER or len(t) <= 2 for t in tokens) and len(s) < 40:
+        return True
+    # Very short affirmations
+    if len(s) <= 4 and s.isalpha():
+        return True
+    return False
+
+
+def _is_pronoun_only(chunk: str) -> bool:
+    cleaned = _ROLE_PREFIX.sub("", chunk.strip())
+    cleaned = re.sub(r"[^\w\s\u4e00-\u9fff]", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) < 4:
+        return True
+    # No entity-ish or tech token and matches pronoun-heavy pattern
+    if _ENTITY_RE.search(cleaned) or _TECH_TOKEN_RE.search(cleaned):
+        return False
+    # Drop pure deictic / filler sentences without content words >3 chars (non-pronoun)
+    words = [w for w in re.findall(r"[a-zA-Z\u4e00-\u9fff]{2,}", cleaned.lower())]
+    content = [
+        w for w in words
+        if w not in {
+            "i", "you", "he", "she", "it", "we", "they", "me", "him", "her",
+            "us", "them", "this", "that", "these", "those", "my", "your",
+            "his", "its", "our", "their", "the", "and", "but", "for", "with",
+            "about", "from", "have", "has", "had", "was", "were", "are", "is",
+            "been", "will", "would", "could", "should", "can", "not", "yes",
+            "no", "just", "really", "very", "also", "then", "than", "into",
+            "like", "know", "think", "want", "need", "got", "get", "said",
+            "tell", "told", "see", "look", "okay", "sure", "well", "please",
+            "thanks", "thank",
+        }
+    ]
+    if not content:
+        return True
+    if _PRONOUN_ONLY.match(cleaned):
+        return True
+    return False
+
+
+def _extract_entities(chunk: str) -> List[str]:
+    ents = [m.group(1) for m in _ENTITY_RE.finditer(chunk)]
+    # Skip sentence-start false positives that are common English words
+    stop_cap = {
+        "The", "This", "That", "There", "These", "Those", "When", "Where",
+        "What", "Why", "How", "And", "But", "For", "With", "From", "After",
+        "Before", "Please", "Thanks", "Hello", "Okay", "Sure", "Noted",
+        "User", "Assistant", "System", "Digest", "Body", "Turn", "Reply",
+    }
+    seen: Set[str] = set()
+    out: List[str] = []
+    for e in ents:
+        if e in stop_cap:
+            continue
+        el = e.lower()
+        if el not in seen:
+            seen.add(el)
+            out.append(e)
+    for m in _TECH_TOKEN_RE.finditer(chunk):
+        tok = m.group(1)
+        el = tok.lower()
+        if el not in seen and len(tok) >= 3:
+            seen.add(el)
+            out.append(tok)
+    return out[:12]
+
+
+def _split_into_fact_chunks(text: str) -> List[str]:
+    """Sentence split + multi-fact blob split + bullet lines."""
+    if not text or not text.strip():
+        return []
+    raw = text.strip()
+    # Primary sentence split
+    chunks = [c.strip() for c in _FACT_SPLIT.split(raw) if c and c.strip()]
+    # Bullet / line fallback when barely split
+    if len(chunks) <= 1 and "\n" in raw:
+        chunks = [ln.strip(" -*\t•") for ln in raw.splitlines() if len(ln.strip()) > 8]
+    # Secondary: multi-fact glue words
+    expanded: List[str] = []
+    for c in chunks:
+        parts = [p.strip() for p in _BLOB_SPLIT.split(c) if p and p.strip()]
+        if len(parts) > 1:
+            expanded.extend(parts)
+        else:
+            # Split long "A. B. C" already handled; also split on " — " / " / "
+            if " — " in c and len(c) > 60:
+                expanded.extend(p.strip() for p in c.split(" — ") if len(p.strip()) > 8)
+            elif "; " in c and len(c) > 40:
+                expanded.extend(p.strip() for p in c.split("; ") if len(p.strip()) > 8)
+            else:
+                expanded.append(c)
+    # Strip role prefixes for cleaner atoms
+    cleaned = []
+    for c in expanded:
+        c2 = _ROLE_PREFIX.sub("", c).strip()
+        # Drop digest header scaffolding
+        if c2.startswith("[Digests]") or c2.startswith("[Body]"):
+            continue
+        if c2.lower().startswith("digest of "):
+            continue
+        cleaned.append(c2)
+    return cleaned
 
 
 def extract_atoms_from_text(
@@ -177,61 +332,148 @@ def extract_atoms_from_text(
     logical_net: str = "experience",
     learned_at: Optional[float] = None,
 ) -> List[MemoryAtomV2]:
-    """Split text into self-contained atom candidates (rule-based, lossless-ish)."""
+    """Split text into self-contained atom candidates (rule-based, no dual LLM).
+
+    Improvements over naive split:
+      - sentence + multi-fact blob split
+      - entity-ish / tech token capture
+      - drop chatter and pronoun-only noise
+    """
     if not text or not text.strip():
         return []
     learned = learned_at if learned_at is not None else _now()
-    chunks = [c.strip() for c in _FACT_SPLIT.split(text) if c and c.strip()]
-    # Also accept bullet lines
-    if len(chunks) <= 1 and "\n" in text:
-        chunks = [ln.strip(" -*\t") for ln in text.splitlines() if len(ln.strip()) > 8]
+    chunks = _split_into_fact_chunks(text)
 
     atoms: List[MemoryAtomV2] = []
+    seen_content: Set[str] = set()
     for chunk in chunks:
         if len(chunk) < 6:
             continue
-        # Skip pure chatter
-        if len(chunk) < 12 and chunk.lower() in {
-            "ok", "okay", "thanks", "thank you", "hi", "hello", "hey", "lol",
-        }:
+        if _is_chatter(chunk):
             continue
-        ents = [m.group(1) for m in _ENTITY_RE.finditer(chunk)]
-        # dedupe entities
-        seen: Set[str] = set()
-        entities = []
-        for e in ents:
-            el = e.lower()
-            if el not in seen:
-                seen.add(el)
-                entities.append(e)
+        if _is_pronoun_only(chunk):
+            continue
+        key = chunk[:200].lower()
+        if key in seen_content:
+            continue
+        seen_content.add(key)
+        entities = _extract_entities(chunk)
+        # Prefer world net when it looks like a durable fact with entities
+        net = logical_net
+        if entities and re.search(
+            r"\b(is|are|was|were|uses|used|prefers|preferred|works at|joined|named)\b",
+            chunk,
+            re.IGNORECASE,
+        ):
+            net = "world" if logical_net == "experience" else logical_net
         atoms.append(
             MemoryAtomV2(
                 content=chunk[:500],
-                logical_net=logical_net,
+                logical_net=net,
                 learned_at=learned,
                 valid_from=learned,
-                entities=entities[:12],
+                entities=entities,
                 source=source,
                 topic_id=topic_id,
             )
         )
     # Fallback: whole text as one atom if split yielded nothing useful
-    if not atoms and len(text.strip()) >= 6:
-        atoms.append(
-            MemoryAtomV2(
-                content=text.strip()[:500],
-                logical_net=logical_net,
-                learned_at=learned,
-                valid_from=learned,
-                source=source,
-                topic_id=topic_id,
+    # (but still drop pure chatter)
+    if not atoms and len(text.strip()) >= 6 and not _is_chatter(text.strip()):
+        cleaned = _ROLE_PREFIX.sub("", text.strip())
+        if not _is_pronoun_only(cleaned):
+            atoms.append(
+                MemoryAtomV2(
+                    content=cleaned[:500],
+                    logical_net=logical_net,
+                    learned_at=learned,
+                    valid_from=learned,
+                    entities=_extract_entities(cleaned),
+                    source=source,
+                    topic_id=topic_id,
+                )
             )
-        )
     return atoms
 
 
+def maybe_llm_extract_atoms(
+    text: str,
+    *,
+    topic_id: str = "",
+    source: str = "llm_extract",
+) -> List[MemoryAtomV2]:
+    """Optional background LLM extract. Default off; requires cheap model config.
+
+    Never called on hot write path unless WW_ATOM_LLM_EXTRACT=1 and a model
+    client is available. Failures return [] (rule extract remains primary).
+    """
+    if not atom_llm_extract_enabled():
+        return []
+    if not text or len(text.strip()) < 20:
+        return []
+    try:
+        # Lazy import — keep hot path free of LLM deps
+        from core.config import ConfigManager  # type: ignore
+
+        cfg = ConfigManager()
+        model = (
+            os.environ.get("WW_ATOM_LLM_MODEL")
+            or cfg.get("atom_extract_model")
+            or cfg.get("cheap_model")
+            or ""
+        )
+        if not model:
+            logger.debug("WW_ATOM_LLM_EXTRACT=1 but no cheap model configured")
+            return []
+        # Intentionally minimal: if LLM client unavailable, no-op
+        llm = getattr(cfg, "get_llm", None)
+        if llm is None:
+            return []
+        client = llm() if callable(llm) else None
+        if client is None or not hasattr(client, "chat"):
+            return []
+        prompt = (
+            "Extract durable factual memory atoms as a JSON list of strings. "
+            "No chatter, no pronouns-only. Max 8 items.\n\n" + text[:3000]
+        )
+        resp = client.chat(
+            messages=[{"role": "user", "content": prompt}],
+            json_mode=True,
+            max_tokens=400,
+            model=model,
+        )
+        import json as _json
+
+        data = _json.loads(resp) if isinstance(resp, str) else resp
+        items = data if isinstance(data, list) else data.get("atoms") or data.get("facts") or []
+        out: List[MemoryAtomV2] = []
+        for item in items[:8]:
+            content = item if isinstance(item, str) else str(item.get("content") or item.get("text") or "")
+            content = content.strip()
+            if len(content) < 6 or _is_chatter(content):
+                continue
+            out.append(
+                MemoryAtomV2(
+                    content=content[:500],
+                    logical_net="world",
+                    source=source,
+                    topic_id=topic_id,
+                    entities=_extract_entities(content),
+                    confidence=0.6,
+                )
+            )
+        return out
+    except Exception as e:
+        logger.debug("optional LLM atom extract skipped: %s", e)
+        return []
+
+
 def extract_atoms_from_topic(topic: Any, *, source: str = "topic_leave") -> List[MemoryAtomV2]:
-    """Extract atoms covering body + digests of a topic unit."""
+    """Extract atoms covering body + digests of a topic unit.
+
+    Called on leave (promote/purge) — MUST run before topic is discarded.
+    Rule-based by default; optional LLM extract if WW_ATOM_LLM_EXTRACT=1.
+    """
     topic_id = getattr(topic, "topic_id", "") or ""
     text = ""
     if hasattr(topic, "full_text"):
@@ -241,8 +483,16 @@ def extract_atoms_from_topic(topic: Any, *, source: str = "topic_leave") -> List
         topic_id = str(topic.get("topic_id") or topic_id)
     else:
         text = str(topic)
-    atoms = extract_atoms_from_text(text, topic_id=topic_id, source=source, logical_net="experience")
-    # Prefer world for fact-like title-only dense statements
+    atoms = extract_atoms_from_text(
+        text, topic_id=topic_id, source=source, logical_net="experience"
+    )
+    # Optional background LLM enrich (never replaces rule extract)
+    if atom_llm_extract_enabled():
+        extra = maybe_llm_extract_atoms(text, topic_id=topic_id, source="llm_extract")
+        seen = {a.content[:120].lower() for a in atoms}
+        for a in extra:
+            if a.content[:120].lower() not in seen:
+                atoms.append(a)
     for a in atoms:
         if getattr(topic, "is_core", False):
             a.is_core = True

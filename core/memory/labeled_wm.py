@@ -13,8 +13,8 @@ Absorbed from legacy EntityState flat WM into the v-next spine:
 This is the **one source of truth** for online labeled facts under
 ``~/.ww/memory/vnext/facts/`` (or a configured data_dir).
 
-EntityStateManager may dual-write for one release as a shim; product inject
-reads this store via MemoryVNext only.
+EntityState dual-write is emergency-only (WW_ENTITY_WM_DUAL_WRITE=1).
+Product inject reads this store via MemoryVNext only.
 """
 
 from __future__ import annotations

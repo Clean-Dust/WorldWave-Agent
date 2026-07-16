@@ -6,12 +6,13 @@ the agent transitions from "passive consumer of recall results" to
 "active manager of its knowledge".
 
 Tools write against the **single** memory system (MemoryVNext labeled facts
-+ atom nets). EntityState flat WM is an optional compatibility dual-write
-shim only — product inject does not use it as a second brain.
++ atom nets). EntityState flat WM is **not** product SoT; dual-write is
+emergency-only via WW_ENTITY_WM_DUAL_WRITE=1 (default off).
 
   - remember(key, value, kind=...): explicit kind labels only (no keyword guess)
   - forget(key): supersede / remove
   - recall_mine(query): list online labeled facts
+  - switch_topic(title): park current topic to STM; start independent thread
 
 Product term for kind: 标签; API field stays ``kind``.
 """
@@ -19,6 +20,7 @@ Product term for kind: 标签; API field stays ``kind``.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Any, Dict, Optional
 
@@ -26,10 +28,22 @@ from core.entity_state import normalize_wm_kind
 
 log = logging.getLogger("ww.memory.tools")
 
-# REMOVAL DEADLINE: EntityState dual-write shim — remove after 2026-08-31
-# once migration prove stays green and no external readers of entity WM remain.
-_ENTITY_WM_DUAL_WRITE = True
-_ENTITY_WM_DUAL_WRITE_REMOVE_BY = "2026-08-31"
+# Product default: dual-write OFF. Emergency only: WW_ENTITY_WM_DUAL_WRITE=1.
+# EntityState remains for identity continuity + isolated unit fixtures.
+_ENTITY_WM_DUAL_WRITE = False
+_ENTITY_WM_DUAL_WRITE_REMOVE_BY = "2026-08-31"  # historical; path is env-gated
+
+
+def entity_wm_dual_write_enabled() -> bool:
+    """Emergency dual-write EntityState.working_memory. Default OFF.
+
+    Set WW_ENTITY_WM_DUAL_WRITE=1 only for recovery. Product path is
+    MemoryVNext / LabeledFactStore / AtomNet / LTM only.
+    """
+    raw = os.environ.get("WW_ENTITY_WM_DUAL_WRITE")
+    if raw is None or str(raw).strip() == "":
+        return bool(_ENTITY_WM_DUAL_WRITE)
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
 class MemoryTools:
@@ -218,11 +232,10 @@ class MemoryTools:
                 log.warning("memory store_fact failed: %s", e)
 
         # ── EntityState path ──
-        # When v-next is active: dual-write shim only (not product inject source).
-        # REMOVE BY: _ENTITY_WM_DUAL_WRITE_REMOVE_BY.
-        # When no MemorySystem (unit tests): entity is the write target.
+        # Product SoT is v-next. Dual-write only if WW_ENTITY_WM_DUAL_WRITE=1.
+        # When no v-next (unit fixtures / emergency kill): entity is write target.
         if self._entity_mgr and (
-            (_ENTITY_WM_DUAL_WRITE and self._vnext() is not None)
+            (entity_wm_dual_write_enabled() and self._vnext() is not None)
             or (self._vnext() is None)
         ):
             try:
@@ -279,7 +292,7 @@ class MemoryTools:
             except Exception as e:
                 log.debug("forget store_fact: %s", e)
 
-        if _ENTITY_WM_DUAL_WRITE and self._entity_mgr:
+        if entity_wm_dual_write_enabled() and self._entity_mgr and vnext is not None:
             try:
                 state = self._entity_mgr.get(self._entity_id)
                 if was is None:
@@ -288,10 +301,15 @@ class MemoryTools:
             except Exception as e:
                 log.debug("entity forget dual-write: %s", e)
 
-        if vnext is None and self._memory is None and self._entity_mgr:
-            state = self._entity_mgr.get(self._entity_id)
-            was = state.working_memory.get(key)
-            self._entity_mgr.delete_working_memory(self._entity_id, key)
+        # Unit-fixture path: EntityState only when no product store
+        if vnext is None and self._entity_mgr:
+            try:
+                state = self._entity_mgr.get(self._entity_id)
+                if was is None:
+                    was = state.working_memory.get(key)
+                self._entity_mgr.delete_working_memory(self._entity_id, key)
+            except Exception as e:
+                log.debug("entity forget fixture path: %s", e)
 
         log.info(
             "Entity %s: forget '%s' (was: %s)",
@@ -357,6 +375,44 @@ class MemoryTools:
             "output": output,
             "store": "vnext" if vnext is not None else "entity_shim",
         }
+
+    # ── switch_topic ─────────────────────────────────────────────
+
+    def switch_topic(self, title: str = "") -> dict:
+        """Park current topic into STM and start an independent topic body."""
+        vnext = self._vnext()
+        if vnext is None:
+            return {
+                "success": False,
+                "status": "error",
+                "message": "switch_topic requires MemoryVNext",
+                "output": "Memory v-next unavailable for topic switch",
+            }
+        try:
+            result = vnext.switch_topic(title=title or "")
+            log.info(
+                "Entity %s: switch_topic → %s",
+                self._entity_id[:12],
+                result.get("title") or result.get("active_id"),
+            )
+            return {
+                "success": True,
+                "status": "switched",
+                "output": (
+                    f"Switched topic"
+                    + (f" to: {result.get('title')}" if result.get("title") else "")
+                    + f" (stm={result.get('stm_count', 0)})"
+                ),
+                **result,
+            }
+        except Exception as e:
+            log.warning("switch_topic failed: %s", e)
+            return {
+                "success": False,
+                "status": "error",
+                "message": str(e),
+                "output": f"switch_topic failed: {e}",
+            }
 
     # ── Internal ─────────────────────────────────────────────────
 
@@ -436,6 +492,21 @@ class MemoryTools:
                 "parameters": {
                     "query": {"type": "string", "description": "Optional filter keyword"},
                     "limit": {"type": "integer", "description": "Max results (default 10)"},
+                },
+                "category": "memory",
+            },
+            {
+                "name": "switch_topic",
+                "description": (
+                    "Park the current conversation topic into short-term memory and "
+                    "start an independent topic body. Use on clear subject change. "
+                    "Example: switch_topic(title='Weekend hiking')"
+                ),
+                "parameters": {
+                    "title": {
+                        "type": "string",
+                        "description": "Short title for the new independent topic",
+                    },
                 },
                 "category": "memory",
             },

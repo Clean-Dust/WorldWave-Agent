@@ -462,8 +462,8 @@ class BasalGanglia:
         # Memory self-edit tools are product-critical and non-destructive to the host.
         # Must be classified before generic substring checks (e.g. modify_local).
         if tool in {
-            "remember", "forget", "recall_mine", "recall", "memory_search",
-            "memory_store", "memory_recall",
+            "remember", "forget", "recall_mine", "recall", "switch_topic",
+            "memory_search", "memory_store", "memory_recall",
         } or tool.startswith("memory_"):
             return "safe_info"
         # Safe reads

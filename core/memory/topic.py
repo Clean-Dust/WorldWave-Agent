@@ -505,19 +505,101 @@ class WorkingTopicStore:
         }
 
 
-def looks_like_topic_switch(prev_text: str, new_text: str) -> bool:
-    """Heuristic: independent thread if little lexical overlap and both non-trivial.
+# Explicit topic-shift markers (user or agent). Case-insensitive; CJK exact.
+_TOPIC_SHIFT_MARKERS = (
+    "by the way",
+    "btw,",
+    "btw ",
+    "unrelated:",
+    "unrelated —",
+    "unrelated -",
+    "switching topic",
+    "switch topic",
+    "new topic:",
+    "different topic",
+    "change of subject",
+    "on another note",
+    "on a different note",
+    "anyway,",
+    "separately,",
+    "side note:",
+    "totally different",
+    "forget that for now",
+    "换个话题",
+    "换一件事",
+    "另外说",
+    "说回另一",
+    "不说这个了",
+    "换个事",
+    "另一个话题",
+    "顺便问",
+    "顺便说",
+)
 
-    Split rule product law: if a thread can stand alone → separate topic.
-    This is a lightweight signal for callers; agents may also force new_topic.
+# Default gap (seconds) after which subject-change counts as independent topic.
+_DEFAULT_TOPIC_GAP_S = 3600.0  # 1 hour
+
+
+def _token_set(text: str) -> set:
+    return set(re.findall(r"[a-zA-Z0-9_\u4e00-\u9fff]{3,}", (text or "").lower()))
+
+
+def _lexical_overlap(prev_text: str, new_text: str) -> float:
+    a = _token_set(prev_text)
+    b = _token_set(new_text)
+    if not a or not b:
+        return 0.0
+    return len(a & b) / max(1, min(len(a), len(b)))
+
+
+def has_explicit_topic_shift_marker(text: str) -> bool:
+    """True if user text opens with / contains an explicit topic-shift cue."""
+    if not text:
+        return False
+    low = text.strip().lower()
+    # Prefer start-of-message / early markers
+    head = low[:120]
+    for m in _TOPIC_SHIFT_MARKERS:
+        if m in head or low.startswith(m.strip()):
+            return True
+    return False
+
+
+def looks_like_topic_switch(
+    prev_text: str,
+    new_text: str,
+    *,
+    gap_seconds: float = 0.0,
+    gap_threshold: Optional[float] = None,
+) -> bool:
+    """Heuristic: independent thread → separate topic (park current to STM).
+
+    Signals (any):
+      1. Explicit topic-shift markers (by the way / 换个话题 / …)
+      2. Long gap + subject change (low lexical overlap)
+      3. Low lexical overlap on non-trivial user turns
+
+    Agents may also force new_topic / call switch_topic tool.
     """
     if not prev_text or not new_text:
         return False
-    if len(new_text.strip()) < 12:
+    new = new_text.strip()
+    if len(new) < 12:
         return False
-    a = set(re.findall(r"[a-zA-Z0-9_\u4e00-\u9fff]{3,}", prev_text.lower()))
-    b = set(re.findall(r"[a-zA-Z0-9_\u4e00-\u9fff]{3,}", new_text.lower()))
-    if not a or not b:
+
+    if has_explicit_topic_shift_marker(new):
         return True
-    overlap = len(a & b) / max(1, min(len(a), len(b)))
-    return overlap < 0.15
+
+    overlap = _lexical_overlap(prev_text, new)
+    thr = (
+        gap_threshold
+        if gap_threshold is not None
+        else float(os.environ.get("WW_TOPIC_GAP_SECONDS", _DEFAULT_TOPIC_GAP_S) or _DEFAULT_TOPIC_GAP_S)
+    )
+    # Long idle + subject change
+    if gap_seconds >= thr and overlap < 0.35:
+        return True
+    # Strong lexical independence (classic signal)
+    if overlap < 0.15:
+        return True
+    return False

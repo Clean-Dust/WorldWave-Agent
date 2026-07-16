@@ -135,8 +135,76 @@ class DreamingWorker:
                 with self._lock:
                     self._last_result = {"ok": False, "error": str(e)}
 
+    def _supersede_conflicts(self, atoms: List[Any]) -> List[str]:
+        """Resolve conflicting current atoms by dual timestamps (newer wins).
+
+        Groups by primary entity + rough key prefix; keeps the atom with
+        latest valid_from/learned_at as current; Updates older ones.
+        Returns list of superseded atom_ids.
+        """
+        if self.atom_store is None:
+            return []
+        superseded: List[str] = []
+        # Group current-valid world/opinion atoms that share a lead entity
+        groups: Dict[str, List[Any]] = {}
+        for a in atoms:
+            if not getattr(a, "is_currently_valid", True):
+                continue
+            net = getattr(a, "logical_net", "")
+            if net not in ("world", "opinion", "experience"):
+                continue
+            ents = list(getattr(a, "entities", None) or [])
+            content = (getattr(a, "content", "") or "").strip()
+            if not content:
+                continue
+            # Key: first entity + first content token blob (up to ':')
+            lead = ents[0] if ents else content.split(":")[0][:40].strip().lower()
+            if not lead:
+                continue
+            # Same-key family: content before first colon, or entity
+            prefix = content.split(":")[0].strip().lower()[:60] if ":" in content else lead
+            gkey = f"{lead}::{prefix}"
+            groups.setdefault(gkey, []).append(a)
+
+        for gkey, lst in groups.items():
+            if len(lst) < 2:
+                continue
+            # Sort by dual-ts: valid_from then learned_at (newest last)
+            def _ts(x: Any) -> float:
+                return max(
+                    float(getattr(x, "valid_from", 0) or 0),
+                    float(getattr(x, "learned_at", 0) or 0),
+                )
+
+            ordered = sorted(lst, key=_ts)
+            winner = ordered[-1]
+            for old in ordered[:-1]:
+                # Skip if already same content
+                if (getattr(old, "content", "") or "").strip() == (
+                    getattr(winner, "content", "") or ""
+                ).strip():
+                    continue
+                # Only supersede when contents genuinely conflict (share entity, differ)
+                try:
+                    if hasattr(self.atom_store, "updates"):
+                        self.atom_store.updates(winner, old)
+                    else:
+                        if hasattr(old, "mark_invalid"):
+                            old.mark_invalid()
+                        old.superseded_by = getattr(winner, "atom_id", "") or "dream"
+                        if hasattr(self.atom_store, "add"):
+                            self.atom_store.add(old)
+                    superseded.append(getattr(old, "atom_id", "") or "")
+                except Exception as e:
+                    logger.debug("dream supersede failed: %s", e)
+        return [s for s in superseded if s]
+
     def _run(self, job: DreamJob) -> dict:
-        """Synchronous dream pipeline (runs on worker thread only)."""
+        """Synchronous dream pipeline (runs on worker thread only).
+
+        Crawl atoms → supersede conflicts by dual-ts → observations →
+        peer cards / summary under agent/memories/dreaming/ → merge updates.
+        """
         t0 = time.time()
         atoms = []
         if self.atom_store is not None:
@@ -165,12 +233,28 @@ class DreamingWorker:
             for ent in getattr(a, "entities", None) or []:
                 by_entity.setdefault(ent, []).append(a)
 
-        # 2) Fill gaps: entities with single fact → note thin coverage
+        # 2) Supersede conflicts via dual timestamps (deeper dreaming)
+        superseded_ids = self._supersede_conflicts(atoms)
+        # Refresh atom list after supersede for accurate peer cards
+        if superseded_ids and self.atom_store is not None:
+            try:
+                atoms = list(self.atom_store.all())
+                by_entity = {}
+                by_net = {}
+                for a in atoms:
+                    net = getattr(a, "logical_net", "experience")
+                    by_net[net] = by_net.get(net, 0) + 1
+                    for ent in getattr(a, "entities", None) or []:
+                        by_entity.setdefault(ent, []).append(a)
+            except Exception:
+                pass
+
+        # 3) Fill gaps: entities with single fact → note thin coverage
         for ent, lst in by_entity.items():
             if len(lst) == 1:
                 gaps.append(f"thin_entity:{ent}")
 
-        # 3) Deeper inference: co-occurrence → Observation atom (no LLM)
+        # 4) Deeper inference: co-occurrence → Observation atom (no LLM)
         new_observations = []
         if self.atom_store is not None and len(by_entity) >= 2:
             # Pair entities that share topic_id
@@ -210,7 +294,7 @@ class DreamingWorker:
                 except Exception as e:
                     logger.debug("dream observation create failed: %s", e)
 
-        # 4) Summaries + Peer cards → LTM dreaming/
+        # 5) Summaries + Peer cards → LTM agent/memories/dreaming/
         peer_cards = []
         summary_uri = ""
         if self.ltm is not None:
@@ -222,11 +306,15 @@ class DreamingWorker:
                 f"By net: {by_net}",
                 f"Entities: {len(by_entity)}",
                 f"Gaps: {len(gaps)}",
+                f"Superseded conflicts: {len(superseded_ids)}",
                 f"New observations: {len(new_observations)}",
             ]
             if gaps[:10]:
                 lines.append("## Gaps")
                 lines.extend(f"- {g}" for g in gaps[:10])
+            if superseded_ids[:10]:
+                lines.append("## Superseded")
+                lines.extend(f"- {sid}" for sid in superseded_ids[:10])
             try:
                 summary_uri = self.ltm.write(
                     "dreaming",
@@ -239,7 +327,7 @@ class DreamingWorker:
             except Exception as e:
                 logger.warning("dream LTM summary write failed: %s", e)
 
-            # Peer cards for top entities
+            # Peer cards for top entities (merge-update category)
             ranked = sorted(by_entity.items(), key=lambda x: -len(x[1]))[:5]
             for ent, lst in ranked:
                 facts = []
@@ -268,16 +356,18 @@ class DreamingWorker:
             "atoms_crawled": len(atoms),
             "by_net": by_net,
             "gaps": gaps[:20],
+            "superseded": superseded_ids[:50],
             "observations": new_observations,
             "summary_uri": summary_uri,
             "peer_cards": peer_cards,
             "duration_ms": int((time.time() - t0) * 1000),
         }
         logger.info(
-            "Dream complete job=%s atoms=%d peers=%d ms=%s",
+            "Dream complete job=%s atoms=%d peers=%d superseded=%d ms=%s",
             job.job_id,
             len(atoms),
             len(peer_cards),
+            len(superseded_ids),
             result["duration_ms"],
         )
         return result

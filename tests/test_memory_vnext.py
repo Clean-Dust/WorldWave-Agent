@@ -602,3 +602,274 @@ def test_passive_ingest_no_dual_llm(mv):
 
 def test_token_estimate_positive():
     assert estimate_tokens("hello world") >= 1
+
+
+# ── Gap close: dual-write off, topic split, extract, dream, RRF, inject ──
+
+
+def test_dual_write_off_by_default(tmp_path, monkeypatch):
+    """Product path must not dual-write EntityState when v-next is active."""
+    from core.entity_state import EntityStateManager
+    from core.memory.system import MemorySystem
+    from core.memory.tools import MemoryTools, entity_wm_dual_write_enabled
+
+    monkeypatch.delenv("WW_ENTITY_WM_DUAL_WRITE", raising=False)
+    monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
+    monkeypatch.setenv("WW_DREAMING_ENABLED", "0")
+    assert entity_wm_dual_write_enabled() is False
+
+    cfg = MagicMock()
+    cfg.get = MagicMock(return_value=None)
+    cfg.expand_path = MagicMock(side_effect=lambda p: os.path.expanduser(p))
+    esm = EntityStateManager(config=cfg, data_dir=str(tmp_path / "entities"))
+    ms = MemorySystem(
+        data_dir=str(tmp_path / "mem_dw"),
+        schedule_sleep_hour=-1,
+        idle_threshold_minutes=0,
+    )
+    tools = MemoryTools(memory_system=ms, entity_state_mgr=esm, entity_id="ent_dw")
+    tools.remember("only_vnext", "value-in-vnext", kind="outcome")
+    # Labeled store has it
+    assert "only_vnext" in ms.vnext.facts.get_facts("ent_dw")
+    # Entity WM must stay empty (dual-write off)
+    st = esm.get("ent_dw")
+    assert "only_vnext" not in st.working_memory
+
+    tools.forget("only_vnext")
+    assert "only_vnext" not in ms.vnext.facts.get_facts("ent_dw")
+    if ms.vnext:
+        ms.vnext.close()
+
+
+def test_dual_write_emergency_env(tmp_path, monkeypatch):
+    """WW_ENTITY_WM_DUAL_WRITE=1 re-enables EntityState dual-write (emergency)."""
+    from core.entity_state import EntityStateManager
+    from core.memory.system import MemorySystem
+    from core.memory.tools import MemoryTools, entity_wm_dual_write_enabled
+
+    monkeypatch.setenv("WW_ENTITY_WM_DUAL_WRITE", "1")
+    monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
+    monkeypatch.setenv("WW_DREAMING_ENABLED", "0")
+    assert entity_wm_dual_write_enabled() is True
+
+    cfg = MagicMock()
+    cfg.get = MagicMock(return_value=None)
+    cfg.expand_path = MagicMock(side_effect=lambda p: os.path.expanduser(p))
+    esm = EntityStateManager(config=cfg, data_dir=str(tmp_path / "entities2"))
+    ms = MemorySystem(
+        data_dir=str(tmp_path / "mem_dw2"),
+        schedule_sleep_hour=-1,
+        idle_threshold_minutes=0,
+    )
+    tools = MemoryTools(memory_system=ms, entity_state_mgr=esm, entity_id="ent_em")
+    tools.remember("both", "mirrored", kind="outcome")
+    assert "both" in ms.vnext.facts.get_facts("ent_em")
+    assert esm.get("ent_em").working_memory.get("both") == "mirrored"
+    if ms.vnext:
+        ms.vnext.close()
+
+
+def test_topic_split_heuristics_explicit_and_lexical():
+    from core.memory.topic import (
+        has_explicit_topic_shift_marker,
+        looks_like_topic_switch,
+    )
+
+    assert has_explicit_topic_shift_marker("By the way, what about dinner?")
+    assert has_explicit_topic_shift_marker("换个话题，我们聊聊旅游")
+    assert not has_explicit_topic_shift_marker("continue the payment migration plan")
+
+    prev = "Plan the Stripe payment migration carefully with canaries and rollback."
+    new_related = "Also add canary metrics for the Stripe payment migration."
+    new_unrelated = "What is a good recipe for sourdough bread this weekend?"
+    assert looks_like_topic_switch(prev, new_related) is False
+    assert looks_like_topic_switch(prev, new_unrelated) is True
+    assert looks_like_topic_switch(
+        prev, "Totally different: hiking near Tahoe trails this Saturday"
+    ) is True
+    # Long gap + subject change
+    assert looks_like_topic_switch(
+        prev,
+        "Please book a dentist appointment for next Tuesday morning.",
+        gap_seconds=7200,
+        gap_threshold=3600,
+    ) is True
+
+
+def test_auto_topic_split_on_ingest(mv):
+    mv.ingest_turn(
+        "user",
+        "Let's carefully plan the Stripe payment migration and rollback.",
+        new_topic=True,
+    )
+    tid_a = mv.wm.active.topic_id
+    # Independent subject → auto switch
+    r = mv.ingest_turn(
+        "user",
+        "By the way, what hiking trails near Tahoe are good this weekend?",
+        auto_switch=True,
+    )
+    assert r.get("switched") is True
+    assert mv.wm.active.topic_id != tid_a
+    assert mv.topic_stm.get(tid_a) is not None
+    assert "Stripe" not in (mv.wm.active.body_text() or "")
+
+
+def test_switch_topic_tool(mv):
+    from core.memory.tools import MemoryTools
+    from types import SimpleNamespace
+
+    ms = SimpleNamespace(vnext=mv)
+    tools = MemoryTools(memory_system=ms, entity_state_mgr=None, entity_id="e")
+    mv.ingest_turn("user", "Discuss Kubernetes rollout for checkout", new_topic=True)
+    tid = mv.wm.active.topic_id
+    out = tools.switch_topic(title="Cooking pasta recipes")
+    assert out.get("success") is True
+    assert out.get("previous_id") == tid
+    assert mv.topic_stm.get(tid) is not None
+
+
+def test_stronger_atom_extract_drops_chatter_and_splits_blobs():
+    from core.memory.atom_nets import extract_atoms_from_text
+
+    atoms = extract_atoms_from_text(
+        "Alex joined Stripe as a PM. Also, payment infrastructure uses Kafka. ok thanks"
+    )
+    contents = " ".join(a.content for a in atoms)
+    assert "Alex" in contents or "Stripe" in contents
+    assert not any(a.content.strip().lower() in {"ok", "thanks", "ok thanks"} for a in atoms)
+    # Multi-fact blob should yield more than one atom
+    multi = extract_atoms_from_text(
+        "User prefers dark mode. Additionally, vim keybindings are required in VS Code."
+    )
+    assert len(multi) >= 2
+    # Pronoun-only dropped
+    empty = extract_atoms_from_text("I think you know that we should.")
+    assert empty == [] or all(len(a.content) > 20 for a in empty)
+
+
+def test_atom_extract_on_leave_still_runs(tmp_path):
+    from core.memory.atom_nets import extract_atoms_from_topic
+    from core.memory.topic import Topic
+    from core.memory.topic_stm import TopicHippocampus
+
+    extracted = []
+
+    def extract(topic):
+        atoms = extract_atoms_from_topic(topic)
+        extracted.extend(atoms)
+        return atoms
+
+    hip = TopicHippocampus(
+        data_dir=str(tmp_path / "stm_ext"),
+        cap=2,
+        atom_extract=extract,
+    )
+    t = Topic(title="Stripe Alex PM")
+    t.append_turn(
+        "user",
+        "Alex is the product manager at Stripe focusing on payment infrastructure.",
+    )
+    hip.admit(t)
+    pr = hip.purge(t.topic_id)
+    assert pr.get("ok") is True
+    assert pr.get("atoms_extracted", 0) >= 1
+    assert len(extracted) >= 1
+
+
+def test_dreaming_job_produces_artifact_or_atom_update(tmp_path, monkeypatch):
+    monkeypatch.setenv("WW_DREAMING_ENABLED", "1")
+    store = AtomNetStore(data_dir=str(tmp_path / "atoms_d"))
+    ltm = LTMVFS(data_dir=str(tmp_path / "ltm_d"))
+    t0 = time.time() - 1000
+    old = MemoryAtomV2(
+        content="preferred_language: Java",
+        logical_net="world",
+        entities=["language"],
+        learned_at=t0,
+        valid_from=t0,
+    )
+    new = MemoryAtomV2(
+        content="preferred_language: Python",
+        logical_net="world",
+        entities=["language"],
+        learned_at=time.time(),
+        valid_from=time.time(),
+    )
+    store.add(old)
+    store.add(new)
+    store.add(
+        MemoryAtomV2(
+            content="Nebula uses React for the dashboard UI",
+            logical_net="world",
+            entities=["Nebula", "React"],
+            topic_id="topic-abc",
+        )
+    )
+    worker = DreamingWorker(atom_store=store, ltm=ltm, auto_start=True)
+    try:
+        q = worker.enqueue("full")
+        assert q.get("queued") is True
+        assert worker.wait_empty(timeout=5.0)
+        # settle in-flight
+        time.sleep(0.15)
+        st = worker.status()
+        result = st.get("last_result") or {}
+        assert result.get("ok") is True
+        # Artifact (summary / peer) OR atom update (supersede / observation)
+        has_artifact = bool(result.get("summary_uri") or result.get("peer_cards"))
+        has_update = bool(result.get("superseded") or result.get("observations"))
+        assert has_artifact or has_update or result.get("atoms_crawled", 0) >= 1
+        # Prefer: at least one LTM dreaming write when ltm present
+        if result.get("summary_uri"):
+            assert "dreaming" in result["summary_uri"] or result["summary_uri"].startswith("ww://")
+    finally:
+        worker.stop()
+
+
+def test_rrf_optional_default_off(mv, monkeypatch):
+    monkeypatch.delenv("WW_MEMORY_RRF", raising=False)
+    mv.remember("fav_color", "NARR-RRF-99", kind="outcome")
+    mv.ingest_turn("user", "Favorite color code is NARR-RRF-99", new_topic=True)
+    rec = mv.recall("NARR-RRF-99", top_k=3)
+    assert rec.get("fused") is None
+
+    monkeypatch.setenv("WW_MEMORY_RRF", "1")
+    rec2 = mv.recall("NARR-RRF-99", top_k=3)
+    assert rec2.get("fused") is not None
+    assert isinstance(rec2["fused"], list)
+    # Fused should mention at least one of stm/atom/fact
+    sources = {x.get("source") for x in rec2["fused"]}
+    assert sources & {"stm", "atom", "fact", "ltm"}
+
+
+def test_progressive_inject_tiny_budget_keeps_core(mv):
+    mv.remember("user_name", "Chung", kind="outcome", is_core=True)
+    mv.remember("long_pref", "x" * 500, kind="outcome")
+    mv.ingest_turn(
+        "user",
+        "Discuss Kubernetes rollout strategy for checkout service in detail " * 3,
+        new_topic=True,
+    )
+    # Seed an LTM page for progressive expand path
+    uri = mv.ltm.write(
+        "experiences",
+        "Long lesson about Kubernetes canary rollout for checkout. " * 20,
+        title="k8s-checkout",
+        name="k8s-checkout",
+    )
+    assert uri
+    tiny = mv.inject_for_turn("Kubernetes", max_chars=280)
+    assert len(tiny) <= 320  # hard ceiling with small slack
+    # Core always preferred
+    assert "user_name" in tiny or "Core identity" in tiny or "Chung" in tiny
+    # Must not dump entire oversized blob unchecked
+    assert tiny.count("x" * 100) <= 1
+
+
+def test_atom_llm_extract_default_off(monkeypatch):
+    from core.memory.atom_nets import atom_llm_extract_enabled, maybe_llm_extract_atoms
+
+    monkeypatch.delenv("WW_ATOM_LLM_EXTRACT", raising=False)
+    assert atom_llm_extract_enabled() is False
+    assert maybe_llm_extract_atoms("Alex works at Stripe forever.") == []

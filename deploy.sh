@@ -82,6 +82,51 @@ ww_has_llm_key() {
     return 1
 }
 
+# Optional: install/enable user systemd unit from deploy/ww.user.service.
+# Does not break partner path (no systemd / no unit file → silent no-op).
+# Opt-in enable: WW_SYSTEMD_ENABLE=1  (default: only refresh unit file if already installed)
+ww_maybe_install_user_service() {
+    local install_dir="${1:-}"
+    local unit_src unit_dst home_dir
+    [ -z "$install_dir" ] && return 0
+    unit_src="$install_dir/deploy/ww.user.service"
+    if [ ! -f "$unit_src" ]; then
+        return 0
+    fi
+    if ! command -v systemctl >/dev/null 2>&1; then
+        return 0
+    fi
+    # Skip when systemd user bus is unavailable (CI / minimal containers)
+    if ! systemctl --user show-environment >/dev/null 2>&1; then
+        return 0
+    fi
+    home_dir="${HOME:-}"
+    [ -z "$home_dir" ] && return 0
+    unit_dst="$home_dir/.config/systemd/user/ww.service"
+    mkdir -p "$home_dir/.config/systemd/user"
+    sed "s|@WW_HOME@|${install_dir}|g" "$unit_src" > "$unit_dst" || return 0
+    systemctl --user daemon-reload 2>/dev/null || true
+    case "$(echo "${WW_SYSTEMD_ENABLE:-}" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|on)
+            systemctl --user enable ww.service 2>/dev/null || true
+            if systemctl --user is-active --quiet ww.service 2>/dev/null; then
+                systemctl --user restart ww.service 2>/dev/null || true
+            else
+                systemctl --user start ww.service 2>/dev/null || true
+            fi
+            echo "   ✓ User unit installed + enabled (ww.service)"
+            ;;
+        *)
+            # Refresh unit file only; do not start/enable unless already managed
+            if systemctl --user is-enabled --quiet ww.service 2>/dev/null \
+                || systemctl --user is-active --quiet ww.service 2>/dev/null; then
+                echo "   ✓ User unit refreshed (ww.service)"
+            fi
+            ;;
+    esac
+    return 0
+}
+
 # True if Telegram gateway token is already configured (env or .env).
 ww_has_telegram_token() {
     local env_file="${1:-}"
@@ -545,6 +590,8 @@ if [ "$CMD" = "update" ]; then
     if ! echo "$PATH" | grep -q "$LOCAL_BIN"; then
         echo "   ℹ Add to PATH: export PATH=\"$LOCAL_BIN:\$PATH\""
     fi
+    # Optional user systemd unit (no-op if unit/systemd missing)
+    ww_maybe_install_user_service "$INSTALL_DIR"
 
     ENV_FILE="$INSTALL_DIR/.env"
     ENV="WW_PORT=${WW_PORT:-9300}"
@@ -992,6 +1039,9 @@ echo -e "  ${BOLD}Install:${NC}  $INSTALL_DIR"
 echo -e "  ${BOLD}Venv:${NC}     $VENV_DIR"
 echo -e "  ${BOLD}Port:${NC}     $WW_PORT (API auto-starts with ww)"
 echo ""
+
+# Optional user systemd unit (partner path safe — no-op without unit/systemd)
+ww_maybe_install_user_service "$INSTALL_DIR"
 
 ENV_FILE="$INSTALL_DIR/.env"
 

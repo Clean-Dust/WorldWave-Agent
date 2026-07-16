@@ -30,9 +30,10 @@ Working Memory (entity RAM):
 
 Memory stack (product = single system under core/memory/vnext):
   Labeled facts + topic WM live in MemoryVNext (LabeledFactStore).
-  This module keeps EntityState.working_memory as identity continuity
-  and a dual-write shim from MemoryTools (remove by 2026-08-31) —
-  product inject does NOT dump flat WM when v-next is active.
+  This module keeps EntityState.working_memory for identity continuity
+  and isolated unit fixtures — NOT product SoT. Dual-write from
+  MemoryTools is emergency-only (WW_ENTITY_WM_DUAL_WRITE=1, default off).
+  Product inject does NOT dump flat WM when v-next is active.
   Cold path: hippocampus / sleep behind MemorySystem.sleep().
   Subconscious is referee/gating only (BG safe gate + optional WM
   tie-break score); it never replaces storage.

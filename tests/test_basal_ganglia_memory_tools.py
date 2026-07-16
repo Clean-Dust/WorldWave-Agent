@@ -16,6 +16,7 @@ MEMORY_SAFE_TOOLS = (
     "forget",
     "recall_mine",
     "recall",
+    "switch_topic",
     "memory_search",
     "memory_store",
     "memory_recall",

@@ -1208,6 +1208,23 @@ def _recall_mine_handler(query: str = "", limit: int = 10) -> Dict:
         return {"status": "error", "message": str(e)}
 
 
+def _switch_topic_handler(title: str = "") -> Dict:
+    """Park current topic to STM and start an independent topic body."""
+    try:
+        import sys
+        ww_module = sys.modules.get("core.loop")
+        if ww_module and hasattr(ww_module, "_active_ww_instance"):
+            ww = ww_module._active_ww_instance
+            if ww._memory_tools and hasattr(ww._memory_tools, "switch_topic"):
+                return ww._memory_tools.switch_topic(title=title or "")
+        return {
+            "status": "error",
+            "message": "no memory tools / v-next for switch_topic",
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 # ── 9. SCHEDULING ─────────────────────────────────────
 
 _WW_SCHEDULER_URL = os.environ.get("WW_SCHEDULER_URL", "http://localhost:9300")
@@ -1737,6 +1754,23 @@ def default_registry(guardrails=None) -> ToolRegistry:
         },
         examples=['recall_mine()', 'recall_mine(query="model")'],
         category="memory")
+
+    r.register_from_def(
+        "switch_topic",
+        "Park the current conversation topic into short-term memory and start an "
+        "independent topic body. Use when the user clearly changes subject "
+        "(or when you need a clean thread). Example: switch_topic(title='Weekend hiking').",
+        _switch_topic_handler,
+        parameters={
+            "title": {
+                "type": "string",
+                "description": "Short title for the new independent topic",
+                "default": "",
+            },
+        },
+        examples=['switch_topic(title="Weekend hiking near Tahoe")'],
+        category="memory",
+    )
 
     # ── 9. SCHEDULING ──
     r.register_from_def("schedule_task", "schedulea fixed task (via  WW scheduler API) . supports cron expression. ",
