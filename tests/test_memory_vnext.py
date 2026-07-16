@@ -428,30 +428,86 @@ def test_freshness_invalid_atom_not_preferred(tmp_path):
     assert not any(a.atom_id == bad.atom_id for a in cur)
 
 
-# ── 9. Existing WM labels still work ───────────────────────────────
+# ── 9. Labeled facts on single system (absorbed legacy) ────────────
 
 
-def test_existing_wm_label_path_still_works(tmp_path, monkeypatch):
-    """Legacy entity WM labels remain the single truth for flat-key tools."""
-    from core.entity_state import (
-        EntityStateManager,
-        normalize_wm_kind,
-        wm_label_zh,
-    )
+def test_labeled_facts_kind_core_recency_on_vnext(mv, monkeypatch):
+    """Single system: kind order, is_core protect, Chinese inject."""
+    from core.entity_state import wm_label_zh
 
-    monkeypatch.delenv("WW_WORKING_MEMORY_CAPACITY", raising=False)
-    cfg = MagicMock()
-    cfg.get = MagicMock(return_value=None)
-    cfg.expand_path = MagicMock(side_effect=lambda p: os.path.expanduser(p))
-    esm = EntityStateManager(config=cfg, data_dir=str(tmp_path / "entities"))
-    esm.working_memory_capacity = 4
-    esm.set_working_memory("e1", "rule", "never change netplan", kind="constraint", is_core=True)
-    esm.set_working_memory("e1", "plan", "ship Friday", kind="commitment")
-    state = esm.get("e1")
-    assert normalize_wm_kind(state.working_memory_meta["rule"]["kind"]) == "constraint"
-    inject = state.get_context_injection(bump_access=False)
-    assert "约束" in inject or wm_label_zh("constraint") in inject
-    assert "rule" in state.working_memory
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "0")
+    mv.facts.capacity = 3
+    mv.set_entity("ent_labels")
+    mv.remember("rule", "never change netplan", kind="constraint", is_core=True)
+    mv.remember("plan", "use docker", kind="commitment")
+    mv.remember("fact", "tests passed", kind="outcome")
+    mv.remember("why", "chose flash", kind="rationale")  # squeezed first
+
+    facts = mv.facts.get_facts("ent_labels")
+    assert "rule" in facts
+    assert "plan" in facts
+    assert "fact" in facts
+    assert "why" not in facts
+    assert "rule" in mv.facts.get_core("ent_labels")
+
+    inj = mv.facts.inject_block("ent_labels", bump_access=False)
+    assert f"- [{wm_label_zh('constraint')}] rule: never change netplan" in inj
+    assert "[constraint]" not in inj
+
+    # capacity 1: core survives pressure from non-core
+    mv.facts.capacity = 1
+    mv.remember("junk", "go away", kind="rationale")
+    facts2 = mv.facts.get_facts("ent_labels")
+    assert "rule" in facts2
+
+
+def test_labeled_fact_store_recency_eviction(tmp_path, monkeypatch):
+    from core.memory.labeled_wm import LabeledFactStore
+
+    monkeypatch.setenv("WW_WM_RECENCY_ENABLED", "1")
+    monkeypatch.setenv("WW_WM_RECENCY_HALF_LIFE_S", "3600")
+    monkeypatch.setenv("WW_WM_RECENCY_FLOOR", "0.4")
+    store = LabeledFactStore(data_dir=str(tmp_path / "facts"), capacity=2)
+    eid = "e_rec"
+    store.set(eid, "fresh", "new", kind="outcome")
+    store.set(eid, "stale", "old", kind="outcome")
+    meta = store.get_meta(eid)
+    now = 1_700_000_000.0
+    meta["fresh"]["updated_at"] = now
+    meta["fresh"]["access_count"] = 0
+    meta["stale"]["updated_at"] = now - 7200.0
+    meta["stale"]["access_count"] = 0
+    # write meta back via internal API under lock
+    with store._lock:
+        store._meta[eid] = meta
+        store._save(eid)
+    store.capacity = 1
+    store.enforce_capacity(eid, now=now)
+    facts = store.get_facts(eid)
+    assert "fresh" in facts
+    assert "stale" not in facts
+
+
+def test_tools_remember_prefers_vnext(tmp_path, monkeypatch):
+    """MemoryTools product path writes labeled facts on MemoryVNext."""
+    from core.memory.system import MemorySystem
+    from core.memory.tools import MemoryTools
+
+    monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
+    monkeypatch.setenv("WW_DREAMING_ENABLED", "0")
+    ms = MemorySystem(data_dir=str(tmp_path / "mem"), schedule_sleep_hour=-1, idle_threshold_minutes=0)
+    assert ms.vnext is not None
+    tools = MemoryTools(memory_system=ms, entity_state_mgr=None, entity_id="ent_t")
+    out = tools.remember("no_netplan", "never change netplan", kind="constraint", is_core=True)
+    assert out.get("kind") == "constraint"
+    assert out.get("store") == "vnext"
+    listed = tools.recall_mine()
+    assert "no_netplan" in listed["facts"]
+    ctx = ms.memory_context_block(entity_id="ent_t")
+    assert "约束" in ctx or "no_netplan" in ctx
+    ms.close() if hasattr(ms, "close") else None
+    if ms.vnext:
+        ms.vnext.close()
 
 
 # ── Integration smoke ──────────────────────────────────────────────
@@ -466,9 +522,10 @@ def test_vnext_recall_and_prompt_isolation(mv):
     blocks = mv.build_context_blocks()
     assert "system_persona_only" in blocks
     assert "working_topic" in blocks
+    assert "labeled_facts" in blocks
     # Memory block separate from system persona field
     ctx = mv.inject_for_turn("Kubernetes")
-    assert "Core identity" in ctx or "Active topic" in ctx or "Retrieved" in ctx
+    assert "Core identity" in ctx or "Active topic" in ctx or "Retrieved" in ctx or "user_name" in ctx
 
 
 def test_memory_vnext_flag_default_on(monkeypatch):

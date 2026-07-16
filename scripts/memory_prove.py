@@ -572,49 +572,36 @@ def run_product(report: Report) -> None:
 
 
 def run_b4_wm_kind_eviction(report: Report) -> None:
-    """B4: WM kind-weighted eviction order (isolated EntityStateManager, no LLM)."""
-    from unittest.mock import MagicMock
-
-    from core.entity_state import (
-        EntityStateManager,
-        normalize_wm_kind,
-        wm_eviction_score,
-    )
+    """B4: WM kind-weighted eviction on single-system LabeledFactStore (no LLM)."""
+    from core.entity_state import normalize_wm_kind, wm_eviction_score
+    from core.memory.labeled_wm import LabeledFactStore
 
     td = tempfile.mkdtemp(prefix="ww-mem-b4-")
     prev_cap = os.environ.get("WW_WORKING_MEMORY_CAPACITY")
     try:
         os.environ["WW_WORKING_MEMORY_CAPACITY"] = "2"
-        cfg = MagicMock()
-        cfg.get = MagicMock(return_value=None)
-        cfg.expand_path = MagicMock(side_effect=lambda p: os.path.expanduser(p))
-        esm = EntityStateManager(config=cfg, data_dir=td)
-        esm.working_memory_capacity = 2
+        store = LabeledFactStore(data_dir=td, capacity=2)
 
         eid = "ent_b4"
-        esm.set_working_memory(eid, "dec", "do A", kind="commitment")
+        store.set(eid, "dec", "do A", kind="commitment")
         time.sleep(0.01)
-        esm.set_working_memory(eid, "why", "because B", kind="rationale")
+        store.set(eid, "why", "because B", kind="rationale")
         time.sleep(0.01)
-        esm.set_working_memory(eid, "new", "incoming", kind="outcome")
+        store.set(eid, "new", "incoming", kind="outcome")
 
-        st = esm.get(eid)
-        size_ok = len(st.working_memory) == 2
-        cmt_kept = "dec" in st.working_memory
-        rat_gone = "why" not in st.working_memory
-        new_kept = "new" in st.working_memory
+        facts = store.get_facts(eid)
+        size_ok = len(facts) == 2
+        cmt_kept = "dec" in facts
+        rat_gone = "why" not in facts
+        new_kept = "new" in facts
 
-        # Same access: commitment score > rationale
         score_ok = wm_eviction_score("commitment", 0) > wm_eviction_score(
             "rationale", 0
         )
-        # Illegal kind → outcome
         norm_ok = normalize_wm_kind("nope") == "outcome"
-        # Legacy missing kind ≡ outcome score
         legacy_ok = wm_eviction_score(None, 1) == wm_eviction_score("outcome", 1)
 
-        # Meta kind written for commitment
-        meta_kind = (st.working_memory_meta.get("dec") or {}).get("kind")
+        meta_kind = (store.get_meta(eid).get("dec") or {}).get("kind")
         meta_ok = meta_kind == "commitment"
 
         ok = (
@@ -632,14 +619,14 @@ def run_b4_wm_kind_eviction(report: Report) -> None:
             ok,
             f"size={size_ok} cmt={cmt_kept} rat_gone={rat_gone} new={new_kept} "
             f"score={score_ok} norm={norm_ok} legacy={legacy_ok} meta={meta_ok}",
-            "EntityStateManager WM kind",
+            "LabeledFactStore / v-next",
         )
     except Exception as e:
         report.add(
             "B4 WM kind-weighted eviction",
             False,
             f"error: {e}",
-            "EntityStateManager WM kind",
+            "LabeledFactStore / v-next",
         )
     finally:
         if prev_cap is None:
@@ -650,109 +637,95 @@ def run_b4_wm_kind_eviction(report: Report) -> None:
 
 
 def run_b5_wm_tiebreak_switch(report: Report) -> None:
-    """B5: optional WM subconscious tie-break — off ≡ kind-only; on breaks ties."""
-    from unittest.mock import MagicMock
-
-    from core.entity_state import EntityStateManager
+    """B5: optional WM subconscious tie-break on LabeledFactStore (single system)."""
+    from core.memory.labeled_wm import LabeledFactStore
 
     td = tempfile.mkdtemp(prefix="ww-mem-b5-")
     try:
-        cfg = MagicMock()
-        cfg.get = MagicMock(return_value=None)
-        cfg.expand_path = MagicMock(side_effect=lambda p: os.path.expanduser(p))
-        esm = EntityStateManager(config=cfg, data_dir=td)
-        esm.working_memory_capacity = 1
+        store = LabeledFactStore(data_dir=td, capacity=1)
 
         # --- OFF (no hook): same kind/access → oldest updated_at loses ---
-        esm.set_wm_tiebreak_fn(None)
+        store.set_tiebreak_fn(None)
         eid_off = "ent_b5_off"
-        esm.set_working_memory(eid_off, "old", "v-old", kind="outcome")
+        store.set(eid_off, "old", "v-old", kind="outcome")
         time.sleep(0.02)
-        esm.set_working_memory(eid_off, "new", "v-new", kind="outcome")
-        st_off = esm.get(eid_off)
+        store.set(eid_off, "new", "v-new", kind="outcome")
+        facts_off = store.get_facts(eid_off)
         off_ok = (
-            len(st_off.working_memory) == 1
-            and "new" in st_off.working_memory
-            and "old" not in st_off.working_memory
-            and esm._wm_tiebreak_fn is None
+            len(facts_off) == 1
+            and "new" in facts_off
+            and "old" not in facts_off
+            and store._tiebreak_fn is None
         )
         report.add(
             "B5 WM tiebreak off (= kind/access/updated only)",
             off_ok,
-            f"keys={list(st_off.working_memory.keys())} hook={esm._wm_tiebreak_fn}",
-            "EntityStateManager WM tiebreak",
+            f"keys={list(facts_off.keys())} hook={store._tiebreak_fn}",
+            "LabeledFactStore / v-next",
         )
 
         # --- ON: same kind/access/age; higher protect stays ---
-        # Equalize updated_at so primary score (kind×access×recency) ties.
         protect = {"keep": 9.0, "drop": 0.0}
 
         def tb(entity_id, key, meta):
             return float(protect.get(key, 0.0))
 
-        esm.set_wm_tiebreak_fn(tb)
+        store.set_tiebreak_fn(tb)
         eid_on = "ent_b5_on"
-        esm.working_memory_capacity = 2
-        esm.set_working_memory(eid_on, "keep", "v-keep", kind="outcome")
-        esm.set_working_memory(eid_on, "drop", "v-drop", kind="outcome")
-        st_on = esm.get(eid_on)
+        store.capacity = 2
+        store.set(eid_on, "keep", "v-keep", kind="outcome")
+        store.set(eid_on, "drop", "v-drop", kind="outcome")
         t0 = 1_700_000_000.0
-        for k in ("keep", "drop"):
-            st_on.working_memory_meta[k]["updated_at"] = t0
-            st_on.working_memory_meta[k]["access_count"] = 0
-        esm.save(st_on)
-        esm.working_memory_capacity = 1
-        esm._enforce_wm_capacity(st_on, now=t0 + 5.0)
-        esm.save(st_on)
-        st_on = esm.get(eid_on)
+        with store._lock:
+            for k in ("keep", "drop"):
+                store._meta[eid_on][k]["updated_at"] = t0
+                store._meta[eid_on][k]["access_count"] = 0
+            store._save(eid_on)
+        store.capacity = 1
+        store.enforce_capacity(eid_on, now=t0 + 5.0)
+        facts_on = store.get_facts(eid_on)
         on_ok = (
-            "keep" in st_on.working_memory
-            and "drop" not in st_on.working_memory
-            and esm._wm_tiebreak_fn is not None
+            "keep" in facts_on
+            and "drop" not in facts_on
+            and store._tiebreak_fn is not None
         )
         report.add(
             "B5 WM tiebreak on (numeric protect breaks ties)",
             on_ok,
-            f"keys={list(st_on.working_memory.keys())}",
-            "EntityStateManager WM tiebreak",
+            f"keys={list(facts_on.keys())}",
+            "LabeledFactStore / v-next",
         )
 
         # --- ON still cannot override commitment > rationale ---
-        esm.set_wm_tiebreak_fn(lambda e, k, m: 1e9 if k == "rat" else 0.0)
-        esm.working_memory_capacity = 1
+        store.set_tiebreak_fn(lambda e, k, m: 1e9 if k == "rat" else 0.0)
+        store.capacity = 1
         eid_kind = "ent_b5_kind"
-        esm.set_working_memory(eid_kind, "cmt", "decide", kind="commitment")
+        store.set(eid_kind, "cmt", "decide", kind="commitment")
         time.sleep(0.01)
-        esm.set_working_memory(eid_kind, "rat", "process", kind="rationale")
-        st_k = esm.get(eid_kind)
-        kind_ok = "cmt" in st_k.working_memory and "rat" not in st_k.working_memory
+        store.set(eid_kind, "rat", "process", kind="rationale")
+        facts_k = store.get_facts(eid_kind)
+        kind_ok = "cmt" in facts_k and "rat" not in facts_k
         report.add(
             "B5 WM tiebreak cannot override commitment>rationale",
             kind_ok,
-            f"keys={list(st_k.working_memory.keys())}",
-            "EntityStateManager WM tiebreak",
+            f"keys={list(facts_k.keys())}",
+            "LabeledFactStore / v-next",
         )
     except Exception as e:
         report.add(
             "B5 WM tiebreak switch",
             False,
             f"error: {e}",
-            "EntityStateManager WM tiebreak",
+            "LabeledFactStore / v-next",
         )
     finally:
         shutil.rmtree(td, ignore_errors=True)
 
 
 def run_b6_wm_recency(report: Report) -> None:
-    """B6: WM recency decay as multiplicative importance (on vs off, fixed clock)."""
-    from unittest.mock import MagicMock
-
-    from core.entity_state import (
-        EntityStateManager,
-        ROLE_WEIGHT,
-        wm_eviction_score,
-        wm_recency_factor,
-    )
+    """B6: WM recency decay on LabeledFactStore (single system; fixed clock)."""
+    from core.entity_state import ROLE_WEIGHT, wm_eviction_score, wm_recency_factor
+    from core.memory.labeled_wm import LabeledFactStore
 
     td = tempfile.mkdtemp(prefix="ww-mem-b6-")
     prev = {
@@ -769,13 +742,8 @@ def run_b6_wm_recency(report: Report) -> None:
         os.environ["WW_WM_RECENCY_FLOOR"] = "0.4"
         os.environ["WW_WORKING_MEMORY_CAPACITY"] = "2"
 
-        cfg = MagicMock()
-        cfg.get = MagicMock(return_value=None)
-        cfg.expand_path = MagicMock(side_effect=lambda p: os.path.expanduser(p))
-        esm = EntityStateManager(config=cfg, data_dir=td)
-        esm.working_memory_capacity = 2
+        store = LabeledFactStore(data_dir=td, capacity=2)
 
-        # --- Formula lock: multiplicative, fixed ages ---
         s_new = wm_eviction_score(
             "outcome", 0, age_seconds=0.0, recency_enabled=True
         )
@@ -793,7 +761,6 @@ def run_b6_wm_recency(report: Report) -> None:
             < 1e-9
         )
 
-        # Role still beats pure newness
         s_cmt = wm_eviction_score(
             "commitment",
             5,
@@ -812,56 +779,46 @@ def run_b6_wm_recency(report: Report) -> None:
         )
         role_ok = s_cmt > s_rat
 
-        # --- ON: capacity pressure, older same-kind loses first ---
         os.environ["WW_WM_RECENCY_ENABLED"] = "1"
         eid_on = "ent_b6_on"
-        esm.set_working_memory(eid_on, "fresh", "new-fact", kind="outcome")
-        esm.set_working_memory(eid_on, "stale", "old-fact", kind="outcome")
-        st = esm.get(eid_on)
+        store.set(eid_on, "fresh", "new-fact", kind="outcome")
+        store.set(eid_on, "stale", "old-fact", kind="outcome")
         now = 1_700_000_000.0
-        st.working_memory_meta["fresh"]["updated_at"] = now
-        st.working_memory_meta["fresh"]["access_count"] = 0
-        st.working_memory_meta["stale"]["updated_at"] = now - 7200.0
-        st.working_memory_meta["stale"]["access_count"] = 0
-        esm.save(st)
-        esm.working_memory_capacity = 1
-        esm._enforce_wm_capacity(st, now=now)
-        esm.save(st)
-        st = esm.get(eid_on)
-        on_ok = "fresh" in st.working_memory and "stale" not in st.working_memory
+        with store._lock:
+            store._meta[eid_on]["fresh"]["updated_at"] = now
+            store._meta[eid_on]["fresh"]["access_count"] = 0
+            store._meta[eid_on]["stale"]["updated_at"] = now - 7200.0
+            store._meta[eid_on]["stale"]["access_count"] = 0
+            store._save(eid_on)
+        store.capacity = 1
+        store.enforce_capacity(eid_on, now=now)
+        facts_on = store.get_facts(eid_on)
+        on_ok = "fresh" in facts_on and "stale" not in facts_on
 
-        # --- OFF: same fixtures → base scores equal → tertiary updated_at ---
         os.environ["WW_WM_RECENCY_ENABLED"] = "0"
-        esm.working_memory_capacity = 2
+        store.capacity = 2
         eid_off = "ent_b6_off"
-        esm.set_working_memory(eid_off, "a", "va", kind="outcome")
-        esm.set_working_memory(eid_off, "b", "vb", kind="outcome")
-        st_off = esm.get(eid_off)
+        store.set(eid_off, "a", "va", kind="outcome")
+        store.set(eid_off, "b", "vb", kind="outcome")
         t0 = 1_700_000_100.0
-        st_off.working_memory_meta["a"]["updated_at"] = t0
-        st_off.working_memory_meta["a"]["access_count"] = 0
-        st_off.working_memory_meta["b"]["updated_at"] = t0 + 50.0
-        st_off.working_memory_meta["b"]["access_count"] = 0
-        esm.save(st_off)
-        # Base scores equal when recency off
+        with store._lock:
+            store._meta[eid_off]["a"]["updated_at"] = t0
+            store._meta[eid_off]["a"]["access_count"] = 0
+            store._meta[eid_off]["b"]["updated_at"] = t0 + 50.0
+            store._meta[eid_off]["b"]["access_count"] = 0
+            store._save(eid_off)
         base_eq = abs(
             wm_eviction_score("outcome", 0, age_seconds=100.0, recency_enabled=False)
             - wm_eviction_score("outcome", 0, age_seconds=0.0, recency_enabled=False)
         ) < 1e-12
-        esm.working_memory_capacity = 1
-        esm._enforce_wm_capacity(st_off, now=t0 + 100.0)
-        esm.save(st_off)
-        st_off = esm.get(eid_off)
-        off_ok = (
-            base_eq
-            and "b" in st_off.working_memory
-            and "a" not in st_off.working_memory
-        )
+        store.capacity = 1
+        store.enforce_capacity(eid_off, now=t0 + 100.0)
+        facts_off = store.get_facts(eid_off)
+        off_ok = base_eq and "b" in facts_off and "a" not in facts_off
 
-        # No protect_last_n in module surface
-        import core.entity_state as es_mod
+        import core.memory.labeled_wm as lwm_mod
 
-        no_pin = "protect_last_n(" not in Path(es_mod.__file__).read_text(
+        no_pin = "protect_last_n(" not in Path(lwm_mod.__file__).read_text(
             encoding="utf-8"
         )
 
@@ -872,14 +829,14 @@ def run_b6_wm_recency(report: Report) -> None:
             f"factor={factor_ok} role={role_ok} on={on_ok} off={off_ok} "
             f"no_pin={no_pin} s_new={s_new:.4f} s_old={s_old:.4f} "
             f"s_cmt={s_cmt:.4f} s_rat={s_rat:.4f}",
-            "EntityStateManager WM recency",
+            "LabeledFactStore / v-next",
         )
     except Exception as e:
         report.add(
             "B6 WM recency decay (on vs off, fixed clock)",
             False,
             f"error: {e}",
-            "EntityStateManager WM recency",
+            "LabeledFactStore / v-next",
         )
     finally:
         for k, v in prev.items():
@@ -891,17 +848,15 @@ def run_b6_wm_recency(report: Report) -> None:
 
 
 def run_b7_wm_label_order(report: Report) -> None:
-    """B7: closed four labels — constraint > commitment > outcome > rationale under capacity."""
-    from unittest.mock import MagicMock
-
+    """B7: four labels on MemoryVNext/LabeledFactStore — single system inject."""
     from core.entity_state import (
-        EntityStateManager,
         ROLE_WEIGHT,
         WM_KINDS,
         normalize_wm_kind,
         wm_eviction_score,
         wm_label_zh,
     )
+    from core.memory.vnext import MemoryVNext
 
     td = tempfile.mkdtemp(prefix="ww-mem-b7-")
     prev = {
@@ -911,11 +866,6 @@ def run_b7_wm_label_order(report: Report) -> None:
     try:
         os.environ["WW_WORKING_MEMORY_CAPACITY"] = "3"
         os.environ["WW_WM_RECENCY_ENABLED"] = "0"  # isolate label weights
-        cfg = MagicMock()
-        cfg.get = MagicMock(return_value=None)
-        cfg.expand_path = MagicMock(side_effect=lambda p: os.path.expanduser(p))
-        esm = EntityStateManager(config=cfg, data_dir=td)
-        esm.working_memory_capacity = 3
 
         kinds_ok = WM_KINDS == frozenset(
             {"constraint", "commitment", "outcome", "rationale"}
@@ -947,61 +897,72 @@ def run_b7_wm_label_order(report: Report) -> None:
             and wm_label_zh("rationale") == "理由"
         )
 
-        # Capacity 3: write all four (same access) → rationale squeezed first
-        eid = "ent_b7"
-        esm.set_working_memory(eid, "rule", "never change netplan", kind="constraint")
-        esm.set_working_memory(eid, "plan", "use docker", kind="commitment")
-        esm.set_working_memory(eid, "fact", "tests passed", kind="outcome")
-        esm.set_working_memory(eid, "why", "chose flash", kind="rationale")
-        st = esm.get(eid)
-        rat_gone = "why" not in st.working_memory
-        others_kept = (
-            "rule" in st.working_memory
-            and "plan" in st.working_memory
-            and "fact" in st.working_memory
-            and len(st.working_memory) == 3
-        )
+        mv = MemoryVNext(data_dir=td, start_dreaming=False)
+        try:
+            mv.facts.capacity = 3
+            eid = "ent_b7"
+            mv.set_entity(eid)
+            mv.remember("rule", "never change netplan", kind="constraint", entity_id=eid)
+            mv.remember("plan", "use docker", kind="commitment", entity_id=eid)
+            mv.remember("fact", "tests passed", kind="outcome", entity_id=eid)
+            mv.remember("why", "chose flash", kind="rationale", entity_id=eid)
+            facts = mv.facts.get_facts(eid)
+            rat_gone = "why" not in facts
+            others_kept = (
+                "rule" in facts
+                and "plan" in facts
+                and "fact" in facts
+                and len(facts) == 3
+            )
 
-        # Capacity 1: constraint beats commitment (same access/age isolation)
-        esm.working_memory_capacity = 1
-        eid2 = "ent_b7_c"
-        esm.set_working_memory(eid2, "cmt", "next step", kind="commitment")
-        esm.set_working_memory(eid2, "rule2", "no sudo", kind="constraint")
-        st2 = esm.get(eid2)
-        c_beats_cmt = "rule2" in st2.working_memory and "cmt" not in st2.working_memory
+            mv.facts.capacity = 1
+            eid2 = "ent_b7_c"
+            mv.remember("cmt", "next step", kind="commitment", entity_id=eid2)
+            mv.remember("rule2", "no sudo", kind="constraint", entity_id=eid2)
+            facts2 = mv.facts.get_facts(eid2)
+            c_beats_cmt = "rule2" in facts2 and "cmt" not in facts2
 
-        # Inject uses Chinese brackets
-        eid3 = "ent_b7_inj"
-        esm.working_memory_capacity = 4
-        esm.set_working_memory(eid3, "no_netplan", "never change netplan", kind="constraint")
-        inj = esm.get_context_for(eid3)
-        inject_ok = "- [约束] no_netplan: never change netplan" in inj and "[constraint]" not in inj
+            eid3 = "ent_b7_inj"
+            mv.facts.capacity = 4
+            mv.remember(
+                "no_netplan",
+                "never change netplan",
+                kind="constraint",
+                entity_id=eid3,
+            )
+            inj = mv.inject_for_turn(entity_id=eid3)
+            inject_ok = (
+                "- [约束] no_netplan: never change netplan" in inj
+                and "[constraint]" not in inj
+            )
 
-        ok = (
-            kinds_ok
-            and weight_ok
-            and score_ok
-            and norm_ok
-            and zh_ok
-            and rat_gone
-            and others_kept
-            and c_beats_cmt
-            and inject_ok
-        )
-        report.add(
-            "B7 WM label order constraint>commitment>outcome>rationale",
-            ok,
-            f"kinds={kinds_ok} weight={weight_ok} score={score_ok} norm={norm_ok} "
-            f"zh={zh_ok} rat_gone={rat_gone} kept={others_kept} c>cmt={c_beats_cmt} "
-            f"inject={inject_ok}",
-            "EntityStateManager WM labels",
-        )
+            ok = (
+                kinds_ok
+                and weight_ok
+                and score_ok
+                and norm_ok
+                and zh_ok
+                and rat_gone
+                and others_kept
+                and c_beats_cmt
+                and inject_ok
+            )
+            report.add(
+                "B7 WM label order constraint>commitment>outcome>rationale",
+                ok,
+                f"kinds={kinds_ok} weight={weight_ok} score={score_ok} norm={norm_ok} "
+                f"zh={zh_ok} rat_gone={rat_gone} kept={others_kept} c>cmt={c_beats_cmt} "
+                f"inject={inject_ok}",
+                "MemoryVNext labeled facts",
+            )
+        finally:
+            mv.close()
     except Exception as e:
         report.add(
             "B7 WM label order constraint>commitment>outcome>rationale",
             False,
             f"error: {e}",
-            "EntityStateManager WM labels",
+            "MemoryVNext labeled facts",
         )
     finally:
         for k, v in prev.items():
