@@ -2,7 +2,7 @@
 """WW Memory prove harness — mechanism + product modes.
 
 Modes:
-  --mechanism   L0 + L1 capacity/GC/promote + B3–B7 WM (kind/labels, tiebreak, recency)
+  --mechanism   L0 + L1 capacity/GC/promote + B3–B7 WM + B-topic/summary/atom/hippo/ltm/dream
   --product     A1–A4 natural write/read on live server (no harness cheating)
   --all         mechanism then product (default if no flags)
 
@@ -91,6 +91,7 @@ def run_l0(report: Report) -> None:
         "tests/test_memory_recall_sleep.py",
         "tests/test_memory.py",
         "tests/test_working_memory.py",
+        "tests/test_memory_vnext.py",
         "-q",
         "--tb=line",
     ]
@@ -1011,6 +1012,270 @@ def run_b7_wm_label_order(report: Report) -> None:
         shutil.rmtree(td, ignore_errors=True)
 
 
+def run_b_topic(report: Report) -> None:
+    """B-topic: switch moves A to STM; WM holds only B."""
+    from core.memory.vnext import MemoryVNext
+
+    td = tempfile.mkdtemp(prefix="ww-mem-btopic-")
+    try:
+        mv = MemoryVNext(data_dir=td, start_dreaming=False)
+        try:
+            mv.ingest_turn(
+                "user",
+                "Plan the Stripe payment migration carefully with canaries.",
+                new_topic=True,
+            )
+            tid_a = mv.wm.active.topic_id
+            mv.switch_topic(title="Weekend hiking near Tahoe trails")
+            ok = (
+                mv.topic_stm.get(tid_a) is not None
+                and mv.wm.active is not None
+                and mv.wm.active.topic_id != tid_a
+                and "Stripe" not in (mv.wm.active.body_text() or "")
+            )
+            report.add(
+                "B-topic switch parks A in STM",
+                ok,
+                f"stm_has_a={mv.topic_stm.get(tid_a) is not None} "
+                f"wm_id={mv.wm.active.topic_id[:8] if mv.wm.active else None}",
+                "MemoryVNext topic WM",
+            )
+        finally:
+            mv.close()
+    except Exception as e:
+        report.add("B-topic switch parks A in STM", False, f"error: {e}")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def run_b_summary(report: Report) -> None:
+    """B-summary: digests never re-compressed; travel with body on switch."""
+    from core.memory.topic import WorkingTopicStore
+
+    td = tempfile.mkdtemp(prefix="ww-mem-bsum-")
+    parked = []
+    try:
+        store = WorkingTopicStore(
+            data_dir=td,
+            token_budget=180,
+            on_switch=lambda t: parked.append(t),
+        )
+        for i in range(16):
+            store.append_turn(
+                "user",
+                f"Turn {i}: " + ("payment infrastructure details " * 12),
+            )
+        dig_n = len(store.active.digests) if store.active else 0
+        dig_ids = [d.digest_id for d in (store.active.digests if store.active else [])]
+        for i in range(8):
+            store.append_turn(
+                "assistant",
+                f"Reply {i}: " + ("more context about APIs " * 10),
+            )
+        still = all(
+            any(d.digest_id == did for d in store.active.digests)
+            for did in dig_ids
+        ) if store.active and dig_ids else dig_n == 0
+        store.switch_topic(title="B independent")
+        travel = bool(parked) and len(parked[0].digests) >= dig_n and dig_n >= 1
+        ok = dig_n >= 1 and still and travel
+        report.add(
+            "B-summary digests stable + travel",
+            ok,
+            f"digests={dig_n} still={still} travel={travel}",
+            "WorkingTopicStore",
+        )
+    except Exception as e:
+        report.add("B-summary digests stable + travel", False, f"error: {e}")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def run_b_atom(report: Report) -> None:
+    """B-atom: dual timestamps + Updates supersede current vs historical."""
+    from core.memory.atom_nets import AtomNetStore, MemoryAtomV2
+
+    td = tempfile.mkdtemp(prefix="ww-mem-batom-")
+    try:
+        store = AtomNetStore(data_dir=td)
+        t0 = time.time() - 1000
+        old = MemoryAtomV2(
+            content="Alex works at Google",
+            logical_net="world",
+            learned_at=t0,
+            valid_from=t0,
+            entities=["Alex"],
+        )
+        new = MemoryAtomV2(
+            content="Alex joined Stripe as PM",
+            logical_net="world",
+            learned_at=time.time(),
+            entities=["Alex", "Stripe"],
+        )
+        store.add(old)
+        store.add(new)
+        store.updates(new, old)
+        cur = store.current_truth("Alex")
+        hist = store.historical("Alex")
+        ok = (
+            not old.is_currently_valid
+            and new.is_currently_valid
+            and any("Stripe" in a.content for a in cur)
+            and any(a.atom_id == old.atom_id for a in hist)
+            and old.learned_at == t0
+            and new.learned_at >= t0
+        )
+        report.add(
+            "B-atom dual-ts Updates supersede",
+            ok,
+            f"cur={[a.content[:30] for a in cur]} hist_n={len(hist)}",
+            "AtomNetStore",
+        )
+    except Exception as e:
+        report.add("B-atom dual-ts Updates supersede", False, f"error: {e}")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def run_b_hippo_promote(report: Report) -> None:
+    """B-hippo-promote: leave hippo (purge/promote) always extracts atoms."""
+    from core.memory.atom_nets import MemoryAtomV2
+    from core.memory.topic import Topic
+    from core.memory.topic_stm import TopicHippocampus
+
+    td = tempfile.mkdtemp(prefix="ww-mem-bhippo-")
+    extracted = []
+    try:
+        def extract(topic):
+            atoms = [
+                MemoryAtomV2(
+                    content=f"from-{topic.topic_id[:6]} {topic.title}",
+                    topic_id=topic.topic_id,
+                )
+            ]
+            extracted.extend(atoms)
+            return atoms
+
+        hip = TopicHippocampus(
+            data_dir=td, cap=2, atom_extract=extract, on_promote=lambda t, a: None
+        )
+        a = Topic(title="Disposable kitchen inventory checklist item")
+        a.append_turn("user", "Disposable kitchen inventory checklist item for weekend.")
+        hip.admit(a)
+        pr = hip.purge(a.topic_id)
+        purge_ok = pr.get("ok") and pr.get("atoms_extracted", 0) >= 1
+
+        b = Topic(title="Prefer dark mode permanently in editor settings")
+        b.append_turn("user", "Prefer dark mode permanently in editor settings for focus.")
+        b.relevance = 1.0
+        b.recall_count = 5
+        hip.admit(b)
+        extracted.clear()
+        prom = hip.promote(b.topic_id, force=True)
+        promote_ok = prom.get("ok") and prom.get("atoms_extracted", 0) >= 1
+        ok = bool(purge_ok and promote_ok)
+        report.add(
+            "B-hippo-promote extract on leave",
+            ok,
+            f"purge={purge_ok} promote={promote_ok}",
+            "TopicHippocampus",
+        )
+    except Exception as e:
+        report.add("B-hippo-promote extract on leave", False, f"error: {e}")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def run_b_ltm_tier(report: Report) -> None:
+    """B-ltm-tier: ww:// tiers Abstract/Overview/Detail + immutable events."""
+    from core.memory.ltm_vfs import ContentTier, ImmutableLTMError, LTMVFS
+
+    td = tempfile.mkdtemp(prefix="ww-mem-bltm-")
+    try:
+        ltm = LTMVFS(data_dir=td)
+        body = "Lesson one about canary deploys. " * 40
+        uri = ltm.write("experiences", body, title="canary", name="canary")
+        abs_t = ltm.read(uri, tier=ContentTier.ABSTRACT)
+        det = ltm.read(uri, tier=ContentTier.DETAIL)
+        ev = ltm.write("events", "Shipped v-next", title="ship", name="ship")
+        immut = False
+        try:
+            ltm.update(ev, "rewrite")
+        except ImmutableLTMError:
+            immut = True
+        ok = (
+            uri.startswith("ww://")
+            and len(abs_t) < len(det)
+            and immut
+            and ("canary" in det.lower() or "Lesson" in det)
+        )
+        report.add(
+            "B-ltm-tier progressive + immutable",
+            ok,
+            f"uri={uri[:40]} abs={len(abs_t)} det={len(det)} immut={immut}",
+            "LTMVFS",
+        )
+    except Exception as e:
+        report.add("B-ltm-tier progressive + immutable", False, f"error: {e}")
+    finally:
+        shutil.rmtree(td, ignore_errors=True)
+
+
+def run_b_dream(report: Report) -> None:
+    """B-dream: enqueue is non-blocking; empty store is cheap no-op."""
+    from core.memory.atom_nets import AtomNetStore, MemoryAtomV2
+    from core.memory.dreaming import DreamingWorker
+    from core.memory.ltm_vfs import LTMVFS
+
+    td = tempfile.mkdtemp(prefix="ww-mem-bdream-")
+    prev = os.environ.get("WW_DREAMING_ENABLED")
+    try:
+        os.environ["WW_DREAMING_ENABLED"] = "1"
+        store = AtomNetStore(data_dir=td)
+        ltm = LTMVFS(data_dir=td)
+        worker = DreamingWorker(atom_store=store, ltm=ltm, auto_start=True)
+        try:
+            t0 = time.time()
+            empty = worker.enqueue("full")
+            elapsed = time.time() - t0
+            store.add(
+                MemoryAtomV2(
+                    content="Nebula uses React 18 for checkout UI",
+                    logical_net="world",
+                    entities=["Nebula", "React"],
+                )
+            )
+            t1 = time.time()
+            q = worker.enqueue("full")
+            elapsed2 = time.time() - t1
+            # Hot path still works without waiting
+            hits = store.current_truth("React")
+            worker.wait_empty(timeout=3.0)
+            ok = (
+                empty.get("queued") is True
+                and q.get("queued") is True
+                and elapsed < 0.5
+                and elapsed2 < 0.5
+                and any("React" in a.content for a in hits)
+            )
+            report.add(
+                "B-dream async non-blocking",
+                ok,
+                f"empty_q={empty} elapsed={elapsed:.3f} hits={len(hits)}",
+                "DreamingWorker",
+            )
+        finally:
+            worker.stop()
+    except Exception as e:
+        report.add("B-dream async non-blocking", False, f"error: {e}")
+    finally:
+        if prev is None:
+            os.environ.pop("WW_DREAMING_ENABLED", None)
+        else:
+            os.environ["WW_DREAMING_ENABLED"] = prev
+        shutil.rmtree(td, ignore_errors=True)
+
+
 def run_mechanism(report: Report) -> None:
     run_l0(report)
     run_b1_capacity(report)
@@ -1021,6 +1286,12 @@ def run_mechanism(report: Report) -> None:
     run_b5_wm_tiebreak_switch(report)
     run_b6_wm_recency(report)
     run_b7_wm_label_order(report)
+    run_b_topic(report)
+    run_b_summary(report)
+    run_b_atom(report)
+    run_b_hippo_promote(report)
+    run_b_ltm_tier(report)
+    run_b_dream(report)
 
 
 def _live_client() -> LiveClient:
