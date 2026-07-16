@@ -728,48 +728,60 @@ def cmd_config(args):
 
 
 def cmd_model(args):
-    """View/switch model"""
+    """View/switch model (core). Bare `ww model` prompts for name on TTY."""
     config = load_config()
+    name = getattr(args, "name", None)
 
-    if args.name:
-        config["model"] = args.name
-        try:
-            from core.transports.registry import infer_provider
-            config["provider"] = infer_provider(args.name)
-        except Exception:
-            model_lower = args.name.lower()
-            if model_lower.startswith("claude"):
-                config["provider"] = "anthropic"
-            elif model_lower.startswith(("gpt", "o1", "o3")):
-                config["provider"] = "openai"
-            elif model_lower.startswith("deepseek"):
-                config["provider"] = "deepseek"
-            elif model_lower.startswith("gemini"):
-                config["provider"] = "gemini"
-            elif model_lower.startswith("grok"):
-                config["provider"] = "xai"
-            elif "/" in model_lower:
-                config["provider"] = "openrouter"
-        save_config(config)
+    model = config.get("model", "deepseek/deepseek-v4-flash")
+    provider = config.get("provider", "deepseek")
+    print(f"  Current model: {Colors.bold(model)}")
+    print(f"  Provider: {Colors.cyan(provider)}")
+    if ensure_server_running():
+        status = api_get("/ww/status")
+        if status:
+            providers = status.get("available_providers", [])
+            if providers:
+                print(f"  Available providers: {', '.join(providers)}")
 
-        # Try API — switch model on running server
-        result = api_post("/ww/model", {"model": args.name})
-        if result and result.get("switched"):
-            print(f"{Colors.green('✓')} {result['from']} → {result['to']}")
+    if not name:
+        if sys.stdin.isatty():
+            print()
+            try:
+                name = input(f"  {Colors.green('Model name?')} (Enter to keep current): ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+            if not name:
+                print(f"  {Colors.dim('Unchanged.')}")
+                return
         else:
-            print(f"{Colors.green('✓')} Config updated — restart to apply")
-    else:
-        model = config.get("model", "deepseek/deepseek-v4-flash")
-        provider = config.get("provider", "deepseek")
-        print(f"  Model: {Colors.bold(model)}")
-        print(f"  Provider: {Colors.cyan(provider)}")
+            return
 
-        if ensure_server_running():
-            status = api_get("/ww/status")
-            if status:
-                providers = status.get("available_providers", [])
-                if providers:
-                    print(f"  Available: {', '.join(providers)}")
+    config["model"] = name
+    try:
+        from core.transports.registry import infer_provider
+        config["provider"] = infer_provider(name)
+    except Exception:
+        model_lower = name.lower()
+        if model_lower.startswith("claude"):
+            config["provider"] = "anthropic"
+        elif model_lower.startswith(("gpt", "o1", "o3")):
+            config["provider"] = "openai"
+        elif model_lower.startswith("deepseek"):
+            config["provider"] = "deepseek"
+        elif model_lower.startswith("gemini"):
+            config["provider"] = "gemini"
+        elif model_lower.startswith("grok"):
+            config["provider"] = "xai"
+        elif "/" in model_lower:
+            config["provider"] = "openrouter"
+    save_config(config)
+
+    result = api_post("/ww/model", {"model": name})
+    if result and result.get("switched"):
+        print(f"{Colors.green('✓')} {result['from']} → {result['to']}")
+    else:
+        print(f"{Colors.green('✓')} Config updated — restart to apply if server was offline")
 
 
 def cmd_tools(args):
@@ -1177,10 +1189,31 @@ def _cmd_update_dryrun():
 
 
 def cmd_logs(args):
-    """View logs (core command)."""
-    n = getattr(args, "n", None) or 20
+    """View logs (core). Bare `ww logs` prompts for line count on TTY."""
+    n = getattr(args, "n", None)
+    if n is None:
+        if sys.stdin.isatty():
+            try:
+                raw = input(f"  {Colors.green('How many log lines?')} [20]: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+            if not raw:
+                n = 20
+            else:
+                try:
+                    n = max(1, min(int(raw), 5000))
+                except ValueError:
+                    print(f"  {Colors.yellow('⚠')} Invalid number — using 20")
+                    n = 20
+        else:
+            n = 20
+    else:
+        try:
+            n = max(1, min(int(n), 5000))
+        except (TypeError, ValueError):
+            n = 20
 
-    # Try journalctl (user systemd)
     try:
         result = subprocess.run(
             ["journalctl", "--user", "-u", "ww.service", "-n", str(n),
@@ -1195,7 +1228,6 @@ def cmd_logs(args):
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         pass
 
-    # File logs: install dir then config dir
     candidates = [
         os.path.join(WW_HOME, "server.log"),
         os.path.join(WW_CONFIG, "server.log"),
@@ -2075,12 +2107,12 @@ def cmd_help(args):
   ww chat                Enter interactive chat
   ww update              Update Worldwave
   ww key setup           Set LLM API key (alias: ww key set)
-  ww model [name]        Show / switch chat model
+  ww model               Switch model (prompts for name; or: ww model <name>)
   ww gateway             Platform gateway status / entry
   ww gateway setup       Configure chat platforms (e.g. Telegram)
   ww gateway restart     Restart messaging gateway
   ww status              System health overview
-  ww logs [N]            Recent logs (default 20)
+  ww logs                Show logs (prompts for line count; or: ww logs 50)
   ww help                This help (not bash "help")
 
   ── Also ──
@@ -2500,7 +2532,15 @@ def main():
 
     elif cmd in ("logs",):
         pos = _pos()
-        args.n = int(pos[0]) if pos else 20
+        if pos:
+            try:
+                args.n = int(pos[0])
+            except ValueError:
+                print(f"{Colors.red('✗')} Invalid line count: {pos[0]}")
+                print(f"  Usage: {Colors.cyan('ww logs')}  or  {Colors.cyan('ww logs 50')}")
+                return
+        else:
+            args.n = None  # prompt on TTY
         COMMANDS[cmd](args)
 
     elif cmd in ("gateway",):
