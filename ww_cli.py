@@ -523,9 +523,9 @@ def cmd_run(args):
     if not goal:
         print(f"\n{Colors.cyan('═══ Worldwave ═══')}")
         print(
-            f"Enter a goal, or type {Colors.yellow('/exit')} / "
-            f"{Colors.yellow('/help')} / {Colors.yellow('/update')} / "
-            f"{Colors.yellow('/gateway')}\n"
+            f"Enter a goal, or type {Colors.yellow('/help')} / "
+            f"{Colors.yellow('/new')} / {Colors.yellow('/status')} / "
+            f"{Colors.yellow('/exit')}\n"
         )
         max_spirals = getattr(args, "spirals", None) or 3
         while True:
@@ -541,22 +541,16 @@ def cmd_run(args):
             if is_chat_exit_command(line):
                 print("Bye.")
                 break
-            if line == "/help":
-                print(
-                    "  /exit · /quit · /q  Leave chat (also: exit, quit, q)\n"
-                    "  /clear              Clear context note\n"
-                    "  /update             Upgrade Worldwave (not an LLM goal)\n"
-                    "  /update status      Version comparison\n"
-                    "  /update --dry-run   Preview incoming commits\n"
-                    "  /gateway            Gateway status / setup (not an LLM goal)\n"
-                    "  /gateway setup      Interactive Telegram gateway setup\n"
-                    "  Also: update · upgrade · ww update · gateway · "
-                    "ww gateway · /ww gateway\n"
-                    "  Typos: close matches get Did you mean (no LLM)"
-                )
-                continue
-            if line == "/clear":
-                print(f"{Colors.dim('Context cleared')}")
+            # Chat-core slash commands (shared with Telegram)
+            core_parsed = parse_chat_core_command(line)
+            if core_parsed is not None:
+                # exit already handled above; still guard
+                if core_parsed.name == "exit":
+                    print("Bye.")
+                    break
+                msg = handle_chat_core_repl(core_parsed)
+                if msg:
+                    print(msg)
                 continue
             # Intercept update commands — never send as /ww/run goals
             update_action = parse_chat_update_command(line)
@@ -1049,13 +1043,43 @@ def handle_chat_update(action: str) -> None:
         print(f"\n{Colors.red('✗')} {result['message']}")
 
 
+def parse_chat_core_command(line: str):
+    """Parse frozen chat-core slash commands (shared module)."""
+    from core.chat_commands import parse_chat_core_command as _parse
+    return _parse(line)
+
+
+def handle_chat_core_repl(parsed) -> str:
+    """Run a chat-core command from the interactive REPL."""
+    from core.chat_commands import ChatCommandContext, handle_chat_core
+
+    load_or_create_api_key()
+    is_tty = bool(sys.stdin.isatty())
+
+    def _prompt(msg: str) -> str:
+        return input(f"  {Colors.green(msg)}")
+
+    ctx = ChatCommandContext(
+        api_get=api_get,
+        api_post=api_post,
+        is_tty=is_tty,
+        platform="repl",
+        user_id="local",
+        chat_id="",
+        is_owner=True,
+        prompt_fn=_prompt if is_tty else None,
+        entity_id="",
+    )
+    return handle_chat_core(parsed, ctx) or ""
+
+
 def parse_chat_gateway_command(line: str) -> Optional[tuple]:
     """If *line* is an in-chat gateway command, return (action, platform); else None.
 
     Accepted (case-insensitive, surrounding whitespace ignored):
       gateway | /gateway | ww gateway | /ww gateway
-      … setup | list | start | stop
-      start/stop may take an optional platform (e.g. telegram)
+      … setup | list | start | stop | restart
+      start/stop/restart may take an optional platform (e.g. telegram)
 
     Returns:
       ("", None)           — bare gateway (status if configured, else setup)
@@ -1063,6 +1087,7 @@ def parse_chat_gateway_command(line: str) -> Optional[tuple]:
       ("list", None)
       ("start", platform_or_None)
       ("stop", platform_or_None)
+      ("restart", platform_or_None)
       None                 — not a gateway command (treat as LLM goal)
     """
     s = (line or "").strip().rstrip("\r").strip()
@@ -1089,7 +1114,7 @@ def parse_chat_gateway_command(line: str) -> Optional[tuple]:
         return ("setup", None)
     if action == "list" and len(parts) == 2:
         return ("list", None)
-    if action in ("start", "stop") and len(parts) in (2, 3):
+    if action in ("start", "stop", "restart") and len(parts) in (2, 3):
         platform = parts[2] if len(parts) == 3 else None
         return (action, platform)
     # e.g. "gateway my bot token" → not a CLI gateway command
@@ -2314,16 +2339,26 @@ KNOWN_CHAT_COMMANDS: tuple[str, ...] = (
     "exit",
     "gateway",
     "help",
+    "memory",
+    "model",
+    "new",
     "q",
     "quit",
+    "status",
+    "stop",
+    "true",
     "update",
     "upgrade",
 )
 KNOWN_CHAT_PHRASES: tuple[str, ...] = (
     "gateway list",
+    "gateway restart",
     "gateway setup",
     "gateway start",
     "gateway stop",
+    "memory del",
+    "memory edit",
+    "memory set",
     "update --dry-run",
     "update status",
     "upgrade --dry-run",

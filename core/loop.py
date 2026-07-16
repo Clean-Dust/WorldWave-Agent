@@ -101,6 +101,9 @@ class Worldwave:
         self._tool_history: List[Dict] = []
         self._steps_total = 0
         self._steps_completed = 0
+        # Chat /true: one-shot bypass of basal-ganglia block only (not approval gating)
+        self.force_next_tool_once: bool = False
+        self._last_blocked: Optional[Dict[str, Any]] = None
 
         # Subconscious: numeric referee/gate only (does not read conversation).
         # Env: WW_SUBCONSCIOUS_ENABLED=0|1 (via ConfigManager coerce_bool).
@@ -1282,8 +1285,25 @@ class Worldwave:
 
         Runs the proposed tool through the G/N dual pathway.
         Dangerous actions are blocked at the subcortical level.
+
+        Chat ``/true`` sets ``force_next_tool_once``: the next evaluation is
+        allowed once and the flag is cleared. This does **not** bypass
+        approval gating for unsafe tools (checked after this method).
         """
         category = self.basal_ganglia.classify_action(tool_name)
+
+        # One-shot force from chat /true (BG block only)
+        if getattr(self, "force_next_tool_once", False):
+            self.force_next_tool_once = False
+            self._log("    safety: forced allow by /true (one-shot, BG only)")
+            return {
+                "allow": True,
+                "g_score": 0.0,
+                "n_score": 0.0,
+                "reason": "forced by /true",
+                "forced": True,
+                "category": category,
+            }
 
         # Build state vector from current context
         state = [0.0] * 32
@@ -1303,6 +1323,21 @@ class Worldwave:
             action_category=category,
             action_description=tool_name,
         )
+        if not result.get("allow", True):
+            # Stash for /true feedback (last blocked tool summary)
+            try:
+                import time as _time
+                self._last_blocked = {
+                    "tool": tool_name,
+                    "params": dict(params or {}) if isinstance(params, dict) else {},
+                    "category": category,
+                    "reason": result.get("reason", ""),
+                    "n_score": result.get("n_score"),
+                    "g_score": result.get("g_score"),
+                    "ts": _time.time(),
+                }
+            except Exception:
+                pass
         return result
 
     def _tool_domain(self, tool_name: str) -> str:

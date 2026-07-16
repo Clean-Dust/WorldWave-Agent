@@ -124,11 +124,16 @@ class CodeRequest(BaseModel):
     context: Optional[Dict] = None
 
 class MemoryRequest(BaseModel):
-    action: str = Field("recall", pattern="^(recall|search|snapshot|sleep|probe|store)$")
+    action: str = Field(
+        "recall",
+        pattern="^(recall|search|snapshot|sleep|probe|store|update|delete)$",
+    )
     query: str = ""
     content: str = ""
     entities: List[str] = []
     limit: int = 10
+    memory_id: str = ""
+    confirm: str = ""
 
 class GatewayMessage(BaseModel):
     platform: str = Field(..., pattern="^(telegram|discord|slack|mqtt|custom)$")
@@ -992,8 +997,12 @@ def root():
             "POST /ww/run/background",
             "POST /ww/autonomous/start",
             "POST /ww/autonomous/stop",
+            "POST /ww/chat/new",
+            "POST /ww/chat/true",
+            "POST /ww/chat/stop",
             "GET  /ww/history",
             "POST /ww/memory",
+
             "POST /ww/code",
             "POST /ww/gateway/send",
             "GET  /ww/gateway/list",
@@ -1158,6 +1167,93 @@ def model_switch(data: dict):
     return result
 
 
+# ── Chat core endpoints (/new, /true, /stop) ──
+
+@app.post("/ww/chat/new")
+def chat_new(data: dict = None):
+    """New session + WM cleanup (non-core only; promote via on_wm_evict).
+
+    Does **not** wipe LTM atoms wholesale. Core WM keys and preference-linked
+    keys are retained.
+    """
+    body = data if isinstance(data, dict) else {}
+    entity_id = (body.get("entity_id") or "").strip()
+    if not entity_id:
+        try:
+            if getattr(server, "identity_resolver", None) is not None:
+                entity_id = server.identity_resolver.get_primary_entity_id() or ""
+        except Exception:
+            entity_id = ""
+    if not entity_id and getattr(server, "entity_mgr", None) is not None:
+        try:
+            active = server.entity_mgr.list_active()
+            entity_id = active[0] if active else ""
+        except Exception:
+            entity_id = ""
+    if not entity_id:
+        entity_id = "default"
+
+    counts = {"wm_cleared": 0, "promoted": 0, "kept_core": 0}
+    if getattr(server, "entity_mgr", None) is not None:
+        try:
+            counts = server.entity_mgr.clear_session_working_memory(entity_id)
+        except Exception as e:
+            return {"status": "error", "error": str(e)[:200], "entity_id": entity_id}
+
+    # Soft clear conversation buffer (not LTM)
+    if server.ww is not None:
+        try:
+            conv = getattr(server.ww, "conversation", None)
+            if conv is not None and hasattr(conv, "clear"):
+                conv.clear()
+        except Exception:
+            pass
+        try:
+            server.ww.running = False
+        except Exception:
+            pass
+
+    return {
+        "status": "ok",
+        "entity_id": entity_id,
+        "wm_cleared": int(counts.get("wm_cleared", 0)),
+        "promoted": int(counts.get("promoted", 0)),
+        "kept_core": int(counts.get("kept_core", 0)),
+    }
+
+
+@app.post("/ww/chat/true")
+def chat_true(data: dict = None):
+    """Force next tool evaluation past basal-ganglia block once (/true).
+
+    Does not bypass approval gating for unsafe tools.
+    """
+    if not server.ww:
+        return {"error": "WW not initialized"}
+    server.ww.force_next_tool_once = True
+    last = getattr(server.ww, "_last_blocked", None)
+    return {
+        "status": "ok",
+        "force_next_tool_once": True,
+        "last_blocked": last,
+        "message": "Next tool will skip safety-system block once",
+    }
+
+
+@app.post("/ww/chat/stop")
+def chat_stop(data: dict = None):
+    """Stop autonomous loop and/or clear busy/running signal."""
+    if getattr(server, "_autonomous_running", False):
+        return server.stop_autonomous()
+    if server.ww is not None:
+        try:
+            server.ww.stop()
+        except Exception:
+            server.ww.running = False
+        return {"status": "stopped", "running": False}
+    return {"status": "ok", "message": "no active run"}
+
+
 # ── Autonomous Loop Endpoint ──
 
 @app.post("/ww/autonomous/start")
@@ -1174,7 +1270,7 @@ def stop_auto():
 
 @app.post("/ww/memory")
 def memory_op(req: MemoryRequest):
-    """Memory Operations (Backward Compatible: recall/search/snapshot/sleep/probe/store)"""
+    """Memory Operations (Backward Compatible: recall/search/snapshot/sleep/probe/store + update/delete)"""
     if req.action == "store":
         mid = server.memory.store_text(
             content=req.content,
@@ -1196,6 +1292,43 @@ def memory_op(req: MemoryRequest):
         for a in results or []:
             out.append(a.to_dict() if hasattr(a, "to_dict") else a)
         return {"results": out}
+    elif req.action == "update":
+        mid = (req.memory_id or req.query or "").strip()
+        if not mid:
+            return {"error": "memory_id required"}
+        if not (req.content or "").strip():
+            return {"error": "content required"}
+        atom = server.memory.hippocampus.get(mid)
+        if atom is None:
+            return {"error": "not_found", "memory_id": mid}
+        ok = server.memory.hippocampus.update(mid, content=req.content)
+        return {
+            "status": "updated" if ok else "failed",
+            "updated": bool(ok),
+            "memory_id": mid,
+        }
+    elif req.action == "delete":
+        mid = (req.memory_id or req.query or "").strip()
+        if not mid:
+            return {"error": "memory_id required"}
+        atom = server.memory.hippocampus.get(mid)
+        if atom is None:
+            return {"error": "not_found", "memory_id": mid}
+        # Never delete is_core without explicit confirm phrase
+        if getattr(atom, "is_core", False):
+            phrase = (req.confirm or "").strip().lower()
+            if phrase not in ("confirm", "delete core", "yes delete core"):
+                return {
+                    "error": "is_core",
+                    "memory_id": mid,
+                    "message": "Core memory requires confirm phrase",
+                }
+        ok = server.memory.hippocampus.remove(mid)
+        return {
+            "status": "deleted" if ok else "failed",
+            "deleted": bool(ok),
+            "memory_id": mid,
+        }
     else:  # recall (default)
         # MemorySystem.recall returns a dict with results list of
         # {atom, salience, hops} — not a list of MemoryAtom.

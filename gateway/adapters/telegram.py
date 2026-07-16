@@ -33,6 +33,7 @@ _SEEN_UPDATE_MAX = 512
 # Direct bot commands handled in _handle_direct_command (no /update on TG).
 TELEGRAM_DIRECT_COMMANDS: tuple[str, ...] = (
     "clear",
+    "gateway",
     "help",
     "memory",
     "model",
@@ -41,6 +42,7 @@ TELEGRAM_DIRECT_COMMANDS: tuple[str, ...] = (
     "status",
     "stop",
     "tools",
+    "true",
 )
 _TELEGRAM_TYPO_CUTOFF = 0.55
 
@@ -466,13 +468,15 @@ class TelegramAdapter(BaseAdapter):
         """Register bot commands with Telegram so they appear in the menu."""
         commands = [
             {"command": "help", "description": "Show available commands"},
-            {"command": "status", "description": "Show current session status"},
+            {"command": "status", "description": "Server status + model + version"},
             {"command": "tools", "description": "List available tools"},
-            {"command": "model", "description": "Show current model info"},
-            {"command": "memory", "description": "Show memory stats"},
-            {"command": "new", "description": "Start a fresh session"},
+            {"command": "model", "description": "Show or switch model"},
+            {"command": "memory", "description": "Memory stats / edit / set / del"},
+            {"command": "new", "description": "New session + clean working memory"},
+            {"command": "clear", "description": "Same as /new"},
+            {"command": "true", "description": "Allow next tool past safety block once"},
             {"command": "stop", "description": "Stop current task"},
-            {"command": "clear", "description": "Clear conversation history"},
+            {"command": "gateway", "description": "Owner: /gateway restart"},
         ]
         try:
             import json as _json
@@ -492,50 +496,71 @@ class TelegramAdapter(BaseAdapter):
         except Exception as e:
             log.warning("setMyCommands error: %s", e)
 
+    def _telegram_api_get(self, endpoint: str):
+        """GET local WW API for slash commands."""
+        import urllib.request
+        import urllib.error
+        try:
+            url = f"{self._ww_api}{endpoint}"
+            sep = "&" if "?" in endpoint else "?"
+            if self._ww_key and "api_key=" not in url:
+                url = f"{url}{sep}api_key={self._ww_key}"
+            headers = {}
+            if self._ww_key:
+                headers["Authorization"] = f"Bearer {self._ww_key}"
+                headers["X-API-Key"] = self._ww_key
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            log.debug("telegram api_get %s failed: %s", endpoint, e)
+            return None
+
+    def _telegram_api_post(self, endpoint: str, data: dict):
+        """POST local WW API for slash commands."""
+        import urllib.request
+        import urllib.error
+        try:
+            url = f"{self._ww_api}{endpoint}"
+            if self._ww_key and "api_key=" not in url:
+                sep = "&" if "?" in endpoint else "?"
+                url = f"{url}{sep}api_key={self._ww_key}"
+            body = json.dumps(data or {}).encode()
+            headers = {"Content-Type": "application/json"}
+            if self._ww_key:
+                headers["Authorization"] = f"Bearer {self._ww_key}"
+                headers["X-API-Key"] = self._ww_key
+            req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read())
+        except Exception as e:
+            log.debug("telegram api_post %s failed: %s", endpoint, e)
+            return None
+
+    def _is_telegram_owner(self, user_id: str) -> bool:
+        """Owner-only gates (e.g. /gateway restart)."""
+        uid = str(user_id or "").strip()
+        if not uid:
+            return False
+        env_owner = os.environ.get("WW_OWNER_TELEGRAM_ID", "").strip()
+        if env_owner:
+            return uid == env_owner
+        try:
+            from wavegate.identity import IdentityResolver
+            return IdentityResolver().is_owner_telegram(uid)
+        except Exception:
+            return False
+
     def _handle_direct_command(self, chat_id: str, command: str, args: str, context: dict = None) -> bool:
         """Handle a command directly (fast path, no LLM). Returns True if handled."""
-        c = command.lower()
+        c = command.lower().lstrip("/")
+        args = (args or "").strip()
+        context = context or {}
 
-        if c in ("help", "start"):
-            text = (
-                "**Worldwave Bot Commands**\n\n"
-                "/help — Show this menu\n"
-                "/status — Session status\n"
-                "/tools — List available tools\n"
-                "/model — Show or switch model (eg /model flash)\n"
-                "/memory — Memory statistics\n"
-                "/new — Start a fresh session\n"
-                "/stop — Stop current task\n"
-                "/clear — Clear history\n\n"
-                "Just send a message to start a task!"
-            )
-            self.send_message(chat_id, text)
-            return True
-
-        if c == "status":
-            try:
-                import requests
-                r = requests.get(f"{self._ww_api}/ww/status?api_key={self._ww_key}", timeout=5)
-                s = r.json()
-                text = (
-                    f"**Status:** {s.get('version', 'N/A')}\n"
-                    f"**Autonomous:** {s.get('autonomous', {}).get('running', 'N/A')}\n"
-                    f"**Tools:** {s.get('tool_count', 'N/A')}\n"
-                )
-                if s.get("ww", {}).get("session"):
-                    sess = s["ww"]["session"]
-                    text += f"**Spirals:** {sess.get('current_spiral', 'N/A')}\n"
-                    text += f"**Phase:** {sess.get('current_phase', 'N/A')}"
-            except Exception:
-                text = "**Status:** Server not reachable"
-            self.send_message(chat_id, text)
-            return True
-
+        # Telegram-only: tools list
         if c == "tools":
             try:
-                import requests
-                r = requests.get(f"{self._ww_api}/ww/status?api_key={self._ww_key}", timeout=5)
-                data = r.json()
+                data = self._telegram_api_get("/ww/status") or {}
                 cats = data.get("tool_categories", {})
                 count = data.get("tool_count", 0)
                 text = f"**Tools:** {count} total\n\n"
@@ -546,63 +571,48 @@ class TelegramAdapter(BaseAdapter):
             self.send_message(chat_id, text)
             return True
 
-        if c == "model":
-            if args.strip():
-                # Switch model
-                try:
-                    import requests
-                    r = requests.post(f"{self._ww_api}/ww/model?api_key={self._ww_key}",
-                                      json={"model": args.strip()}, timeout=5)
-                    s = r.json()
-                    if s.get("switched"):
-                        text = f"✓ Switched: `{s['from']}` → `{s['to']}`"
-                    else:
-                        text = f"✗ Failed: {s.get('error', 'unknown')}"
-                except Exception as e:
-                    text = f"✗ Error: {e}"
-            else:
-                # Show current
-                try:
-                    import requests
-                    r = requests.get(f"{self._ww_api}/ww/model?api_key={self._ww_key}", timeout=5)
-                    s = r.json()
-                    text = (
-                        f"**Model:** `{s.get('model', 'N/A')}`\n"
-                        f"**Provider:** `{s.get('provider', 'N/A')}`"
-                    )
-                except Exception:
-                    text = "**Model:** Could not detect"
-            self.send_message(chat_id, text)
+        # /gateway without restart → usage (owner gate still applies on restart)
+        if c == "gateway" and not args.lower().startswith("restart"):
+            self.send_message(chat_id, "Usage: /gateway restart\n(Owner-only on Telegram)")
             return True
 
-        if c == "memory":
-            try:
-                import requests
-                r = requests.get(f"{self._ww_api}/ww/memory/stats?api_key={self._ww_key}", timeout=5)
-                s = r.json()
-                text = (
-                    f"**Memory System**\n"
-                    f"**Total atoms:** {s.get('total_atoms', 'N/A')}\n"
-                    f"**Hippocampus:** {s.get('hippocampus_size', 'N/A')}\n"
-                    f"**Cortex index:** {s.get('cortex_size', 'N/A')}\n"
-                    f"**Sleep cycles:** {s.get('sleep_cycles', 'N/A')}"
-                )
-            except Exception:
-                text = "**Memory:** Could not fetch"
-            self.send_message(chat_id, text)
-            return True
+        # start → help
+        if c == "start":
+            c = "help"
 
-        if c == "new":
-            self.send_message(chat_id, "🆕 Starting a new session. Send your task!")
-            return True
+        line = f"/{c}" + (f" {args}" if args else "")
+        try:
+            from core.chat_commands import (
+                ChatCommandContext,
+                handle_chat_core,
+                parse_chat_core_command,
+            )
+        except Exception as e:
+            log.warning("chat_commands import failed: %s", e)
+            return False
 
-        if c == "stop":
-            self.send_message(chat_id, "⏹️ Stop signal sent.")
-            return True
-
-        if c == "clear":
-            self.send_message(chat_id, "🧹 History cleared. Fresh start!")
-            return True
+        parsed = parse_chat_core_command(line)
+        if parsed is not None:
+            sender = context.get("from") or context.get("sender") or {}
+            user_id = str(sender.get("id", "") or context.get("user_id", ""))
+            if not user_id and isinstance(context, dict):
+                # message dict from Telegram
+                user_id = str((context.get("from") or {}).get("id", ""))
+            ctx = ChatCommandContext(
+                api_get=self._telegram_api_get,
+                api_post=self._telegram_api_post,
+                is_tty=False,
+                platform="telegram",
+                user_id=user_id,
+                chat_id=str(chat_id),
+                is_owner=self._is_telegram_owner(user_id),
+                prompt_fn=None,
+                entity_id="",
+            )
+            text = handle_chat_core(parsed, ctx)
+            if text is not None:
+                self.send_message(chat_id, text)
+                return True
 
         # Mistyped bot command — Did you mean (skip LLM only on close match)
         close = suggest_telegram_commands(c)
@@ -879,7 +889,10 @@ class TelegramAdapter(BaseAdapter):
 
         # Detect command prefix
         clean = clean.strip()
-        ALL_COMMANDS = ["goal", "status", "stop", "help", "tools", "model", "memory", "new", "clear", "start"]
+        ALL_COMMANDS = [
+            "goal", "status", "stop", "help", "tools", "model", "memory",
+            "new", "clear", "start", "true", "gateway",
+        ]
         for cmd in ALL_COMMANDS:
             prefix = f"/{cmd}"
             if clean.startswith(prefix):

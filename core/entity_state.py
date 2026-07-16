@@ -643,6 +643,43 @@ class EntityStateManager:
         state.working_memory_core.discard(key)
         self.save(state)
 
+    def clear_session_working_memory(self, entity_id: str) -> Dict[str, int]:
+        """Evict non-core WM keys via promote/archive path (chat /new).
+
+        Never removes is_core keys or keys that shadow preferences.
+        Does not wipe LTM atoms. Returns counts for user-facing status.
+        """
+        state = self.get(entity_id)
+        cleared = 0
+        promoted = 0
+        kept_core = 0
+        for key in list(state.working_memory.keys()):
+            if self._is_wm_protected(state, key):
+                kept_core += 1
+                continue
+            value = state.working_memory.get(key, "")
+            meta = dict(state.working_memory_meta.get(key) or {})
+            will_promote = (
+                self._should_promote(value, meta) and self._on_wm_evict is not None
+            )
+            self._promote_or_archive(entity_id, key, value, meta)
+            if will_promote:
+                promoted += 1
+            state.working_memory.pop(key, None)
+            state.working_memory_meta.pop(key, None)
+            state.wm_evicted_total = int(getattr(state, "wm_evicted_total", 0) or 0) + 1
+            cleared += 1
+        # Soft session fields (not LTM)
+        state.last_context = ""
+        state.active_goal = ""
+        state.active_task_id = ""
+        self.save(state)
+        return {
+            "wm_cleared": cleared,
+            "promoted": promoted,
+            "kept_core": kept_core,
+        }
+
     def get_context_for(self, entity_id: str) -> str:
         """Get the context injection string for the LLM system prompt.
 

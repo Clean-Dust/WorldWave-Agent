@@ -398,6 +398,9 @@ class TestChatGatewayIntercept:
             ("gateway start telegram", ("start", "telegram")),
             ("/gateway stop", ("stop", None)),
             ("ww gateway stop telegram", ("stop", "telegram")),
+            ("/gateway restart", ("restart", None)),
+            ("gateway restart", ("restart", None)),
+            ("gateway restart telegram", ("restart", "telegram")),
             ("／gateway setup", ("setup", None)),  # fullwidth solidus
             # must not steal update / exit / normal goals
             ("/update", None),
