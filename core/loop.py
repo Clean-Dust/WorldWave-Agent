@@ -283,7 +283,12 @@ class Worldwave:
             self._maybe_wire_wm_subconscious_tiebreak()
 
     def _get_entity_context(self) -> str:
-        """Get entity context to inject into the system prompt."""
+        """Get entity context to inject into the system prompt.
+
+        Working-memory labels and user model stay here for continuity.
+        Memory v-next retrieved blocks are appended as a *separate*
+        section (not merged into persona text) when available.
+        """
         parts = []
         if self.entity_state_mgr and self._current_entity_id:
             entity_ctx = self.entity_state_mgr.get_context_for(self._current_entity_id)
@@ -297,6 +302,15 @@ class Worldwave:
                 um_ctx = user_model.get_context_injection()
                 if um_ctx:
                     parts.append("[User Model]\n" + um_ctx)
+            except Exception:
+                pass
+
+        # ── Memory v-next: separate memory block (prompt isolation) ──
+        if self.memory is not None and hasattr(self.memory, "memory_context_block"):
+            try:
+                mem_block = self.memory.memory_context_block("")
+                if mem_block:
+                    parts.append("[Memory context]\n" + mem_block)
             except Exception:
                 pass
 

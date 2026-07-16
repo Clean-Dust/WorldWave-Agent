@@ -10,20 +10,27 @@ Core principles:
 - Bounded online buffers + long-term store (no infinite-prompt promise)
 - Recall via pattern completion + diffuse activation, not keyword search
 
-Three layers (entity → episodic → LTM):
-  Working Memory (entity RAM, core/entity_state.py) — fixed-capacity online facts
-    with closed labels (kind == label id): constraint > commitment > outcome >
-    rationale for eviction weight (约束/承诺/结果/理由)
-  → Hippocampus (episodic cap + protect/GC) — short-term buffer
-  → sleep / promote (LTM) — consolidation into durable knowledge
+Layers (v-next product slice, WW_MEMORY_VNEXT default on):
+  Working Memory — single active topic (+ bound digests); entity RAM labels retained
+  → Hippocampus / Topic STM — BM25 + six-weight eval; atom extract on leave
+  → Atom nets (World/Experience/Observation/Opinion) + dual timestamps
+  → LTM VFS (ww:// content + index; Abstract/Overview/Detail tiers)
+  → Dreaming (async cold path; WW_DREAMING_ENABLED default on)
+
+Legacy path (still available as fallback):
+  Entity working_memory labels → Hippocampus atoms → sleep/promote
+
 Subconscious is referee/gating only (BG safe gate + optional WM score
 tie-break); it does not replace WM or hippocampus.
 
-Also within this package:
-  Short-term Buffer (Hippocampus) -> Emotional Scoring (Amygdala) -> Sleep
-
 Modules:
 atom.py          Memory atom + Entity Resolution + Fact Store
+atom_nets.py     Four logical nets + Connect (Updates/Extends/Derives)
+topic.py         Topic / Digest / WorkingTopicStore
+topic_stm.py     Topic hippocampus (BM25 + promote/purge)
+ltm_vfs.py       ww:// LTM content+index layers
+dreaming.py      Async dream worker
+vnext.py         Pipeline orchestrator
 encoder.py       Encoder layer: entity extraction + emotional quantization
 hippocampus.py   Short-term buffer (100 FIFO + forced sleep when full)
 amygdala.py      Amygdala scoring (5-factor weighted)
@@ -49,10 +56,21 @@ from .recall import RecallEngine
 from .reconsolidation import Reconsolidation
 
 from .system import MemorySystem
+from .vnext import MemoryVNext, memory_vnext_enabled
+from .topic import Topic, Digest, WorkingTopicStore
+from .topic_stm import TopicHippocampus
+from .atom_nets import AtomNetStore, MemoryAtomV2
+from .ltm_vfs import LTMVFS, ContentTier, ImmutableLTMError
+from .dreaming import DreamingWorker, dreaming_enabled
 
 __all__ = [
     "MemoryAtom", "FactStore", "EntityResolver", "maybe_promote_core",
     "EncodingLayer", "EmotionMapper", "Hippocampus", "Amygdala",
     "SleepConsolidation", "DailyScheduler", "SleepDaemon", "IdleDetector",
     "RecallEngine", "Reconsolidation", "MemorySystem",
+    "MemoryVNext", "memory_vnext_enabled",
+    "Topic", "Digest", "WorkingTopicStore", "TopicHippocampus",
+    "AtomNetStore", "MemoryAtomV2",
+    "LTMVFS", "ContentTier", "ImmutableLTMError",
+    "DreamingWorker", "dreaming_enabled",
 ]

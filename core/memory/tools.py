@@ -180,6 +180,20 @@ class MemoryTools:
                     entities=[key, category, kind_tag],
                     context_id=f"remember:{self._entity_id}:{resolved_kind}",
                 )
+            # 3. Memory v-next hot path (topic atoms + core slice); no dual-LLM
+            vnext = getattr(self._memory, "vnext", None)
+            if vnext is not None:
+                try:
+                    vnext.remember(
+                        key,
+                        value,
+                        kind=resolved_kind,
+                        is_core=bool(is_core),
+                        logical_net="world",
+                        category=category,
+                    )
+                except Exception as e:
+                    log.debug("vnext.remember dual-write skipped: %s", e)
 
         return {
             "success": True,

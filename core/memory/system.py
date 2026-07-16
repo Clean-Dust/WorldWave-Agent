@@ -29,6 +29,7 @@ from .sleep import DailyScheduler, IdleDetector, SleepConsolidation, SleepDaemon
 from .recall import RecallEngine
 from .reconsolidation import Reconsolidation
 from .edges import EdgeStore
+from .vnext import MemoryVNext, memory_vnext_enabled
 
 logger = logging.getLogger("ww.memory.system")
 
@@ -150,6 +151,23 @@ class MemorySystem:
 
         # ── load ──
         self.fact_store.load()
+
+        # ── Memory v-next pipeline (topic WM → STM → atoms → LTM → dreaming) ──
+        # Default ON via WW_MEMORY_VNEXT; legacy hippocampus/atom path remains
+        # as fallback for store/recall and existing prove harnesses.
+        self.vnext: Optional[MemoryVNext] = None
+        self._vnext_enabled = memory_vnext_enabled()
+        if self._vnext_enabled:
+            try:
+                self.vnext = MemoryVNext(
+                    data_dir=os.path.join(self.data_dir, "vnext"),
+                    start_dreaming=True,
+                )
+                logger.info("Memory v-next enabled (data_dir=%s/vnext)", self.data_dir)
+            except Exception as e:
+                logger.warning("Memory v-next init failed; legacy path only: %s", e)
+                self.vnext = None
+                self._vnext_enabled = False
 
         # ── Backward compatible: old MemoryStore API ──
         self.store = _CompatStore(self)
@@ -426,14 +444,60 @@ class MemorySystem:
 
     def overall_status(self) -> dict:
         """completesystemstate. """
-        return {
+        st = {
             "hippocampus": self.hippocampus.status(),
             "emotional": self.emotional_state(),
             "fact_store": self.fact_store.stats(),
             "sleep_cycles": self.sleep_engine._cycles_completed,
             "amygdala_weights": self.amygdala.weights(),
             "schedule": self.scheduler.status() if self.scheduler else None,
+            "vnext_enabled": bool(self._vnext_enabled and self.vnext),
         }
+        if self.vnext is not None:
+            try:
+                st["vnext"] = self.vnext.status()
+            except Exception as e:
+                st["vnext_error"] = str(e)
+        return st
+
+    # ── Memory v-next convenience API ──
+
+    def ingest_turn(
+        self,
+        role: str,
+        content: str,
+        *,
+        new_topic: bool = False,
+        topic_title: str = "",
+    ) -> dict:
+        """Passive lossless track: land turn into topic WM + experience atom."""
+        if self.vnext is None:
+            # Fallback: store as episodic atom only
+            return self._do_store(
+                content=f"{role}: {content}",
+                source="passive",
+                atom_type="episodic",
+            )
+        return self.vnext.ingest_turn(
+            role, content, new_topic=new_topic, topic_title=topic_title
+        )
+
+    def recall_vnext(self, query: str, top_k: int = 5) -> dict:
+        """Topic STM + LTM + atom freshness recall (v-next)."""
+        if self.vnext is None:
+            return self.recall(query, top_k=top_k)
+        return self.vnext.recall(query, top_k=top_k)
+
+    def memory_context_block(self, query: str = "") -> str:
+        """Non-system prompt block: working topic + retrieved memory (isolated)."""
+        if self.vnext is None:
+            return ""
+        return self.vnext.inject_for_turn(query)
+
+    def request_dream(self) -> dict:
+        if self.vnext is None:
+            return {"queued": False, "skipped": True, "reason": "vnext_disabled"}
+        return self.vnext.request_dream()
 
     def get_context_pressure(self) -> float:
         """Return context window pressure (0.0–1.0).
