@@ -78,11 +78,12 @@ class TestSingleCommand:
         assert callable(cli_module.cmd_run)
         print("✅ CLI: cmd_run exists (unified entry point)")
 
-    def test_run_in_commands_chat_not(self, cli_module):
-        """'run' should be in COMMANDS (primary entry point), 'chat' should not."""
+    def test_run_and_chat_in_commands(self, cli_module):
+        """'run' remains a command; 'chat' is a core alias that maps to cmd_run."""
         assert "run" in cli_module.COMMANDS, "'run' must be in COMMANDS — it is the primary user entry point"
-        assert "chat" not in cli_module.COMMANDS
-        print("✅ CLI: run in commands, chat not")
+        assert "chat" in cli_module.COMMANDS, "'chat' is a core terminal command (ww chat)"
+        assert cli_module.COMMANDS["chat"] is cli_module.cmd_run
+        print("✅ CLI: run + chat both in COMMANDS (chat → cmd_run)")
 
     def test_cmd_run_calls_auto_start_server(self, cli_module):
         """cmd_run should call auto_start_server() first."""
