@@ -152,9 +152,10 @@ class MemorySystem:
         # ── load ──
         self.fact_store.load()
 
-        # ── Memory v-next pipeline (topic WM → STM → atoms → LTM → dreaming) ──
-        # Default ON via WW_MEMORY_VNEXT; legacy hippocampus/atom path remains
-        # as fallback for store/recall and existing prove harnesses.
+        # ── Single memory system (v-next spine; default always-on) ──
+        # Topic WM + labeled facts → STM → atoms → LTM → dreaming.
+        # Hippocampus/sleep remain as cold-path implementation behind this API
+        # (not a second product memory). WW_MEMORY_VNEXT=0 is emergency only.
         self.vnext: Optional[MemoryVNext] = None
         self._vnext_enabled = memory_vnext_enabled()
         if self._vnext_enabled:
@@ -163,9 +164,17 @@ class MemorySystem:
                     data_dir=os.path.join(self.data_dir, "vnext"),
                     start_dreaming=True,
                 )
-                logger.info("Memory v-next enabled (data_dir=%s/vnext)", self.data_dir)
+                logger.info(
+                    "Memory single-system (v-next) enabled (data_dir=%s/vnext)",
+                    self.data_dir,
+                )
             except Exception as e:
-                logger.warning("Memory v-next init failed; legacy path only: %s", e)
+                # Kill switch residual: if init fails, keep sleep/hippocampus API
+                # but do not ship dual inject of flat Entity WM as product brain.
+                logger.warning(
+                    "Memory v-next init failed (emergency path, no dual inject): %s",
+                    e,
+                )
                 self.vnext = None
                 self._vnext_enabled = False
 
@@ -346,23 +355,30 @@ class MemorySystem:
     # ── sleepconsolidation ──
 
     def sleep(self) -> dict:
-        """
-        Manually trigger sleep consolidation.
+        """Trigger cold-path consolidation (single MemorySystem API).
 
-        Returns:
-            consolidation report
+        Sleep consolidation remains an internal implementation behind this
+        API; when v-next is active, also queues dreaming. Users never need
+        two product memory stacks.
         """
         # First execute stability decay
         all_atoms = self.hippocampus.all()
         decay_result = self.reconsolidation.decay_stability(all_atoms)
 
-        # executeconsolidation
+        # execute consolidation (hippocampus cold path)
         result = self.sleep_engine.consolidate(self.hippocampus, self.amygdala)
 
         result["decay"] = decay_result
 
         if self.scheduler:
             self.scheduler.mark_sleep_done()
+
+        # Map useful sleep into v-next dreaming cold path (same API surface)
+        if self.vnext is not None:
+            try:
+                result["dream"] = self.vnext.request_dream("full")
+            except Exception as e:
+                result["dream"] = {"queued": False, "error": str(e)}
 
         return result
 
@@ -488,11 +504,19 @@ class MemorySystem:
             return self.recall(query, top_k=top_k)
         return self.vnext.recall(query, top_k=top_k)
 
-    def memory_context_block(self, query: str = "") -> str:
-        """Non-system prompt block: working topic + retrieved memory (isolated)."""
+    def memory_context_block(self, query: str = "", entity_id: str = "") -> str:
+        """Single non-system memory picture (labeled facts + topic + recall).
+
+        Prompt isolation: persona stays in system; this is context only.
+        """
         if self.vnext is None:
             return ""
-        return self.vnext.inject_for_turn(query)
+        if entity_id:
+            try:
+                self.vnext.set_entity(entity_id)
+            except Exception:
+                pass
+        return self.vnext.inject_for_turn(query, entity_id=entity_id or "")
 
     def request_dream(self) -> dict:
         if self.vnext is None:

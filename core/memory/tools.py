@@ -1,24 +1,19 @@
 """
-core/memory/tools.py — Self-editing memory tools
+core/memory/tools.py — Self-editing memory tools (single system)
 
 Gives the cognitive agent the ability to actively manage its own memory —
 the agent transitions from "passive consumer of recall results" to
 "active manager of its knowledge".
 
-Two core tools:
-- remember(key, value, kind=...): Store a fact in memory. Agent calls this
-  when it learns something new or detects a change. kind is an explicit
-  WM label id (constraint / commitment / outcome / rationale) — never
-  inferred from keywords. Product term: 标签; API field stays ``kind``.
-- forget(key): Mark a fact as no longer valid. Superseded, not deleted.
+Tools write against the **single** memory system (MemoryVNext labeled facts
++ atom nets). EntityState flat WM is an optional compatibility dual-write
+shim only — product inject does not use it as a second brain.
 
-These are the mechanism that makes entity continuity possible — the agent
-can say "I'll remember that" and actually do it.
+  - remember(key, value, kind=...): explicit kind labels only (no keyword guess)
+  - forget(key): supersede / remove
+  - recall_mine(query): list online labeled facts
 
-Integration:
-- EntityStateManager: bounded working memory (RAM, capacity-evicted by
-  label weight)
-- MemorySystem: durable atoms; also receives promote-on-evict from WM
+Product term for kind: 标签; API field stays ``kind``.
 """
 
 from __future__ import annotations
@@ -30,6 +25,11 @@ from typing import Any, Dict, Optional
 from core.entity_state import normalize_wm_kind
 
 log = logging.getLogger("ww.memory.tools")
+
+# REMOVAL DEADLINE: EntityState dual-write shim — remove after 2026-08-31
+# once migration prove stays green and no external readers of entity WM remain.
+_ENTITY_WM_DUAL_WRITE = True
+_ENTITY_WM_DUAL_WRITE_REMOVE_BY = "2026-08-31"
 
 
 class MemoryTools:
@@ -46,13 +46,48 @@ class MemoryTools:
         self._entity_mgr = entity_state_mgr
         self._entity_id = entity_id or "default"
         self._wire_wm_evict()
+        self._bind_vnext_entity()
 
     def set_entity(self, entity_id: str):
         """Set the current entity context (called before each interaction)."""
-        self._entity_id = entity_id
+        self._entity_id = entity_id or "default"
+        self._bind_vnext_entity()
+
+    def _vnext(self):
+        if self._memory is None:
+            return None
+        return getattr(self._memory, "vnext", None)
+
+    def _bind_vnext_entity(self) -> None:
+        vnext = self._vnext()
+        if vnext is not None and hasattr(vnext, "set_entity"):
+            try:
+                vnext.set_entity(self._entity_id)
+            except Exception as e:
+                log.debug("vnext.set_entity failed: %s", e)
 
     def _wire_wm_evict(self) -> None:
-        """Promote important WM evictions into MemorySystem atoms (once per mgr)."""
+        """Promote important WM evictions into durable atoms (once per mgr).
+
+        When v-next is present, wire LabeledFactStore on_evict as well so
+        capacity pressure promotes into the same MemorySystem.
+        """
+        vnext = self._vnext()
+        if vnext is not None and self._memory is not None:
+            facts = getattr(vnext, "facts", None)
+            if facts is not None and not getattr(facts, "_wm_evict_wired", False):
+
+                def _on_fact_evict(
+                    entity_id: str,
+                    key: str,
+                    value: str,
+                    meta: Optional[Dict[str, Any]] = None,
+                ) -> None:
+                    self._promote_evicted(entity_id, key, value, meta)
+
+                facts.set_on_evict(_on_fact_evict)
+                facts._wm_evict_wired = True
+
         if not self._entity_mgr or not self._memory:
             return
         if getattr(self._entity_mgr, "_wm_evict_wired", False):
@@ -64,35 +99,44 @@ class MemoryTools:
             value: str,
             meta: Optional[Dict[str, Any]] = None,
         ) -> None:
-            fact = f"{key}: {value}"
-            kind = "outcome"
-            if isinstance(meta, dict):
-                kind = normalize_wm_kind(meta.get("kind"))
-            kind_tag = f"wm_kind:{kind}"
-            try:
-                if hasattr(self._memory, "store_fact"):
-                    self._memory.store_fact(
-                        fact=fact,
-                        entities=[key, "wm_evict", kind_tag],
-                        context_id=f"wm_evict:{entity_id}:{kind}",
-                    )
-                elif hasattr(self._memory, "store_text"):
-                    self._memory.store_text(
-                        fact,
-                        source="wm_evict",
-                        entities=[key, "wm_evict", kind_tag],
-                    )
-                log.info(
-                    "WM promote→LTM entity=%s key=%s kind=%s",
-                    entity_id[:12],
-                    key,
-                    kind,
-                )
-            except Exception as e:
-                log.warning("WM promote store failed for %s: %s", key, e)
+            self._promote_evicted(entity_id, key, value, meta)
 
         self._entity_mgr.set_on_wm_evict(_on_wm_evict)
         self._entity_mgr._wm_evict_wired = True
+
+    def _promote_evicted(
+        self,
+        entity_id: str,
+        key: str,
+        value: str,
+        meta: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        fact = f"{key}: {value}"
+        kind = "outcome"
+        if isinstance(meta, dict):
+            kind = normalize_wm_kind(meta.get("kind"))
+        kind_tag = f"wm_kind:{kind}"
+        try:
+            if hasattr(self._memory, "store_fact"):
+                self._memory.store_fact(
+                    fact=fact,
+                    entities=[key, "wm_evict", kind_tag],
+                    context_id=f"wm_evict:{entity_id}:{kind}",
+                )
+            elif hasattr(self._memory, "store_text"):
+                self._memory.store_text(
+                    fact,
+                    source="wm_evict",
+                    entities=[key, "wm_evict", kind_tag],
+                )
+            log.info(
+                "WM promote→durable entity=%s key=%s kind=%s",
+                entity_id[:12],
+                key,
+                kind,
+            )
+        except Exception as e:
+            log.warning("WM promote store failed for %s: %s", key, e)
 
     # ── remember ─────────────────────────────────────────────────
 
@@ -104,96 +148,98 @@ class MemoryTools:
         is_core: bool = False,
         kind: str = "",
     ) -> dict:
-        """Store a fact in entity memory. Called by the agent when it learns something.
+        """Store a fact in the single memory system.
 
         Args:
             key: Short label for the fact (e.g., "user_name", "preferred_model")
-            value: The fact content (e.g., "Chung", "deepseek-v4-pro")
-            category: Optional grouping only (general, preference, technical, etc.).
-                      Does NOT affect eviction. Never call category a 标签/label
-                      for ranking — only ``kind`` is the WM label id.
-            is_core: If True, mark as core memory (never auto-evicted / GC'd).
-                     Iron rule: prefer is_core=True for must-keep facts.
-                     Always dual-writes to MemorySystem atoms; WM key is protected.
-            kind: Explicit WM label id for eviction weight (not keyword-inferred):
-                  - constraint (约束): iron rule e.g. never change netplan — soft
-                    weight 4; if is_core omitted, still high protect but soft only
-                  - commitment (承诺): next step / plan choice — weight 3
-                  - outcome (结果): fact / code / result — weight 2 (default)
-                  - rationale (理由): why / process note — weight 1, easiest squeeze
-                  Empty/illegal → outcome (default). constraint does NOT replace is_core.
+            value: The fact content
+            category: Optional grouping only (does NOT affect eviction)
+            is_core: If True, never auto-evicted under capacity pressure
+            kind: Explicit WM label id — constraint | commitment | outcome | rationale.
+                  Empty/illegal → outcome. Never inferred from keywords.
 
         Returns:
-            {"status": "stored", "key": key, "previous": old_value or None}
-
-        This is a SELF-EDITING operation — the agent decides what to remember.
-        The old value (if any) is returned so the agent can confirm the update.
+            {"status": "stored", "key": key, "previous": old_value or None, ...}
         """
         if not key or not value:
             return {"status": "error", "message": "key and value are required"}
 
-        previous = None
-        # Empty kind → None so set_working_memory preserves existing / defaults outcome
         kind_arg: Optional[str] = kind if (kind is not None and str(kind).strip()) else None
         resolved_kind = normalize_wm_kind(kind_arg)
+        previous = None
+        vnext = self._vnext()
 
-        # 1. Entity working memory (bounded RAM; is_core keys are not auto-evicted)
-        if self._entity_mgr:
-            state = self._entity_mgr.get(self._entity_id)
-            previous = state.working_memory.get(key)
-            self._entity_mgr.set_working_memory(
-                self._entity_id,
-                key,
-                value,
-                kind=kind_arg,
-                is_core=bool(is_core),
-            )
-            meta = state.working_memory_meta.get(key) or {}
-            resolved_kind = normalize_wm_kind(meta.get("kind"))
-            log.info(
-                "Entity %s: remember '%s' = '%s' (was: %s, is_core=%s, kind=%s)",
-                self._entity_id[:12],
-                key,
-                value[:50],
-                previous,
-                is_core,
-                resolved_kind,
-            )
+        # ── Primary path: MemoryVNext labeled facts (single SoT) ──
+        if vnext is not None:
+            try:
+                result = vnext.remember(
+                    key,
+                    value,
+                    kind=resolved_kind,
+                    is_core=bool(is_core),
+                    logical_net="world",
+                    category=category,
+                    entity_id=self._entity_id,
+                )
+                previous = result.get("previous")
+                resolved_kind = normalize_wm_kind(result.get("kind") or resolved_kind)
+                log.info(
+                    "Entity %s: remember(vnext) '%s' kind=%s is_core=%s",
+                    self._entity_id[:12],
+                    key,
+                    resolved_kind,
+                    is_core,
+                )
+            except Exception as e:
+                log.warning("vnext.remember failed: %s", e)
+                vnext = None  # fall through to legacy paths
 
-        # 2. Semantic / atom memory (durable). is_core always goes to MemorySystem
-        #    so core facts are not only in the volatile WM buffer.
-        if self._memory:
+        # ── Durable hippocampus/fact_store when no vnext or as sleep backend ──
+        if self._memory is not None and vnext is None:
             fact_text = self._format_fact(key, value, category)
             kind_tag = f"wm_kind:{resolved_kind}"
-            if is_core and hasattr(self._memory, "_do_store"):
-                self._memory._do_store(
-                    content=fact_text,
-                    source="inference",
-                    atom_type="semantic",
-                    tags=[key, category, kind_tag],
-                    context_id=f"remember:{self._entity_id}:{resolved_kind}",
-                    is_core=True,
-                )
-            else:
-                self._memory.store_fact(
-                    fact=fact_text,
-                    entities=[key, category, kind_tag],
-                    context_id=f"remember:{self._entity_id}:{resolved_kind}",
-                )
-            # 3. Memory v-next hot path (topic atoms + core slice); no dual-LLM
-            vnext = getattr(self._memory, "vnext", None)
-            if vnext is not None:
-                try:
-                    vnext.remember(
-                        key,
-                        value,
-                        kind=resolved_kind,
-                        is_core=bool(is_core),
-                        logical_net="world",
-                        category=category,
+            try:
+                if is_core and hasattr(self._memory, "_do_store"):
+                    self._memory._do_store(
+                        content=fact_text,
+                        source="inference",
+                        atom_type="semantic",
+                        tags=[key, category, kind_tag],
+                        context_id=f"remember:{self._entity_id}:{resolved_kind}",
+                        is_core=True,
                     )
-                except Exception as e:
-                    log.debug("vnext.remember dual-write skipped: %s", e)
+                elif hasattr(self._memory, "store_fact"):
+                    self._memory.store_fact(
+                        fact=fact_text,
+                        entities=[key, category, kind_tag],
+                        context_id=f"remember:{self._entity_id}:{resolved_kind}",
+                    )
+            except Exception as e:
+                log.warning("memory store_fact failed: %s", e)
+
+        # ── EntityState path ──
+        # When v-next is active: dual-write shim only (not product inject source).
+        # REMOVE BY: _ENTITY_WM_DUAL_WRITE_REMOVE_BY.
+        # When no MemorySystem (unit tests): entity is the write target.
+        if self._entity_mgr and (
+            (_ENTITY_WM_DUAL_WRITE and self._vnext() is not None)
+            or (self._vnext() is None)
+        ):
+            try:
+                state = self._entity_mgr.get(self._entity_id)
+                if previous is None:
+                    previous = state.working_memory.get(key)
+                self._entity_mgr.set_working_memory(
+                    self._entity_id,
+                    key,
+                    value,
+                    kind=kind_arg,
+                    is_core=bool(is_core),
+                )
+                meta = state.working_memory_meta.get(key) or {}
+                resolved_kind = normalize_wm_kind(meta.get("kind") or resolved_kind)
+            except Exception as e:
+                log.debug("entity WM write skipped: %s", e)
 
         return {
             "success": True,
@@ -204,45 +250,55 @@ class MemoryTools:
             "kind": resolved_kind,
             "timestamp": time.time(),
             "output": f"Remembered {key}: {value}",
+            "store": "vnext" if self._vnext() is not None else "legacy_shim",
         }
 
     # ── forget ───────────────────────────────────────────────────
 
     def forget(self, key: str) -> dict:
-        """Mark a fact as no longer valid. Called by the agent when it detects
-        that stored information is outdated or incorrect.
-
-        Args:
-            key: The fact key to supersede
-
-        Returns:
-            {"status": "forgotten", "key": key, "was": old_value or None}
-
-        The old fact is NOT deleted — it is superseded. This preserves the
-        temporal history (what was believed when) while preventing stale
-        facts from influencing future decisions.
-        """
+        """Mark a fact as no longer valid (single system)."""
         if not key:
             return {"status": "error", "message": "key is required"}
 
         was = None
+        vnext = self._vnext()
+        if vnext is not None:
+            try:
+                result = vnext.forget(key, entity_id=self._entity_id)
+                was = result.get("was")
+            except Exception as e:
+                log.warning("vnext.forget failed: %s", e)
 
-        # 1. Remove from entity working memory
-        if self._entity_mgr:
+        if self._memory is not None and vnext is None:
+            try:
+                self._memory.store_fact(
+                    fact=f"[SUPERSEDED] {key}",
+                    entities=[key, "superseded"],
+                    context_id=f"forget:{self._entity_id}",
+                )
+            except Exception as e:
+                log.debug("forget store_fact: %s", e)
+
+        if _ENTITY_WM_DUAL_WRITE and self._entity_mgr:
+            try:
+                state = self._entity_mgr.get(self._entity_id)
+                if was is None:
+                    was = state.working_memory.get(key)
+                self._entity_mgr.delete_working_memory(self._entity_id, key)
+            except Exception as e:
+                log.debug("entity forget dual-write: %s", e)
+
+        if vnext is None and self._memory is None and self._entity_mgr:
             state = self._entity_mgr.get(self._entity_id)
             was = state.working_memory.get(key)
             self._entity_mgr.delete_working_memory(self._entity_id, key)
 
-        # 2. In semantic memory, mark related facts as superseded
-        if self._memory:
-            self._memory.store_fact(
-                fact=f"[SUPERSEDED] {key}",
-                entities=[key, "superseded"],
-                context_id=f"forget:{self._entity_id}",
-            )
-
-        log.info("Entity %s: forget '%s' (was: %s)",
-                 self._entity_id[:12], key, was)
+        log.info(
+            "Entity %s: forget '%s' (was: %s)",
+            self._entity_id[:12],
+            key,
+            was,
+        )
 
         return {
             "success": True,
@@ -256,30 +312,39 @@ class MemoryTools:
     # ── recall_mine ──────────────────────────────────────────────
 
     def recall_mine(self, query: str = "", limit: int = 10) -> dict:
-        """Query what the agent currently knows about itself and its user.
+        """Query labeled facts from the single memory system."""
+        facts: Dict[str, str] = {}
+        vnext = self._vnext()
 
-        Args:
-            query: Optional filter (empty = return all working memory)
-            limit: Max results
+        if vnext is not None:
+            try:
+                listed = vnext.list_facts(
+                    query, entity_id=self._entity_id, limit=limit
+                )
+                raw = listed.get("facts") or {}
+                # Flatten value dicts → str for tool output compat
+                for k, v in raw.items():
+                    if isinstance(v, dict):
+                        facts[k] = str(v.get("value", ""))
+                    else:
+                        facts[k] = str(v)
+            except Exception as e:
+                log.warning("vnext.list_facts failed: %s", e)
 
-        Returns:
-            {"facts": {...}, "total": N}
-        """
-        facts = {}
-        if self._entity_mgr:
+        # Prefer v-next; only fall back to entity if v-next empty / missing
+        if not facts and self._entity_mgr:
             state = self._entity_mgr.get(self._entity_id)
             facts = dict(state.working_memory)
+            if query:
+                query_lower = query.lower()
+                facts = {
+                    k: v
+                    for k, v in facts.items()
+                    if query_lower in k.lower() or query_lower in v.lower()
+                }
 
-        if query:
-            query_lower = query.lower()
-            facts = {k: v for k, v in facts.items()
-                     if query_lower in k.lower() or query_lower in v.lower()}
-
-        # Limit
         items = list(facts.items())[:limit]
         facts_out = dict(items)
-        # Human-readable output so extract_user_response / chat surfaces
-        # can show facts without a second LLM turn (E4 continuity).
         if facts_out:
             output = "\n".join(f"{k}: {v}" for k, v in facts_out.items())
         else:
@@ -290,6 +355,7 @@ class MemoryTools:
             "facts": facts_out,
             "total": len(items),
             "output": output,
+            "store": "vnext" if vnext is not None else "entity_shim",
         }
 
     # ── Internal ─────────────────────────────────────────────────

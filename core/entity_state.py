@@ -28,12 +28,14 @@ Working Memory (entity RAM):
   to ~/.ww/entities/<id>/wm_evicted.jsonl. Does not promise an infinite LLM
   prompt — only the current RAM set is injected into context.
 
-Memory stack (three layers):
-  Working Memory (entity RAM, this module)
-    → Hippocampus (episodic capacity + GC/protect)
-    → sleep / promote (long-term memory)
+Memory stack (product = single system under core/memory/vnext):
+  Labeled facts + topic WM live in MemoryVNext (LabeledFactStore).
+  This module keeps EntityState.working_memory as identity continuity
+  and a dual-write shim from MemoryTools (remove by 2026-08-31) —
+  product inject does NOT dump flat WM when v-next is active.
+  Cold path: hippocampus / sleep behind MemorySystem.sleep().
   Subconscious is referee/gating only (BG safe gate + optional WM
-  tie-break score); it never replaces WM or hippocampus storage.
+  tie-break score); it never replaces storage.
 
 Lifecycle:
 1. Message arrives → entity_id resolved → state loaded from disk
@@ -351,23 +353,28 @@ class EntityState(BaseModel):
             meta.setdefault("kind", DEFAULT_WM_KIND)
             meta["access_count"] = int(meta.get("access_count", 0)) + 1
 
-    def get_context_injection(self, bump_access: bool = True) -> str:
-        """Build a human-readable context block for LLM system prompt.
+    def get_context_injection(
+        self,
+        bump_access: bool = True,
+        *,
+        include_working_memory: bool = True,
+    ) -> str:
+        """Build a human-readable continuity block for the agent turn.
 
-        Only injects facts currently in the working-memory RAM buffer
-        (capacity-bounded). Title: "Working memory (online facts)".
-        When bump_access is True, increments access_count for injected keys.
+        When ``include_working_memory`` is True (default for unit tests /
+        emergency path), injects labeled facts from the local working_memory
+        buffer. Product path with MemoryVNext active passes False so the
+        single memory system supplies labeled facts (no dual inject).
 
-        Inject format (LOCKED product contract): Chinese label brackets via
+        Inject format when WM included (LOCKED): Chinese label brackets via
         WM_LABEL_ZH, e.g. ``- [约束] no_netplan: never change netplan``.
-        Do not use English-only ``[commitment]`` tags in inject text.
         """
         parts: List[str] = []
 
         if self.display_name and self.display_name != "unknown":
             parts.append(f"You are speaking with {self.display_name}.")
 
-        if self.working_memory:
+        if include_working_memory and self.working_memory:
             if bump_access:
                 self.bump_wm_access()
             fact_lines: List[str] = []
@@ -680,17 +687,24 @@ class EntityStateManager:
             "kept_core": kept_core,
         }
 
-    def get_context_for(self, entity_id: str) -> str:
-        """Get the context injection string for the LLM system prompt.
+    def get_context_for(
+        self, entity_id: str, *, include_working_memory: bool = True
+    ) -> str:
+        """Get the continuity context string for an entity.
 
-        Bumps access counts for injected WM keys (persisted on next save;
-        also saved here so ranking stays current across restarts).
+        ``include_working_memory=False`` when the single MemoryVNext system
+        injects labeled facts (avoids dual parallel WM dump). Default True
+        preserves unit tests / emergency path without v-next.
+
+        Bumps access counts for injected WM keys when WM is included.
         """
         state = self.get(entity_id)
-        text = state.get_context_injection(bump_access=True)
-        # Persist access bumps without bumping version thrashing every read:
-        # cheap write so eviction scores remain meaningful after restart.
-        if state.working_memory:
+        text = state.get_context_injection(
+            bump_access=bool(include_working_memory),
+            include_working_memory=include_working_memory,
+        )
+        # Persist access bumps so eviction scores stay current after restart.
+        if include_working_memory and state.working_memory:
             with self._lock:
                 self._persist(state)
         return text

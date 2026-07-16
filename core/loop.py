@@ -283,15 +283,48 @@ class Worldwave:
             self._maybe_wire_wm_subconscious_tiebreak()
 
     def _get_entity_context(self) -> str:
-        """Get entity context to inject into the system prompt.
+        """Get entity + memory context for the turn.
 
-        Working-memory labels and user model stay here for continuity.
-        Memory v-next retrieved blocks are appended as a *separate*
-        section (not merged into persona text) when available.
+        Single memory picture: when MemoryVNext is active, labeled facts and
+        topic/atom/LTM blocks come only from ``memory_context_block`` — no
+        parallel EntityState flat-WM dump (legacy dual inject retired).
+
+        System persona stays separate; this returns continuity + memory blocks.
         """
         parts = []
+        vnext_active = False
+        if self.memory is not None:
+            vnext = getattr(self.memory, "vnext", None)
+            vnext_active = vnext is not None
+            if vnext_active and hasattr(vnext, "set_entity") and self._current_entity_id:
+                try:
+                    vnext.set_entity(self._current_entity_id)
+                except Exception:
+                    pass
+
         if self.entity_state_mgr and self._current_entity_id:
-            entity_ctx = self.entity_state_mgr.get_context_for(self._current_entity_id)
+            # When single-system memory is active: identity/prefs only — no WM dump
+            if vnext_active and hasattr(
+                self.entity_state_mgr, "get_context_for"
+            ):
+                try:
+                    entity_ctx = self.entity_state_mgr.get_context_for(
+                        self._current_entity_id,
+                        include_working_memory=False,
+                    )
+                except TypeError:
+                    # Older managers without the flag: strip WM via state helper
+                    state = self.entity_state_mgr.get(self._current_entity_id)
+                    if hasattr(state, "get_context_injection"):
+                        entity_ctx = state.get_context_injection(
+                            bump_access=False, include_working_memory=False
+                        )
+                    else:
+                        entity_ctx = ""
+            else:
+                entity_ctx = self.entity_state_mgr.get_context_for(
+                    self._current_entity_id
+                )
             if entity_ctx:
                 parts.append(entity_ctx)
 
@@ -305,7 +338,7 @@ class Worldwave:
             except Exception:
                 pass
 
-        # ── Memory v-next: separate memory block (prompt isolation) ──
+        # ── Single memory system: one block (prompt isolation from persona) ──
         if self.memory is not None and hasattr(self.memory, "memory_context_block"):
             try:
                 mem_block = self.memory.memory_context_block("")
