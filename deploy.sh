@@ -607,7 +607,8 @@ if [ "$CMD" = "key" ]; then
     KEY_PROVIDER="${4:-${WW_PROVIDER:-}}"
 
     case "$KEY_ACTION" in
-        set)
+        set|setup)
+            # setup is alias for set (core: ww key setup)
             # No key arg: interactive on TTY (provider then key); usage on non-TTY
             if [ -z "$NEW_KEY" ]; then
                 if [ -t 0 ]; then
@@ -716,8 +717,8 @@ if [ "$CMD" = "key" ]; then
         *)
             echo "🌊 ww key — manage LLM API keys (multi-provider)"
             echo ""
-            echo "  ww key set                    Interactive setup (TTY: provider, then key)"
-            echo "  ww key set <key> [provider]   Save/update API key"
+            echo "  ww key setup | set            Interactive setup (TTY: provider, then key)"
+            echo "  ww key setup|set <key> [prov] Save/update API key"
             echo "  ww key show                   Show configured keys (masked)"
             echo "  ww key test                   Test primary key against its provider API"
             echo ""
@@ -725,7 +726,7 @@ if [ "$CMD" = "key" ]; then
             echo "  Key shape is auto-detected when possible (sk-ant-*, sk-or-*, sk-proj-*, gsk_*, AIza*)."
             echo "  Ambiguous sk-* keys need a provider: ww key set <key> openai"
             echo "  Local Ollama without key: ww key set none ollama"
-            echo "  Bare ww key set on a terminal starts interactive setup."
+            echo "  Bare ww key setup (or set) on a terminal starts interactive setup."
             exit 0
             ;;
     esac

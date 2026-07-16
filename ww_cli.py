@@ -1177,29 +1177,39 @@ def _cmd_update_dryrun():
 
 
 def cmd_logs(args):
-    """View logs"""
-    n = args.n or 20
+    """View logs (core command)."""
+    n = getattr(args, "n", None) or 20
 
-    # Try journalctl
-    result = subprocess.run(
-        ["journalctl", "--user", "-u", "ww.service", "-n", str(n),
-         "--no-pager", "-o", "short-iso"],
-        capture_output=True, text=True, timeout=5,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        lines = result.stdout.strip().split("\n")
-        for line in lines[-n:]:
-            print(line)
-        return
+    # Try journalctl (user systemd)
+    try:
+        result = subprocess.run(
+            ["journalctl", "--user", "-u", "ww.service", "-n", str(n),
+             "--no-pager", "-o", "short-iso"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            lines = result.stdout.strip().split("\n")
+            for line in lines[-n:]:
+                print(line)
+            return
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
 
-    log_file = os.path.join(WW_CONFIG, "server.log")
-    if os.path.exists(log_file):
-        with open(log_file) as f:
-            lines = f.readlines()
-        for line in lines[-n:]:
-            print(line.rstrip())
-    else:
-        print(f"{Colors.yellow('?')} No logs available")
+    # File logs: install dir then config dir
+    candidates = [
+        os.path.join(WW_HOME, "server.log"),
+        os.path.join(WW_CONFIG, "server.log"),
+        os.path.join(os.path.expanduser("~"), "worldwave", "server.log"),
+    ]
+    for log_file in candidates:
+        if os.path.exists(log_file):
+            with open(log_file) as f:
+                lines = f.readlines()
+            for line in lines[-n:]:
+                print(line.rstrip())
+            return
+    print(f"{Colors.yellow('?')} No logs available")
+    print(f"  Tried journalctl ww.service and server.log under {Colors.dim(WW_HOME)}")
 
 
 def cmd_delegate(args):
@@ -1829,6 +1839,24 @@ def cmd_gateway(args):
         api_post("/ww/gateway/stop", {"platform": platform})
         print(f"  {Colors.yellow('○')} {platform} gateway stopped")
 
+    elif action == "restart":
+        if not auto_start_server():
+            print(f"  {Colors.red('✗')} Cannot start WW server")
+            print(f"  Fix:  {Colors.cyan('ww server restart')}  then retry")
+            return
+        platform = args.platform or "telegram"
+        print(f"  {Colors.cyan('⟳')} Restarting {platform} gateway...")
+        api_post("/ww/gateway/stop", {"platform": platform})
+        result = api_post("/ww/gateway/start", {"platform": platform})
+        if result:
+            print(f"  {Colors.green('✓')} {platform} gateway restarted")
+        else:
+            print(
+                f"  {Colors.red('✗')} Restart failed — "
+                f"try {Colors.cyan('ww server restart')} then "
+                f"{Colors.cyan('ww gateway restart')}"
+            )
+
     else:
         # Unknown gateway subaction — suggest closest known action
         known = list(_GATEWAY_ACTIONS)
@@ -2037,53 +2065,36 @@ def cmd_migrate(args):
 
 
 def cmd_help(args):
-    """Show help"""
+    """Show help — core surface first (user lock 2026-07-16)."""
     print("""
 
   ww <command> [options]
 
-  (no command)           Interactive chat mode
-  <task>                 Execute a one-shot task
-  init                   First-time setup wizard
-  config [key] [val]     View/set configuration
+  ── Core ──
+  ww                     Enter chat (same as: ww chat)
+  ww chat                Enter interactive chat
+  ww update              Update Worldwave
+  ww key setup           Set LLM API key (alias: ww key set)
+  ww model [name]        Show / switch chat model
+  ww gateway             Platform gateway status / entry
+  ww gateway setup       Configure chat platforms (e.g. Telegram)
+  ww gateway restart     Restart messaging gateway
+  ww status              System health overview
+  ww logs [N]            Recent logs (default 20)
+  ww help                This help (not bash "help")
 
-  config profile create <name>  Create profile
-  config profile switch <name>  Switch profile
-  model [name]           View/switch model
+  ── Also ──
+  ww "task…"             One-shot task
+  ww upgrade             Alias for update
+  ww key set|show|test   Key management
+  ww gateway list|start|stop
+  ww server start|stop   Explicit server control
+  ww tools · memory · pairing · identity · migrate · config · init …
 
-  server start|stop      Explicit server control (usually not needed)
-  status                 System status
-  update                 One-click update (check + pull + reinstall)
-  upgrade                Alias for update
-  update status          Show version comparison
-  update --dry-run       Preview incoming changes
-  logs [N]               View logs
+  --home PATH  --no-color  --effort LEVEL  -h/--help
 
-  tools                  List available tools
-  delegate <goal>        Delegate sub-tasks
-  gateway                Status if configured, else interactive setup
-  gateway setup          Interactive Telegram gateway setup (needs a real TTY)
-  gateway list|start|stop  List / start / stop gateways
-  telegram status        Telegram token/workspace/pairing status
-  pairing list|approve|reject  DM pairing codes
-  memory stats|search|sleep  Memory operations
-  mascot [open|tray|state]  Mascot (browser/tray)
-  migrate [scan|<source>]   Cross-generation migration
-  identity / whoami      Show entity + platform links
-  identity primary       Show primary entity
-  identity link <platform> <user_id> [chat_id]
-                         Link a platform id to primary entity
-
-  --home PATH            Specify WW path
-  --no-color             Disable colors
-  --effort LEVEL         Reasoning effort: low/medium/high/xhigh
-  -h, --help             Show this help
-  ww help                Same as --help (WW commands, not bash)
-
-  Typos: unknown short commands get "Did you mean" suggestions.
-  Multi-word natural-language goals still run as tasks.
-
-  Note: In a shell, bare "help" is the bash builtin — use ww --help or ww help.
+  Typos get "Did you mean" suggestions.
+  Shell tip: use ww help — bare "help" is the bash builtin.
 """)
 
 
@@ -2128,6 +2139,7 @@ COMMANDS = {
     "server": cmd_server,
     "update": cmd_update,
     "upgrade": cmd_update,  # alias
+    "chat": cmd_run,  # core: enter interactive chat (empty goal)
     "logs": cmd_logs,
     "delegate": cmd_delegate,
     "goal": cmd_goal,
@@ -2151,6 +2163,9 @@ KNOWN_CLI_PHRASES: tuple[str, ...] = (
     "gateway list",
     "gateway start",
     "gateway stop",
+    "gateway restart",
+    "key setup",
+    "key set",
     "server start",
     "server stop",
     "server restart",
@@ -2167,7 +2182,7 @@ KNOWN_CLI_PHRASES: tuple[str, ...] = (
     "identity link",
     "identity show",
 )
-_GATEWAY_ACTIONS = ("setup", "list", "start", "stop")
+_GATEWAY_ACTIONS = ("setup", "list", "start", "stop", "restart")
 _TYPO_CUTOFF = 0.55
 _TYPO_MAX_REST = 2
 
@@ -2436,13 +2451,19 @@ def main():
         return
     
     if not args.command:
-        # Bare 'ww' → interactive chat mode
+        # Bare 'ww' → interactive chat mode (core)
         args.goal = []
         args.spirals = 3
         cmd_run(args)
         return
 
     cmd = args.command
+    if cmd in ("chat",):
+        # ww chat → same as bare ww
+        args.goal = []
+        args.spirals = 3
+        cmd_run(args)
+        return
     # Subcommands often land in args.goal (argparse nargs="*"), not only parse_known_args extra
     def _pos():
         return list(getattr(args, "goal", []) or []) + list(extra or [])
