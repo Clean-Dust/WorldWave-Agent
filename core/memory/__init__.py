@@ -1,5 +1,5 @@
 """
-Worldwave Memory System — Bionic Architecture
+Worldwave Memory System — single system (v-next spine)
 
 WW's memory is a first-class module of the framework (not an external service).
 Third pillar alongside main consciousness and subconscious.
@@ -9,32 +9,34 @@ Core principles:
 - Memory system is integral to WW, not separable
 - Bounded online buffers + long-term store (no infinite-prompt promise)
 - Recall via pattern completion + diffuse activation, not keyword search
+- **One product memory path** — no parallel flat Entity WM as second brain
 
-Layers (v-next product slice, WW_MEMORY_VNEXT default on):
-  Working Memory — single active topic (+ bound digests); entity RAM labels retained
-  → Hippocampus / Topic STM — BM25 + six-weight eval; atom extract on leave
+Layers (default always-on):
+  Labeled facts (kind/core/recency) + single active topic (+ digests)
+  → Topic STM — BM25 + six-weight eval; atom extract on leave
   → Atom nets (World/Experience/Observation/Opinion) + dual timestamps
   → LTM VFS (ww:// content + index; Abstract/Overview/Detail tiers)
-  → Dreaming (async cold path; WW_DREAMING_ENABLED default on)
+  → Dreaming / sleep (cold path behind MemorySystem.sleep API)
 
-Legacy path (still available as fallback):
-  Entity working_memory labels → Hippocampus atoms → sleep/promote
+Absorbed legacy wins: explicit kind 标签, is_core protect, recency×access
+eviction, entity scoping, remember/forget/recall tools.
 
 Subconscious is referee/gating only (BG safe gate + optional WM score
 tie-break); it does not replace WM or hippocampus.
 
 Modules:
+labeled_wm.py    Labeled fact WM (kind/core/recency) — single SoT for facts
 atom.py          Memory atom + Entity Resolution + Fact Store
 atom_nets.py     Four logical nets + Connect (Updates/Extends/Derives)
 topic.py         Topic / Digest / WorkingTopicStore
 topic_stm.py     Topic hippocampus (BM25 + promote/purge)
 ltm_vfs.py       ww:// LTM content+index layers
 dreaming.py      Async dream worker
-vnext.py         Pipeline orchestrator
+vnext.py         Single-system orchestrator
 encoder.py       Encoder layer: entity extraction + emotional quantization
-hippocampus.py   Short-term buffer (100 FIFO + forced sleep when full)
+hippocampus.py   Short-term buffer (cold path / sleep backend)
 amygdala.py      Amygdala scoring (5-factor weighted)
-sleep.py         Sleep consolidation + daily scheduler + dynamic idle detection
+sleep.py         Sleep consolidation (behind MemorySystem.sleep)
 recall.py        Recall engine (pattern completion + diffuse activation)
 reconsolidation.py  Reconsolidation (stability tracking + context integration)
 code_memory.py   Immutable code memory store (exact hash, Merkle tree, call graph)
@@ -44,7 +46,7 @@ Usage:
     mem = MemorySystem()
     mem.store("Learned about FastAPI dependency injection")
     mem.recall("FastAPI injection")
-    mem.sleep()  # manual consolidation trigger
+    mem.sleep()  # cold path (sleep + dream)
 """
 
 from .atom import MemoryAtom, FactStore, EntityResolver, maybe_promote_core
@@ -57,6 +59,7 @@ from .reconsolidation import Reconsolidation
 
 from .system import MemorySystem
 from .vnext import MemoryVNext, memory_vnext_enabled
+from .labeled_wm import LabeledFactStore
 from .topic import Topic, Digest, WorkingTopicStore
 from .topic_stm import TopicHippocampus
 from .atom_nets import AtomNetStore, MemoryAtomV2
@@ -68,7 +71,7 @@ __all__ = [
     "EncodingLayer", "EmotionMapper", "Hippocampus", "Amygdala",
     "SleepConsolidation", "DailyScheduler", "SleepDaemon", "IdleDetector",
     "RecallEngine", "Reconsolidation", "MemorySystem",
-    "MemoryVNext", "memory_vnext_enabled",
+    "MemoryVNext", "memory_vnext_enabled", "LabeledFactStore",
     "Topic", "Digest", "WorkingTopicStore", "TopicHippocampus",
     "AtomNetStore", "MemoryAtomV2",
     "LTMVFS", "ContentTier", "ImmutableLTMError",

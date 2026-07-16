@@ -1,14 +1,22 @@
 """
-core/memory/vnext.py — Memory v-next pipeline orchestrator
+core/memory/vnext.py — Memory single-system orchestrator (v-next spine)
 
-WM (single topic) → TopicHippocampus (STM/BM25) → Atoms (4 nets) → LTM VFS → Dreaming
+Product law: ONE memory system. Labeled facts + topic WM → TopicHippocampus
+(STM/BM25) → Atoms (4 nets) → LTM VFS → Dreaming/sleep cold path.
+
+Absorbed from legacy flat Entity WM:
+  - Explicit kind labels (constraint/commitment/outcome/rationale)
+  - is_core hard protect
+  - Recency + access eviction scoring
+  - Entity-scoped facts; tools write here only for product path
 
 Write tracks:
-  1. Hot agent tools — remember/recall/reflect (kind explicit)
-  2. Passive lossless — conversation turns as Experience raw (no dual-LLM)
-  3. Cold — dreaming / dialectic safety net
+  1. Hot agent tools — remember/forget/reflect (kind explicit, no dual LLM)
+  2. Passive lossless — conversation turns as Experience raw
+  3. Cold — dreaming / sleep consolidation behind MemorySystem API
 
-Feature flag: WW_MEMORY_VNEXT (default ON).
+Feature flag WW_MEMORY_VNEXT: default ON; emergency kill switch only
+(deprecated as product mode — see docs/memory-vnext.md).
 Optional modules default OFF: RRF, cross-encoder, HRR (fail-loud if partial).
 """
 
@@ -26,6 +34,7 @@ from .atom_nets import (
     extract_atoms_from_topic,
 )
 from .dreaming import DreamingWorker, dreaming_enabled
+from .labeled_wm import LabeledFactStore
 from .ltm_vfs import ContentTier, LTMVFS
 from .topic import Topic, WorkingTopicStore, looks_like_topic_switch
 from .topic_stm import TopicHippocampus, evaluate_topic
@@ -34,7 +43,13 @@ logger = logging.getLogger("ww.memory.vnext")
 
 
 def memory_vnext_enabled() -> bool:
-    """WW_MEMORY_VNEXT default ON. Off: 0/false/no/off."""
+    """WW_MEMORY_VNEXT default ON (single-system product path).
+
+    Off values (0/false/no/off) remain an **emergency kill switch** for one
+    release if init fails elsewhere — not a supported dual product mode.
+    Prefer always-on; when init fails, MemorySystem falls back without
+    shipping a parallel flat-WM inject path.
+    """
     raw = os.environ.get("WW_MEMORY_VNEXT")
     if raw is None or str(raw).strip() == "":
         return True
@@ -91,6 +106,13 @@ class MemoryVNext:
             atom_extract=self._atom_extract_topic,
         )
 
+        # Labeled fact WM — single SoT for kind/core/recency (absorbed legacy)
+        self.facts = LabeledFactStore(
+            data_dir=os.path.join(self.data_dir, "facts"),
+        )
+        # Active entity for tools / inject (Same Timeline coupling)
+        self.entity_id: str = "default"
+
         self.dreaming: Optional[DreamingWorker] = None
         if start_dreaming and dreaming_enabled():
             self.dreaming = DreamingWorker(
@@ -99,8 +121,17 @@ class MemoryVNext:
                 auto_start=True,
             )
 
-        # Core/persona reserved slice (never topic-evicted from identity inject)
+        # Core/persona reserved slice (mirrors facts.is_core for fast inject)
         self._core_facts: Dict[str, str] = {}
+
+    def set_entity(self, entity_id: str) -> None:
+        """Bind memory pipeline to a cognitive entity (Same Timeline)."""
+        self.entity_id = entity_id or "default"
+        # Hydrate core slice from labeled store
+        snap = self.facts.export_snapshot(self.entity_id)
+        core_keys = set(snap.get("working_memory_core") or [])
+        wm = snap.get("working_memory") or {}
+        self._core_facts = {k: wm[k] for k in core_keys if k in wm}
 
     # ── Atom extract (shared leave/overflow path) ──
 
@@ -136,17 +167,35 @@ class MemoryVNext:
         is_core: bool = False,
         logical_net: str = "world",
         category: str = "",
+        entity_id: str = "",
     ) -> dict:
-        """Hot-path remember: atom + optional core slice; no dual LLM."""
+        """Hot-path remember: labeled WM + atom; no dual LLM.
+
+        kind is explicit only (constraint/commitment/outcome/rationale).
+        is_core hard-protects under capacity. Single store under facts/.
+        """
+        eid = entity_id or self.entity_id or "default"
+        from core.entity_state import normalize_wm_kind
+
+        resolved_kind = normalize_wm_kind(kind)
+        fact_result = self.facts.set(
+            eid,
+            key,
+            value,
+            kind=resolved_kind,
+            is_core=bool(is_core),
+        )
+
         content = f"{key}: {value}"
         atom = MemoryAtomV2(
             content=content,
             logical_net=logical_net if logical_net in ("world", "experience", "observation", "opinion") else "world",
             source="remember",
-            entities=[key],
-            tags=[f"kind:{kind}", category] if category else [f"kind:{kind}"],
+            entities=[key, eid],
+            tags=[f"kind:{resolved_kind}", category] if category else [f"kind:{resolved_kind}"],
             is_core=is_core,
             confidence=0.9 if is_core else 0.7,
+            meta={"entity_id": eid, "kind": resolved_kind, "key": key},
         )
         # Supersede prior same-key current facts
         prior = self.atoms.query(text=f"{key}:", current_only=True, limit=5)
@@ -159,10 +208,15 @@ class MemoryVNext:
 
         if is_core:
             self._core_facts[key] = value
+        else:
+            # Drop from core slice if re-remembered without is_core
+            self._core_facts.pop(key, None)
 
-        # Light WM inject as turn on active topic (does not force switch)
+        # Light topic annotate (does not force switch)
         try:
-            self.wm.append_turn("system", f"[remember:{kind}] {content}", is_core=is_core)
+            self.wm.append_turn(
+                "system", f"[remember:{resolved_kind}] {content}", is_core=is_core
+            )
         except Exception:
             pass
 
@@ -170,12 +224,17 @@ class MemoryVNext:
             "status": "stored",
             "key": key,
             "atom_id": atom.atom_id,
-            "kind": kind,
-            "is_core": is_core,
+            "kind": resolved_kind,
+            "is_core": bool(is_core),
             "logical_net": atom.logical_net,
+            "entity_id": eid,
+            "previous": fact_result.get("previous"),
+            "evicted": fact_result.get("evicted") or [],
         }
 
-    def forget(self, key: str) -> dict:
+    def forget(self, key: str, *, entity_id: str = "") -> dict:
+        eid = entity_id or self.entity_id or "default"
+        was = self.facts.delete(eid, key)
         hits = self.atoms.query(text=f"{key}:", current_only=True, limit=20)
         n = 0
         for a in hits:
@@ -185,16 +244,51 @@ class MemoryVNext:
                 self.atoms.add(a)  # persist
                 n += 1
         self._core_facts.pop(key, None)
-        return {"status": "forgotten", "key": key, "invalidated": n}
+        return {
+            "status": "forgotten",
+            "key": key,
+            "was": was,
+            "invalidated": n,
+            "entity_id": eid,
+        }
+
+    def list_facts(
+        self, query: str = "", *, entity_id: str = "", limit: int = 50
+    ) -> dict:
+        """List labeled online facts (single store)."""
+        eid = entity_id or self.entity_id or "default"
+        facts = self.facts.get_facts(eid)
+        meta = self.facts.get_meta(eid)
+        if query:
+            ql = query.lower()
+            facts = {
+                k: v
+                for k, v in facts.items()
+                if ql in k.lower() or ql in v.lower()
+            }
+        items = list(facts.items())[:limit]
+        out = {}
+        for k, v in items:
+            m = meta.get(k) or {}
+            out[k] = {
+                "value": v,
+                "kind": m.get("kind", "outcome"),
+                "access_count": int(m.get("access_count", 0) or 0),
+                "is_core": k in self.facts.get_core(eid),
+            }
+        return {"facts": out, "total": len(items), "entity_id": eid}
 
     def reflect(self, query: str = "") -> dict:
-        """Lightweight reflect over opinion/observation nets (no LLM)."""
+        """Lightweight reflect over opinion/observation nets + labeled core."""
         opinions = self.atoms.query(logical_net="opinion", text=query, limit=10)
         observations = self.atoms.query(logical_net="observation", text=query, limit=10)
+        eid = self.entity_id or "default"
+        labeled = self.facts.get_facts(eid)
         return {
             "opinions": [a.to_dict() for a in opinions],
             "observations": [a.to_dict() for a in observations],
             "core": dict(self._core_facts),
+            "labeled_facts": labeled,
         }
 
     # ── Write track 2: passive lossless ──
@@ -340,27 +434,48 @@ class MemoryVNext:
 
     # ── Prompt isolation ──
 
-    def build_context_blocks(self) -> Dict[str, str]:
+    def build_context_blocks(self, *, entity_id: str = "") -> Dict[str, str]:
         """Separate blocks: system stays persona-only; memory/peer are extra.
 
         Product law: retrieved memory / peer MUST NOT be dumped into system
-        persona blob.
+        persona blob. Labeled facts live here (single picture) — not a second
+        parallel EntityState flat dump.
         """
+        eid = entity_id or self.entity_id or "default"
+        # Bump access on inject so recency/access scoring stays meaningful
+        labeled = self.facts.inject_block(eid, bump_access=True)
         core_lines = [f"- {k}: {v}" for k, v in self._core_facts.items()]
+        # Also surface is_core keys from store if slice empty
+        if not core_lines:
+            snap = self.facts.export_snapshot(eid)
+            for k in snap.get("working_memory_core") or []:
+                v = (snap.get("working_memory") or {}).get(k)
+                if v is not None:
+                    core_lines.append(f"- {k}: {v}")
+                    self._core_facts[k] = v
         return {
             "system_persona_only": "",  # caller keeps persona/hard rules here
             "core_identity": "\n".join(core_lines) if core_lines else "",
+            "labeled_facts": labeled,
             "working_topic": self.wm.inject_block(),
             "memory_retrieved": "",  # filled by recall at turn time
             "peer_cards": "",
         }
 
-    def inject_for_turn(self, query: str = "", max_chars: int = 4000) -> str:
-        """Build non-system memory context block for this turn."""
+    def inject_for_turn(
+        self, query: str = "", max_chars: int = 4000, *, entity_id: str = ""
+    ) -> str:
+        """Build the single non-system memory context block for this turn.
+
+        One memory picture: labeled facts + active topic + progressive recall.
+        No parallel legacy flat-key dump.
+        """
         parts = []
-        blocks = self.build_context_blocks()
+        blocks = self.build_context_blocks(entity_id=entity_id)
         if blocks["core_identity"]:
             parts.append("## Core identity (protected)\n" + blocks["core_identity"])
+        if blocks.get("labeled_facts"):
+            parts.append(blocks["labeled_facts"])
         if blocks["working_topic"]:
             parts.append(blocks["working_topic"])
         if query:
@@ -382,9 +497,13 @@ class MemoryVNext:
     # ── Status / maintenance ──
 
     def status(self) -> dict:
+        eid = self.entity_id or "default"
         return {
             "vnext_enabled": memory_vnext_enabled(),
+            "single_system": True,
+            "entity_id": eid,
             "wm": self.wm.status(),
+            "labeled_facts": self.facts.status(eid),
             "topic_stm": self.topic_stm.status(),
             "atoms": self.atoms.stats(),
             "ltm": self.ltm.stats(),
