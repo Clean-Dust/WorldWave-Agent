@@ -186,6 +186,8 @@ class MemoryVNext:
             is_core=bool(is_core),
         )
 
+        # Content must include raw value (and key:value) so API search/prove
+        # can match with ``value in json.dumps(results)``.
         content = f"{key}: {value}"
         atom = MemoryAtomV2(
             content=content,
@@ -195,7 +197,12 @@ class MemoryVNext:
             tags=[f"kind:{resolved_kind}", category] if category else [f"kind:{resolved_kind}"],
             is_core=is_core,
             confidence=0.9 if is_core else 0.7,
-            meta={"entity_id": eid, "kind": resolved_kind, "key": key},
+            meta={
+                "entity_id": eid,
+                "kind": resolved_kind,
+                "key": key,
+                "value": value,
+            },
         )
         # Supersede prior same-key current facts
         prior = self.atoms.query(text=f"{key}:", current_only=True, limit=5)

@@ -510,6 +510,58 @@ def test_tools_remember_prefers_vnext(tmp_path, monkeypatch):
         ms.vnext.close()
 
 
+def test_memory_system_search_recall_hits_vnext_atoms(tmp_path, monkeypatch):
+    """remember() → MemorySystem.search/recall must find raw value (atom_hit).
+
+    Product path stores only in AtomNetStore/LabeledFactStore; legacy
+    hippocampus-only search was the N1 narrative atom_hit=False bug.
+    """
+    import json
+
+    from core.memory.system import MemorySystem
+    from core.memory.tools import MemoryTools
+
+    monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
+    monkeypatch.setenv("WW_DREAMING_ENABLED", "0")
+    ms = MemorySystem(
+        data_dir=str(tmp_path / "mem_search"),
+        schedule_sleep_hour=-1,
+        idle_threshold_minutes=0,
+    )
+    assert ms.vnext is not None
+    fav = "NARR-TEST-4242"
+    tools = MemoryTools(
+        memory_system=ms, entity_state_mgr=None, entity_id="ent_narr"
+    )
+    out = tools.remember(
+        "favorite_color_code", fav, kind="outcome", is_core=False
+    )
+    assert out.get("store") == "vnext"
+    assert out.get("status") == "stored"
+
+    # Direct v-next store has the atom
+    atom_hits = ms.vnext.atoms.current_truth(fav, limit=5)
+    assert any(fav in a.content for a in atom_hits)
+
+    # MemorySystem.search (POST /ww/memory action=search)
+    search_atoms = ms.search(fav, limit=5)
+    search_blob = json.dumps([a.to_dict() for a in search_atoms])
+    assert fav in search_blob, f"search missed raw value: {search_blob[:400]}"
+
+    # MemorySystem.recall (POST /ww/memory action=recall default)
+    recall_payload = ms.recall(fav, top_k=5)
+    assert recall_payload.get("vnext_hits", 0) >= 1
+    recall_blob = json.dumps(recall_payload)
+    assert fav in recall_blob, f"recall missed raw value: {recall_blob[:400]}"
+
+    # Also match by key fragment
+    by_key = ms.search("favorite_color_code", limit=5)
+    assert any(fav in (a.content or "") for a in by_key)
+
+    if ms.vnext:
+        ms.vnext.close()
+
+
 # ── Integration smoke ──────────────────────────────────────────────
 
 
