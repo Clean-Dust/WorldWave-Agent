@@ -793,6 +793,7 @@ class Worldwave:
             return {
                 "status": "completed",
                 "spirals_completed": 0,
+                "response": content,  # Gate 0.4: never leave top-level empty after clean text
                 "results": [{
                     "spiral": 0,
                     "goal": goal[:80],
@@ -910,9 +911,12 @@ class Worldwave:
 
         # Final gate: still no clean user text → fall through
         try:
-            if not extract_user_response(draft):
+            filled = extract_user_response(draft)
+            if not filled:
                 self._log("## Reflex arc: tools ran but no user-visible reply — fall through")
                 return None
+            # Gate 0.4: successful reply-tool path must set top-level response
+            draft["response"] = filled
         except Exception:
             pass
 
@@ -1569,7 +1573,7 @@ class Worldwave:
         except Exception as e:
             logger.debug("ingest_turn (assistant) skipped: %s", e)
 
-        return {
+        out = {
             "status": "interrupted" if (self.state.get_last_checkpoint() and 
                        not (self.state.get_last_checkpoint().interrupt_reason or "").startswith("rewind:")) 
                        else "completed",
@@ -1578,6 +1582,19 @@ class Worldwave:
             "session_id": self.state.session_id,
             "summary": summary,
         }
+        # Gate 0.4: every successful spiral/reflex path with reply-tool text
+        # must expose a non-empty top-level ``response`` (server re-extracts too).
+        try:
+            from core.public_reply import extract_user_response
+
+            filled = extract_user_response(out)
+            if filled:
+                out["response"] = filled
+            elif "response" not in out:
+                out["response"] = ""
+        except Exception:
+            out.setdefault("response", "")
+        return out
 
     # ════════════════════════════════════════════════════════
     #  Biomimetic stage processors (v0.6)

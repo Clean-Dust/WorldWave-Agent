@@ -285,10 +285,13 @@ def _abstention_ok(text: str) -> bool:
 
 
 def _timeline_ok(text: str, event_a: str = "", event_b: str = "") -> bool:
-    """Both event markers AND order language required (no pure question-echo).
+    """Both event markers AND ordered sequence claim required.
 
-    Pure abstention that only echoes EVENT_A/B from the question fails.
-    Mere presence of the word "order" (e.g. "don't know the order") is not enough.
+    Gate 0.4 honesty:
+    - Pure question-echo of EVENT_A/B fails.
+    - "I can't give a first/then answer" fails (first/then only inside refusal).
+    - Require ordered tokens: ``first … A … then … B``, ``A before B``,
+      ``A then B``, or arrow ``A → B`` (markers must appear in order).
     """
     ea = event_a or EVENT_A
     eb = event_b or EVENT_B
@@ -296,50 +299,55 @@ def _timeline_ok(text: str, event_a: str = "", event_b: str = "") -> bool:
         return False
     if ea not in text or eb not in text:
         return False
+    # Markers must appear with A before B for a true order claim
+    ia = text.find(ea)
+    ib = text.find(eb)
+    if ia < 0 or ib < 0 or ia >= ib:
+        # Allow B…A only with reverse order language handled below
+        pass
+
     low = text.lower()
-    # Structural order language only (not bare "order"/"sequence")
-    order_cues = (
-        "first",
-        "then",
-        "before",
-        "after",
-        "followed",
-        "later",
-        "next",
-        "prior",
-        "earlier",
-        "subsequently",
-        "previously",
-        "→",
-        "->",
-        "⇒",
-        "=>",
-    )
-    has_order = any(c in low for c in order_cues)
-    # first…then / A then B / A before B patterns
-    if not has_order:
-        if re.search(r"\bfirst\b.+\bthen\b", low, re.S):
-            has_order = True
-    if not has_order:
-        return False
-    # Pure abstention echo: markers + "not in memory" / "don't know" without
-    # real sequence claim (e.g. "I don't know the order of A and B")
+    ea_l = ea.lower()
+    eb_l = eb.lower()
+
+    # Reject refusal-only that mentions first/then as meta ("can't give a first/then answer")
     if _has_refuse_language(low):
-        sequential = (
-            "first",
-            "then",
-            "before",
-            "after",
-            "followed",
-            "later",
-            "→",
-            "->",
-            "⇒",
-            "=>",
+        # Still allow refuse+order if model also states the sequence with markers ordered
+        # but bare "I don't know first/then" is not enough
+        meta_only = re.search(
+            r"(?:can'?t|cannot|unable|don'?t|do not)\s+"
+            r"(?:give|provide|answer|say|tell).{0,40}"
+            r"(?:first\s*/\s*then|first.{0,8}then|before\s*/\s*after)",
+            low,
+            re.S,
         )
-        if not any(s in low for s in sequential):
+        if meta_only and not re.search(
+            re.escape(ea_l) + r".{0,120}" + re.escape(eb_l), low, re.S
+        ):
             return False
-    return True
+
+    # Ordered token patterns (A then B, first A then B, A before B, A → B)
+    ordered_patterns = [
+        # first A … then B
+        rf"\bfirst\b.{{0,80}}{re.escape(ea)}.{{0,120}}\bthen\b.{{0,80}}{re.escape(eb)}",
+        # first … then with markers already required globally; require A before B near them
+        rf"\bfirst\b.{{0,40}}{re.escape(ea_l)}.{{0,80}}\bthen\b.{{0,40}}{re.escape(eb_l)}",
+        # A then B / A before B / A after which B
+        rf"{re.escape(ea)}.{{0,80}}\b(?:then|before|followed by|and then|→|->|⇒|=>)\b.{{0,80}}{re.escape(eb)}",
+        rf"{re.escape(ea)}.{{0,40}}\s*(?:→|->|⇒|=>)\s*.{{0,40}}{re.escape(eb)}",
+        # A earlier … B later / A first … B second
+        rf"{re.escape(ea)}.{{0,60}}\b(?:earlier|first|prior)\b.{{0,80}}{re.escape(eb)}.{{0,40}}\b(?:later|then|after|second)\b",
+        # Chinese-ish order
+        rf"{re.escape(ea)}.{{0,40}}(?:然后|之后|先).{{0,40}}{re.escape(eb)}",
+    ]
+    for pat in ordered_patterns:
+        if re.search(pat, text, re.I | re.S):
+            return True
+    # Also accept low-case pattern variants
+    for pat in ordered_patterns:
+        if re.search(pat, low, re.S):
+            return True
+    return False
 
 
 def _contradiction_ok(text: str) -> bool:
@@ -402,16 +410,41 @@ def _contains_foreign_secret(text: str) -> bool:
         r"SEARCH_ONLY_[AB]",
         r"ONLY_A_MARKER",
         r"ONLY_B_MARKER",
+        r"ONLY_FROM_[AB]",
         r"NARR-\d+",  # narrative codes from other harness runs
     )
     for pat in foreign:
-        m = re.search(pat, text)
-        if not m:
-            continue
-        # NARR that is not our markers is foreign; our run does not seed NARR-
-        if pat.startswith(r"NARR"):
+        if re.search(pat, text):
             return True
-        return True
+    return False
+
+
+def _contains_stale_beam_marker(text: str) -> bool:
+    """True if text has Beam* harness markers from a *different* run than this process.
+
+    Used by live probes so sequential Banana entities cannot score a pass by
+    echoing prior BeamIronRule63482 while this run expected BeamIronRule64701.
+    """
+    if not text:
+        return False
+    own = {
+        IRON,
+        CITY,
+        PET,
+        PREF,
+        EVENT_A,
+        EVENT_B,
+        JOB_NEW,
+        JOB_OLD,
+        CONTRA_A,
+        CONTRA_B,
+    }
+    for m in re.finditer(
+        r"Beam(?:IronRule|City|Pet|Pref|EventA|EventB|JobNew|JobOld|LikesRedis|HatesRedis)\d+",
+        text,
+    ):
+        if m.group(0) not in own:
+            return True
     return False
 
 
@@ -475,7 +508,7 @@ def main() -> int:
     chat_id = os.environ.get("WW_BEAM_CHAT", f"beam_chat_{RUN_TAG}")
     report = Report()
 
-    print(f"BEAM-mini Gate 0.3 — url={base} entity={entity}")
+    print(f"BEAM-mini Gate 0.4 — url={base} entity={entity}")
     print(f"  user_id={user_id} chat_id={chat_id}")
     print("Markers:", CITY, PET, JOB_NEW, PREF, CONTRA_A)
 
@@ -602,6 +635,13 @@ def main() -> int:
             re_ask_if_empty=re_ask_if_empty,
         )
 
+    def _clean_ok(r: str) -> bool:
+        return (
+            not _is_dump(r)
+            and not _contains_foreign_secret(r)
+            and not _contains_stale_beam_marker(r)
+        )
+
     # 1 Recall city — one automatic re-probe if empty (intermittent product race)
     r = probe("What is my home city? Reply with the city name.")
     if not r:
@@ -609,7 +649,7 @@ def main() -> int:
         r = probe("What is my home city? Reply only with the city marker.")
     report.add(
         "1_recall_city",
-        bool(r) and CITY in r and not _is_dump(r) and not _contains_foreign_secret(r),
+        bool(r) and CITY in r and _clean_ok(r or ""),
         (r or "(empty)")[:140],
     )
 
@@ -617,7 +657,7 @@ def main() -> int:
     r = probe("What is my pet's name? Reply with the pet name.")
     report.add(
         "2_recall_pet",
-        bool(r) and PET in r and not _is_dump(r) and not _contains_foreign_secret(r),
+        bool(r) and PET in r and _clean_ok(r or ""),
         (r or "(empty)")[:140],
     )
 
@@ -625,25 +665,23 @@ def main() -> int:
     r = probe("What is my current job? Reply with the job marker.")
     report.add(
         "3_update_job",
-        bool(r) and JOB_NEW in r and not _is_dump(r) and not _contains_foreign_secret(r),
+        bool(r) and JOB_NEW in r and _clean_ok(r or ""),
         (r or "(empty)")[:140],
     )
 
-    # 4 Timeline order — both markers + order cue (not pure question-echo)
+    # 4 Timeline order — both markers + ordered first…then / A then B tokens
     r = probe(
         f"In what order did I do {EVENT_A} and {EVENT_B}? "
         f"Use first/then or before/after language and name both markers."
     )
-    order_ok = _timeline_ok(r or "", EVENT_A, EVENT_B) and not _contains_foreign_secret(
-        r or ""
-    )
+    order_ok = _timeline_ok(r or "", EVENT_A, EVENT_B) and _clean_ok(r or "")
     report.add("4_timeline", order_ok, (r or "(empty)")[:140])
 
     # 5 Contradiction (conflict language required; Redis alone insufficient)
     r = probe("Do I like Redis or not? There may be conflicting statements.")
     report.add(
         "5_contradiction",
-        _contradiction_ok(r) and not _contains_foreign_secret(r or ""),
+        _contradiction_ok(r) and _clean_ok(r or ""),
         (r or "(empty)")[:140],
     )
 
@@ -655,24 +693,17 @@ def main() -> int:
     pref_ok = (
         bool(r)
         and PREF in r
-        and not _is_dump(r)
-        and not _contains_foreign_secret(r)
+        and _clean_ok(r or "")
         # Soft guard: if Redis like marker present without BeamPref, fail
-        and not (
-            CONTRA_A in r
-            and PREF not in r
-        )
+        and not (CONTRA_A in r and PREF not in r)
     )
     report.add("6_preference", pref_ok, (r or "(empty)")[:140])
 
-    # 7 Iron rule — current run marker only (never ONLY_B from another entity)
+    # 7 Iron rule — current run marker only (never prior BeamIronRule from other entity)
     r = probe("What iron rule should you honor for me?")
     report.add(
         "7_iron_rule",
-        bool(r)
-        and IRON in r
-        and not _is_dump(r)
-        and not _contains_foreign_secret(r),
+        bool(r) and IRON in r and _clean_ok(r or ""),
         (r or "(empty)")[:140],
     )
 
@@ -680,7 +711,7 @@ def main() -> int:
     r = probe(f"What is my {UNKNOWN_PROBE}? Answer only if you truly know.")
     report.add(
         "8_abstention",
-        _abstention_ok(r) and not _contains_foreign_secret(r or ""),
+        _abstention_ok(r) and _clean_ok(r or ""),
         (r or "(empty)")[:140],
     )
 
@@ -690,9 +721,8 @@ def main() -> int:
         bool(r)
         and len(r) > 20
         and not _looks_json_status(r)
-        and not _is_dump(r)
+        and _clean_ok(r or "")
         and "spirals_completed" not in r
-        and not _contains_foreign_secret(r)
     )
     report.add("9_summarization", sum_ok, (r or "(empty)")[:140])
 
@@ -702,9 +732,8 @@ def main() -> int:
         bool(r)
         and CITY in r
         and PET in r
-        and not _is_dump(r)
+        and _clean_ok(r or "")
         and not re.match(r"^[a-z_]+:\s", r.strip())
-        and not _contains_foreign_secret(r)
     )
     report.add("10_multi_hop", multi_ok, (r or "(empty)")[:140])
 

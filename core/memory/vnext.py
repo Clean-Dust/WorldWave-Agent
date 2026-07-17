@@ -219,8 +219,22 @@ class MemoryVNext:
 
     def _on_promote_topic(self, topic: Topic, atoms: List[Any]) -> None:
         try:
-            uri = self.ltm.promote_topic(topic, category="experiences")
-            logger.info("Promoted topic %s → LTM %s atoms=%d", topic.topic_id[:8], uri, len(atoms))
+            tmeta = getattr(topic, "meta", None) or {}
+            eid = ""
+            if isinstance(tmeta, dict):
+                eid = str(tmeta.get("entity_id") or "").strip()
+            if not eid:
+                eid = self._wm_entity_id or self._eid()
+            uri = self.ltm.promote_topic(
+                topic, category="experiences", entity_id=eid
+            )
+            logger.info(
+                "Promoted topic %s → LTM %s atoms=%d entity=%s",
+                topic.topic_id[:8],
+                uri,
+                len(atoms),
+                eid[:24] if eid else "?",
+            )
         except Exception as e:
             logger.error("LTM promote write failed: %s", e)
 
@@ -544,7 +558,10 @@ class MemoryVNext:
         )
         atom_hits = self.atoms.current_truth(query, limit=top_k, entity_id=eid)
         ltm_tier = ContentTier.ABSTRACT if progressive else ContentTier.DETAIL
-        ltm_hits = self.ltm.search(query, top_k=top_k, tier=ltm_tier)
+        # Entity-partitioned LTM (Gate 0.4) — never abstract-search other entities
+        ltm_hits = self.ltm.search(
+            query, top_k=top_k, tier=ltm_tier, entity_id=eid
+        )
         fact_hits = self._rank_labeled_facts(query, limit=top_k, entity_id=eid)
 
         # Optional RRF fusion (default OFF) — STM + atoms + labeled facts (+ LTM)
@@ -763,6 +780,13 @@ class MemoryVNext:
                     f"- [atom/{a.get('logical_net')}] {a.get('content', '')[:200]}"
                 )
             for h in rec.get("ltm") or []:
+                # Defense: skip foreign / untagged-for-non-default LTM
+                heid = str(h.get("entity_id") or "").strip()
+                if heid and heid != eid:
+                    continue
+                if not heid and eid != "default":
+                    # Legacy untagged LTM must not inject into non-default entities
+                    continue
                 # Prefer abstract field; expand overview only under remaining budget
                 abstract = (h.get("abstract") or h.get("content") or "")[:160]
                 line = f"- [ltm abstract] {h.get('uri')}: {abstract}"

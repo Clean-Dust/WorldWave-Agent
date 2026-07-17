@@ -515,20 +515,51 @@ class LTMVFS:
         walk(root_rel, 1)
         return "\n".join(lines)
 
+    @staticmethod
+    def _entry_entity_id(entry: "IndexEntry") -> str:
+        """Resolve cognitive entity for an LTM index entry (meta or entity: tag)."""
+        meta = entry.meta if isinstance(entry.meta, dict) else {}
+        me = str(meta.get("entity_id") or "").strip()
+        if me:
+            return me
+        for t in entry.tags or []:
+            ts = str(t)
+            if ts.startswith("entity:"):
+                return ts[len("entity:"):].strip()
+        return ""
+
+    def entry_belongs_to_entity(self, entry: "IndexEntry", entity_id: str) -> bool:
+        """Hard partition: never surface another entity's LTM entries.
+
+        Untagged (legacy) entries are visible only to entity ``default``.
+        """
+        entity = (entity_id or "").strip() or "default"
+        owner = self._entry_entity_id(entry)
+        if owner:
+            return owner == entity
+        return entity == "default"
+
     def search(
         self,
         query: str,
         *,
         top_k: int = 10,
         tier: ContentTier = ContentTier.ABSTRACT,
+        entity_id: str = "",
     ) -> List[dict]:
         """Semantic-lite search over index (keyword on abstract/title/tags).
 
         Progressive inject: returns Abstract by default; caller may expand.
+
+        Always entity-scoped when ``entity_id`` is provided (Gate 0.4).
+        Untagged legacy LTM is only visible to ``default``.
         """
         q = (query or "").lower().strip()
+        eid = (entity_id or "").strip()
         scored: List[Tuple[float, IndexEntry]] = []
         for e in self._index.values():
+            if eid and not self.entry_belongs_to_entity(e, eid):
+                continue
             score = 0.0
             blob = f"{e.title} {e.abstract} {' '.join(e.tags)} {e.category}".lower()
             if not q:
@@ -548,6 +579,7 @@ class LTMVFS:
                 content = self.read(e.uri, tier=tier)
             except FileNotFoundError:
                 content = e.abstract
+            owner = self._entry_entity_id(e)
             out.append({
                 "uri": e.uri,
                 "category": e.category,
@@ -556,6 +588,8 @@ class LTMVFS:
                 "tier": tier.value,
                 "content": content,
                 "abstract": e.abstract,
+                "entity_id": owner,
+                "meta": dict(e.meta) if isinstance(e.meta, dict) else {},
             })
         return out
 
@@ -565,21 +599,49 @@ class LTMVFS:
         *,
         category: str = "experiences",
         tags: Optional[List[str]] = None,
+        entity_id: str = "",
     ) -> str:
-        """Write a promoted topic into LTM as experiences (default)."""
+        """Write a promoted topic into LTM as experiences (default).
+
+        Stamps ``meta.entity_id`` so abstract search cannot leak across
+        cognitive entities (Gate 0.4 sequential isolation).
+        """
         title = getattr(topic, "title", "") or getattr(topic, "topic_id", "topic")
         if hasattr(topic, "full_text"):
             body = topic.full_text()
         else:
             body = str(topic)
         tid = getattr(topic, "topic_id", "") or ""
+        # Resolve entity: explicit > topic.meta > topic.entities membership
+        eid = (entity_id or "").strip()
+        if not eid:
+            tmeta = getattr(topic, "meta", None) or {}
+            if isinstance(tmeta, dict):
+                eid = str(tmeta.get("entity_id") or "").strip()
+        if not eid:
+            ents = list(getattr(topic, "entities", None) or [])
+            # Prefer non-key-like entity ids (beam_mini_*, ent_*, default)
+            for e in ents:
+                es = str(e).strip()
+                if es and (es == "default" or "_" in es or es.startswith("ent")):
+                    eid = es
+                    break
+        tag_list = list(tags or ["promoted_topic"])
+        if eid and f"entity:{eid}" not in tag_list:
+            tag_list.append(f"entity:{eid}")
+        meta: Dict[str, Any] = {
+            "topic_id": tid,
+            "source": "hippo_promote",
+        }
+        if eid:
+            meta["entity_id"] = eid
         return self.write(
             category,
             body,
             title=str(title)[:80],
             name=f"topic-{tid[:12]}" if tid else "",
-            tags=tags or ["promoted_topic"],
-            meta={"topic_id": tid, "source": "hippo_promote"},
+            tags=tag_list,
+            meta=meta,
         )
 
     def stats(self) -> dict:

@@ -315,6 +315,40 @@ def test_extract_respond_with_real_answer():
     assert "blood type" in extract_user_response(result)
 
 
+def test_empty_top_level_after_successful_reply_tool_is_failure():
+    """Gate 0.4: successful respond/reflex_text must never extract as empty.
+
+    Product contract — if any reply tool has clean text, extract_user_response
+    must return it so server can set top-level ``response``.
+    """
+    cases = (
+        ("respond", "output", "Your home city is BeamCity1."),
+        ("reflex_text", "output", "I don't have your blood type in memory."),
+        ("respond", "text", "preference_marker is BeamPref99."),
+        ("final_answer", "content", "Multi-hop: city and pet known."),
+    )
+    for tool, key, text in cases:
+        result = {
+            "status": "completed",
+            "response": "",
+            "results": [{
+                "actions": [
+                    {
+                        "tool": "recall_mine",
+                        "result": {"success": True, "output": "home_city: X"},
+                    },
+                    {
+                        "tool": tool,
+                        "result": {"success": True, key: text},
+                    },
+                ],
+            }],
+        }
+        got = extract_user_response(result)
+        assert got == text, f"tool={tool} key={key}: got {got!r}"
+        assert got.strip(), "empty after successful reply tool is a test failure"
+
+
 def test_extract_skips_failed_actions():
     result = {
         "results": [{

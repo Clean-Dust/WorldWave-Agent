@@ -347,3 +347,135 @@ def test_tools_a_and_b_with_shared_vnext_and_global_rebind(tmp_path, monkeypatch
             assert "ONLY_B_TOOL" not in blob
     finally:
         mv.close()
+
+
+# ── Gate 0.4: sequential same-process isolation (real storage, no mocks) ──
+
+
+def test_sequential_entity_ltm_inject_never_leaks(tmp_path, monkeypatch):
+    """Live-style sequential /ww/run: A then B on same MemorySystem process.
+
+    Reproduces Banana beam_mini run B iron_rule leak: LTM abstract search
+    without entity partition surfaces prior BeamIronRule markers.
+    Does NOT mock away storage — real vnext facts/atoms/LTM on disk.
+    """
+    monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
+    from core.memory.entity_scope import bind_entity
+    from core.memory.system import MemorySystem
+
+    data = tmp_path / "seq_iso"
+    data.mkdir()
+    ms = MemorySystem(data_dir=str(data))
+    mv = ms.vnext
+    if mv is None:
+        mv = MemoryVNext(data_dir=str(tmp_path / "seq_iso_v"), start_dreaming=False)
+        ms.vnext = mv
+    try:
+        # Entity A: remember iron_rule + ingest + promote to LTM (like STM purge)
+        with bind_entity("ent_seq_A"):
+            mv.set_entity("ent_seq_A")
+            r = mv.remember(
+                "iron_rule",
+                "ONLY_FROM_A",
+                kind="constraint",
+                entity_id="ent_seq_A",
+            )
+            assert r.get("status") == "stored" or r.get("entity_id") == "ent_seq_A"
+            mv.ingest_turn(
+                "user",
+                "Iron rule for you: always honor ONLY_FROM_A.",
+                entity_id="ent_seq_A",
+            )
+            assert mv.wm.active is not None
+            uri = mv.ltm.promote_topic(
+                mv.wm.active, category="experiences", entity_id="ent_seq_A"
+            )
+            assert uri
+            inj_a = mv.inject_for_turn("iron rule honor", entity_id="ent_seq_A")
+            assert "ONLY_FROM_A" in inj_a
+
+        # Entity B: sequential same process — must never see ONLY_FROM_A
+        with bind_entity("ent_seq_B"):
+            mv.set_entity("ent_seq_B")
+            mv.remember(
+                "iron_rule",
+                "ONLY_FROM_B",
+                kind="constraint",
+                entity_id="ent_seq_B",
+            )
+            inj_b = mv.inject_for_turn(
+                "What iron rule should you honor for me?", entity_id="ent_seq_B"
+            )
+            assert "ONLY_FROM_B" in inj_b
+            assert "ONLY_FROM_A" not in inj_b, (
+                f"cross-entity LTM/inject leak:\n{inj_b}"
+            )
+
+            rec = mv.recall("iron rule", entity_id="ent_seq_B")
+            ltm_blob = json_dumps_safe(rec.get("ltm") or [])
+            assert "ONLY_FROM_A" not in ltm_blob
+            atom_blob = json_dumps_safe(rec.get("atoms") or [])
+            assert "ONLY_FROM_A" not in atom_blob
+            fact_blob = json_dumps_safe(rec.get("facts") or [])
+            assert "ONLY_FROM_A" not in fact_blob
+            assert "ONLY_FROM_B" in fact_blob or "ONLY_FROM_B" in inj_b
+
+            # Product search path
+            hits = ms.search("iron", limit=20, entity_id="ent_seq_B")
+            search_blob = " ".join(
+                (h.content if hasattr(h, "content") else str(h)) for h in hits
+            )
+            assert "ONLY_FROM_A" not in search_blob
+            assert "ONLY_FROM_B" in search_blob
+
+            # MemoryTools rebind path (same as tool handlers)
+            mem = MagicMock()
+            mem.vnext = mv
+            tools = MemoryTools(memory_system=mem, entity_id="ent_seq_B")
+            listed = tools.recall_mine("iron")
+            blob = " ".join(
+                f"{k}:{v}" for k, v in (listed.get("facts") or {}).items()
+            )
+            assert "ONLY_FROM_B" in blob
+            assert "ONLY_FROM_A" not in blob
+    finally:
+        if hasattr(mv, "close"):
+            mv.close()
+
+
+def test_sequential_entity_twice_same_process(tmp_path, monkeypatch):
+    """Two consecutive entity switches (beam_mini ×2 style) stay airtight."""
+    monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
+    from core.memory.entity_scope import bind_entity
+    from core.memory.system import MemorySystem
+
+    ms = MemorySystem(data_dir=str(tmp_path / "seq2"))
+    mv = ms.vnext
+    if mv is None:
+        mv = MemoryVNext(data_dir=str(tmp_path / "seq2v"), start_dreaming=False)
+        ms.vnext = mv
+    try:
+        markers = []
+        for i, eid in enumerate(("beam_mini_run1", "beam_mini_run2")):
+            marker = f"ONLY_FROM_{'A' if i == 0 else 'B'}_{i}"
+            markers.append((eid, marker))
+            with bind_entity(eid):
+                mv.set_entity(eid)
+                mv.remember("iron_rule", marker, kind="constraint", entity_id=eid)
+                mv.ingest_turn("user", f"honor {marker}", entity_id=eid)
+                if mv.wm.active is not None:
+                    mv.ltm.promote_topic(
+                        mv.wm.active, category="experiences", entity_id=eid
+                    )
+
+        # Re-enter run2 inject — must not contain run1 marker
+        eid2, m2 = markers[1]
+        _, m1 = markers[0]
+        with bind_entity(eid2):
+            mv.set_entity(eid2)
+            inj = mv.inject_for_turn("iron rule", entity_id=eid2)
+            assert m2 in inj
+            assert m1 not in inj
+    finally:
+        if hasattr(mv, "close"):
+            mv.close()

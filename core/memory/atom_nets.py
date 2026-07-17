@@ -493,6 +493,14 @@ def extract_atoms_from_topic(topic: Any, *, source: str = "topic_leave") -> List
         for a in extra:
             if a.content[:120].lower() not in seen:
                 atoms.append(a)
+    # Stamp cognitive entity from topic so extract atoms never float unscoped
+    tmeta = getattr(topic, "meta", None) or {}
+    topic_eid = ""
+    if isinstance(tmeta, dict):
+        topic_eid = str(tmeta.get("entity_id") or "").strip()
+    if not topic_eid and isinstance(topic, dict):
+        meta2 = topic.get("meta") if isinstance(topic.get("meta"), dict) else {}
+        topic_eid = str(meta2.get("entity_id") or "").strip()
     for a in atoms:
         if getattr(topic, "is_core", False):
             a.is_core = True
@@ -500,6 +508,11 @@ def extract_atoms_from_topic(topic: Any, *, source: str = "topic_leave") -> List
             for e in topic.entities:
                 if e not in a.entities:
                     a.entities.append(e)
+        if topic_eid:
+            a.meta = dict(a.meta or {})
+            a.meta.setdefault("entity_id", topic_eid)
+            if topic_eid not in a.entities:
+                a.entities.append(topic_eid)
     return atoms
 
 

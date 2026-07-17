@@ -63,12 +63,22 @@ def test_timeline_requires_order_cue_not_pure_echo():
         )
         is False
     )
-    # Honest order language
+    # Gate 0.4: first/then only inside refusal meta is NOT a pass
+    assert (
+        bmp.score_timeline(
+            f"I can't give a first/then answer about {ea} and {eb}.",
+            ea,
+            eb,
+        )
+        is False
+    )
+    # Honest order language with both markers as ordered tokens
     assert (
         bmp.score_timeline(f"First {ea}, then {eb}.", ea, eb) is True
     )
     assert bmp.score_timeline(f"{ea} before {eb}.", ea, eb) is True
     assert bmp.score_timeline(f"{ea} → {eb}", ea, eb) is True
+    assert bmp.score_timeline(f"{ea} then {eb}.", ea, eb) is True
 
 
 def test_contradiction_requires_conflict_language():
@@ -177,6 +187,19 @@ def test_foreign_secret_scoring_rejects_only_b_leak():
     """Iron rule / preference must fail if foreign entity secret appears."""
     assert bmp.score_no_foreign_secret("Honor BeamIronRule123") is True
     assert bmp.score_no_foreign_secret("The rule is ONLY_B_252009") is False
+    assert bmp.score_no_foreign_secret("ONLY_FROM_A in inject") is False
     assert bmp.score_summarization(
         "You live in BeamCity and have a pet. Secret ONLY_A_MARKER_ZZZ"
+    ) is False
+
+
+def test_stale_beam_marker_from_prior_run_is_foreign():
+    """Gate 0.4: prior BeamIronRule from sequential entity must fail clean check."""
+    # Module IRON is BeamIronRule{TS} for this process; a different suffix is stale
+    stale = "BeamIronRule63482"
+    assert stale != bmp.IRON
+    assert bmp._contains_stale_beam_marker(f"Honor {stale}") is True
+    assert bmp._contains_stale_beam_marker(f"Honor {bmp.IRON}") is False
+    assert bmp._contains_stale_beam_marker(
+        f"You should honor {bmp.IRON} only."
     ) is False
