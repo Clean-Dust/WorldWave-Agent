@@ -83,5 +83,3 @@ norecursedirs = [
     ".venv", "venv", "env", "dist", "build", "*.egg",
     "fixtures", "node_modules", "__pycache__",
 ]
-# Belt-and-suspenders if a path is passed explicitly
-collect_ignore_glob = ["tests/fixtures/**"]
