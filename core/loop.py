@@ -264,23 +264,35 @@ class Worldwave:
 
         This loads the entity's persistent state (working memory, preferences,
         last context) so the agent has continuity across platforms and time.
+        Memory tools always bind to this entity_id — never silent-default to
+        primary when a task entity was set.
         """
-        self._current_entity_id = entity_id
-        if self.entity_state_mgr:
+        self._current_entity_id = entity_id or ""
+        if self.entity_state_mgr and entity_id:
             state = self.entity_state_mgr.get(entity_id)
             if platform:
                 state.last_platform = platform
                 self.entity_state_mgr.save(state)
-            # Init memory tools for this entity
-            if self.memory:
+            # Re-wire optional WM tie-break if entity mgr arrived after __init__
+            self._maybe_wire_wm_subconscious_tiebreak()
+        # Init / rebind memory tools for this entity (even without entity_state_mgr)
+        if self.memory and entity_id:
+            if self._memory_tools is not None:
+                self._memory_tools.set_entity(entity_id)
+            else:
                 from core.memory.tools import MemoryTools
                 self._memory_tools = MemoryTools(
                     memory_system=self.memory,
                     entity_state_mgr=self.entity_state_mgr,
                     entity_id=entity_id,
                 )
-            # Re-wire optional WM tie-break if entity mgr arrived after __init__
-            self._maybe_wire_wm_subconscious_tiebreak()
+            # Keep v-next SoT on the same entity for inject/search
+            vnext = getattr(self.memory, "vnext", None)
+            if vnext is not None and hasattr(vnext, "set_entity"):
+                try:
+                    vnext.set_entity(entity_id)
+                except Exception:
+                    pass
 
     def _get_entity_context(self, query: str = "") -> str:
         """Get entity + memory context for the turn.
@@ -524,6 +536,92 @@ class Worldwave:
         "memory_list", "hippo_search", "hippo_promote", "atom_search", "ltm_search",
     })
 
+    def _maybe_internal_remember(self, utterance: str) -> Optional[Dict[str, Any]]:
+        """Store clear natural-language remember utterances via the single SoT.
+
+        Only triggers on explicit remember/store intent. Uses MemoryTools for
+        the current entity_id — same path as the remember tool (no dual inject).
+        """
+        text = (utterance or "").strip()
+        if not text:
+            return None
+        low = text.lower()
+        # Require explicit remember intent — do not auto-store every sentence
+        if not any(
+            m in low
+            for m in (
+                "remember",
+                "store that",
+                "store this",
+                "please store",
+                "key=",
+                "call remember",
+                "using the remember",
+            )
+        ):
+            return None
+        try:
+            from core.memory.tools import extract_remember_kv
+
+            pair = extract_remember_kv(text)
+        except Exception:
+            pair = None
+        if not pair:
+            return None
+        key, value = pair
+        if not key or not value:
+            return None
+        # Ensure tools bound to current entity
+        if self._memory_tools is None and self.memory is not None:
+            from core.memory.tools import MemoryTools
+
+            self._memory_tools = MemoryTools(
+                memory_system=self.memory,
+                entity_state_mgr=self.entity_state_mgr,
+                entity_id=self._current_entity_id or "default",
+            )
+        elif self._memory_tools is not None and self._current_entity_id:
+            self._memory_tools.set_entity(self._current_entity_id)
+        if self._memory_tools is None:
+            return None
+        result = self._memory_tools.remember(key, value, kind="outcome")
+        if result.get("success") or result.get("status") == "stored":
+            self._log(
+                f"## Internal remember entity={self._current_entity_id[:12] if self._current_entity_id else '?'} "
+                f"{key}={value[:40]}"
+            )
+            # Stash for diagnostics; product path still goes through tools/response
+            self._last_internal_remember = result
+        return result
+
+    def _repair_remember_params(
+        self, params: Optional[Dict[str, Any]], goal: str = ""
+    ) -> Dict[str, Any]:
+        """If remember was called with empty key/value, try one extraction repair."""
+        p = dict(params or {})
+        key = str(p.get("key") or "").strip()
+        value = str(p.get("value") or p.get("content") or p.get("fact") or "").strip()
+        if key and value:
+            p["key"] = key
+            p["value"] = value
+            return p
+        utterance = goal or getattr(self, "_last_goal", "") or ""
+        # Prefer the raw user request section if entity wrap is present
+        if "[Current Request]" in utterance:
+            utterance = utterance.split("[Current Request]", 1)[-1].strip()
+        try:
+            from core.memory.tools import extract_remember_kv
+
+            pair = extract_remember_kv(utterance)
+        except Exception:
+            pair = None
+        if pair:
+            if not key:
+                p["key"] = pair[0]
+            if not value:
+                p["value"] = pair[1]
+        return p
+
     def _reflex_synthesize_reply(
         self,
         goal: str,
@@ -699,7 +797,13 @@ class Worldwave:
         for tc in tool_calls:
             tool_name = tc.get("function", {}).get("name", "")
             try:
-                params = json.loads(tc.get("function", {}).get("arguments", "{}"))
+                raw_args = tc.get("function", {}).get("arguments", "{}")
+                if not raw_args or (isinstance(raw_args, str) and not raw_args.strip()):
+                    params = {}
+                else:
+                    params = json.loads(raw_args)
+                if not isinstance(params, dict):
+                    params = {}
             except (json.JSONDecodeError, TypeError):
                 params = {}
 
@@ -707,6 +811,29 @@ class Worldwave:
             # The reflex arc only handles trivial queries (< REFLEX_THRESHOLD complexity).
             # Full Basal Ganglia checks run in the main spiral loop where risks are real.
             # Here the safety gate causes false positives on harmless questions.
+
+            # remember: never succeed with empty args — auto-repair once from goal
+            if tool_name == "remember":
+                params = self._repair_remember_params(params, goal)
+                if not str(params.get("key") or "").strip() or not str(
+                    params.get("value") or ""
+                ).strip():
+                    result = {
+                        "success": False,
+                        "status": "error",
+                        "error": "remember tool requires both key and value (received no arguments)",
+                        "message": "remember tool requires both key and value (received no arguments)",
+                        "output": (
+                            "remember failed: missing key and/or value. "
+                            "Call remember(key='…', value='…') with both arguments."
+                        ),
+                    }
+                    actions.append({
+                        "tool": tool_name,
+                        "params": params,
+                        "result": result,
+                    })
+                    continue
 
             # Execute
             result = self.tools.call(tool_name, params)
@@ -814,6 +941,9 @@ class Worldwave:
 
         # Raw user goal (before entity wrap) — used for passive memory ingest + topic split
         user_goal_raw = goal
+        # Exposed for remember auto-repair when the model calls tools with empty args
+        self._last_goal = user_goal_raw
+        self._current_goal = user_goal_raw
 
         # ── Passive lossless track + auto topic split (single memory system) ──
         # Detect independent topic (markers / gap / lexical); park current to STM.
@@ -827,6 +957,14 @@ class Worldwave:
                     )
         except Exception as e:
             logger.debug("ingest_turn (user) skipped: %s", e)
+
+        # ── Reliable natural-language remember (single SoT, same as tool) ──
+        # When user says "Remember: my city is X", store via MemoryTools even if
+        # the model later calls remember with empty arguments.
+        try:
+            self._maybe_internal_remember(user_goal_raw)
+        except Exception as e:
+            logger.debug("internal remember skipped: %s", e)
 
         # ── Entity continuity injection ──
         entity_ctx = self._get_entity_context(query=user_goal_raw)
@@ -1914,6 +2052,38 @@ class Worldwave:
                 continue
 
             if tool_name:
+                # remember: repair empty params once; never claim success on empty
+                if tool_name == "remember":
+                    if not isinstance(params, dict):
+                        params = {}
+                    params = self._repair_remember_params(
+                        params, getattr(self, "_last_goal", goal) or goal
+                    )
+                    if not str(params.get("key") or "").strip() or not str(
+                        params.get("value") or ""
+                    ).strip():
+                        step_result = {
+                            "step": i,
+                            "tool": tool_name,
+                            "params": params,
+                            "description": desc,
+                            "result": {
+                                "success": False,
+                                "status": "error",
+                                "error": (
+                                    "remember tool requires both key and value "
+                                    "(received no arguments)"
+                                ),
+                                "output": (
+                                    "remember failed: missing key and/or value. "
+                                    "Retry with key= and value= filled."
+                                ),
+                            },
+                        }
+                        results.append(step_result)
+                        step_outputs[i] = json.dumps(step_result.get("result", {}))
+                        continue
+
                 # ── Basal Ganglia safety evaluation (subcortical) ──
                 safety = self._evaluate_action_safety(tool_name, params)
                 if not safety.get("allow", True):

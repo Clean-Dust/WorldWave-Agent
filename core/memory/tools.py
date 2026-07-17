@@ -21,12 +21,132 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from core.entity_state import normalize_wm_kind
 
 log = logging.getLogger("ww.memory.tools")
+
+# Natural-language remember patterns (Gate 0.1 reliability)
+_RE_KEY_VALUE = re.compile(
+    r"(?:^|[\s,;])key\s*[=:]\s*['\"]?([A-Za-z0-9_.\-]+)['\"]?"
+    r".*?"
+    r"(?:^|[\s,;])value\s*[=:]\s*['\"]?(.+?)['\"]?\s*$",
+    re.I | re.S,
+)
+_RE_KEY_VALUE_ALT = re.compile(
+    r"key\s*[=:]\s*['\"]?([A-Za-z0-9_.\-]+)['\"]?"
+    r"\s+"
+    r"value\s*[=:]\s*['\"]?(.+?)['\"]?(?:\s|$)",
+    re.I | re.S,
+)
+_RE_REMEMBER_IS = re.compile(
+    r"(?:please\s+)?remember(?:\s+(?:that|this))?\s*[:\-]?\s*"
+    r"(?:my\s+)?(.+?)\s+(?:is|are|=|:)\s+(.+?)\s*$",
+    re.I | re.S,
+)
+_RE_REMEMBER_COLON = re.compile(
+    r"(?:please\s+)?remember\s*[:\-]\s*(.+)$",
+    re.I | re.S,
+)
+_RE_STORE_THAT = re.compile(
+    r"^(?:i\s+)?(?:like|hate|prefer|use|work\s+as|live\s+in)\s+(.+?)(?:\.\s*store.*)?$",
+    re.I,
+)
+
+# Map natural phrases → stable keys
+_NL_KEY_MAP = (
+    (re.compile(r"\bhome\s*city\b|\bcity\b|\blive\b", re.I), "home_city"),
+    (re.compile(r"\bpet(?:'s)?\s*name\b|\bpet\b", re.I), "pet_name"),
+    (re.compile(r"\b(?:current\s+)?job\b|\bwork(?:s|ing)?\b|\brole\b", re.I), "current_job"),
+    (re.compile(r"\bpreference\b|\bprefer\b", re.I), "preference"),
+    (re.compile(r"\biron\s*rule\b|\brule\b|\bconstraint\b", re.I), "iron_rule"),
+    (re.compile(r"\bfavorite\s*color\b|\bcolour\b", re.I), "favorite_color"),
+    (re.compile(r"\bname\b", re.I), "user_name"),
+)
+
+
+def _slug_key(label: str, fallback: str = "fact") -> str:
+    s = re.sub(r"[^a-z0-9]+", "_", (label or "").strip().lower()).strip("_")
+    if not s:
+        return fallback
+    return s[:48]
+
+
+def extract_remember_kv(utterance: str) -> Optional[Tuple[str, str]]:
+    """Best-effort extract (key, value) from a natural remember utterance.
+
+    Handles:
+      - key=foo value=bar
+      - Remember: my city is Tokyo
+      - Please remember: my pet's name is Luna
+      - My job is Engineer. Store that.
+    Returns None when extraction is unreliable.
+    """
+    text = (utterance or "").strip()
+    if not text:
+        return None
+
+    # 1) Explicit key= / value=
+    for pat in (_RE_KEY_VALUE, _RE_KEY_VALUE_ALT):
+        m = pat.search(text)
+        if m:
+            k, v = m.group(1).strip(), m.group(2).strip().strip("'\"")
+            if k and v:
+                return k, v
+
+    # 2) Remember: my X is Y
+    m = _RE_REMEMBER_IS.search(text)
+    if m:
+        label, value = m.group(1).strip(), m.group(2).strip().strip(".'\"")
+        # Strip trailing instructions
+        value = re.split(r"\.\s*(?:store|using|call|do not)\b", value, maxsplit=1, flags=re.I)[0].strip()
+        if label and value and len(value) < 500:
+            key = "fact"
+            for rx, mapped in _NL_KEY_MAP:
+                if rx.search(label):
+                    key = mapped
+                    break
+            else:
+                key = _slug_key(label, "fact")
+            return key, value
+
+    # 3) Remember: <free text> — store whole clause under a derived key
+    m = _RE_REMEMBER_COLON.search(text)
+    if m:
+        body = m.group(1).strip().strip(".'\"")
+        if body and len(body) < 500:
+            # Try "my X is Y" inside body
+            m2 = re.search(
+                r"(?:my\s+)?(.+?)\s+(?:is|are|=)\s+(.+)$", body, re.I
+            )
+            if m2:
+                label, value = m2.group(1).strip(), m2.group(2).strip().strip(".'\"")
+                key = "fact"
+                for rx, mapped in _NL_KEY_MAP:
+                    if rx.search(label):
+                        key = mapped
+                        break
+                else:
+                    key = _slug_key(label, "user_fact")
+                return key, value
+            key = "user_fact"
+            for rx, mapped in _NL_KEY_MAP:
+                if rx.search(body):
+                    key = mapped
+                    break
+            return key, body
+
+    # 4) "I like X. Store that."
+    low = text.lower()
+    if "store" in low or "remember" in low:
+        m = _RE_STORE_THAT.match(text.strip())
+        if m:
+            return "preference", m.group(1).strip().strip(".'\"")
+
+    return None
 
 # Product default: dual-write OFF. Emergency only: WW_ENTITY_WM_DUAL_WRITE=1.
 # EntityState remains for identity continuity + isolated unit fixtures.
@@ -162,7 +282,7 @@ class MemoryTools:
         is_core: bool = False,
         kind: str = "",
     ) -> dict:
-        """Store a fact in the single memory system.
+        """Store a fact in the single memory system for ``self._entity_id``.
 
         Args:
             key: Short label for the fact (e.g., "user_name", "preferred_model")
@@ -173,15 +293,28 @@ class MemoryTools:
                   Empty/illegal → outcome. Never inferred from keywords.
 
         Returns:
-            {"status": "stored", "key": key, "previous": old_value or None, ...}
+            On success: {"success": True, "status": "stored", "key": ..., ...}
+            On missing args: {"success": False, "status": "error", ...} — never silent OK
         """
+        key = (key or "").strip() if isinstance(key, str) else str(key or "").strip()
+        value = (value or "").strip() if isinstance(value, str) else str(value or "").strip()
         if not key or not value:
-            return {"status": "error", "message": "key and value are required"}
+            return {
+                "success": False,
+                "status": "error",
+                "error": "remember tool requires both key and value",
+                "message": "key and value are required",
+                "output": "remember failed: key and value are required",
+            }
+
+        # Always re-bind v-next to current entity before write
+        self._bind_vnext_entity()
 
         kind_arg: Optional[str] = kind if (kind is not None and str(kind).strip()) else None
         resolved_kind = normalize_wm_kind(kind_arg)
         previous = None
         vnext = self._vnext()
+        stored = False
 
         # ── Primary path: MemoryVNext labeled facts (single SoT) ──
         if vnext is not None:
@@ -197,6 +330,7 @@ class MemoryTools:
                 )
                 previous = result.get("previous")
                 resolved_kind = normalize_wm_kind(result.get("kind") or resolved_kind)
+                stored = True
                 log.info(
                     "Entity %s: remember(vnext) '%s' kind=%s is_core=%s",
                     self._entity_id[:12],
@@ -218,16 +352,18 @@ class MemoryTools:
                         content=fact_text,
                         source="inference",
                         atom_type="semantic",
-                        tags=[key, category, kind_tag],
+                        tags=[key, category, kind_tag, self._entity_id],
                         context_id=f"remember:{self._entity_id}:{resolved_kind}",
                         is_core=True,
                     )
+                    stored = True
                 elif hasattr(self._memory, "store_fact"):
                     self._memory.store_fact(
                         fact=fact_text,
-                        entities=[key, category, kind_tag],
+                        entities=[key, category, kind_tag, self._entity_id],
                         context_id=f"remember:{self._entity_id}:{resolved_kind}",
                     )
+                    stored = True
             except Exception as e:
                 log.warning("memory store_fact failed: %s", e)
 
@@ -251,16 +387,29 @@ class MemoryTools:
                 )
                 meta = state.working_memory_meta.get(key) or {}
                 resolved_kind = normalize_wm_kind(meta.get("kind") or resolved_kind)
+                stored = True
             except Exception as e:
                 log.debug("entity WM write skipped: %s", e)
+
+        if not stored:
+            return {
+                "success": False,
+                "status": "error",
+                "error": "remember failed: no store backend accepted the write",
+                "message": "remember failed: no store backend accepted the write",
+                "output": "remember failed: storage unavailable",
+                "entity_id": self._entity_id,
+            }
 
         return {
             "success": True,
             "status": "stored",
             "key": key,
+            "value": value,
             "previous": previous,
             "is_core": bool(is_core),
             "kind": resolved_kind,
+            "entity_id": self._entity_id,
             "timestamp": time.time(),
             "output": f"Remembered {key}: {value}",
             "store": "vnext" if self._vnext() is not None else "legacy_shim",
@@ -269,10 +418,18 @@ class MemoryTools:
     # ── forget ───────────────────────────────────────────────────
 
     def forget(self, key: str) -> dict:
-        """Mark a fact as no longer valid (single system)."""
+        """Mark a fact as no longer valid (single system, current entity only)."""
+        key = (key or "").strip() if isinstance(key, str) else str(key or "").strip()
         if not key:
-            return {"status": "error", "message": "key is required"}
+            return {
+                "success": False,
+                "status": "error",
+                "error": "key is required",
+                "message": "key is required",
+                "output": "forget failed: key is required",
+            }
 
+        self._bind_vnext_entity()
         was = None
         vnext = self._vnext()
         if vnext is not None:
@@ -330,7 +487,8 @@ class MemoryTools:
     # ── recall_mine ──────────────────────────────────────────────
 
     def recall_mine(self, query: str = "", limit: int = 10) -> dict:
-        """Query labeled facts from the single memory system."""
+        """Query labeled facts for the current entity only (no cross-entity leak)."""
+        self._bind_vnext_entity()
         facts: Dict[str, str] = {}
         vnext = self._vnext()
 
@@ -372,6 +530,7 @@ class MemoryTools:
             "success": True,
             "facts": facts_out,
             "total": len(items),
+            "entity_id": self._entity_id,
             "output": output,
             "store": "vnext" if vnext is not None else "entity_shim",
         }
@@ -429,43 +588,46 @@ class MemoryTools:
             {
                 "name": "remember",
                 "description": (
-                    "Store a fact in your memory. Use this when you learn something "
-                    "new about the user or the current task. The fact will persist "
-                    "across all conversations and platforms. "
-                    "Set kind (label id) explicitly (never guess from keywords): "
-                    "constraint=约束 (iron rule), commitment=承诺 (plan/next step), "
-                    "outcome=结果 (fact/result; default), rationale=理由 (why). "
-                    "category is optional grouping only — does not affect eviction. "
-                    "Prefer is_core=True for must-keep facts. "
-                    "Example: remember(key='no_netplan', value='never change netplan', "
-                    "kind='constraint')"
+                    "Store a fact for the CURRENT entity. REQUIRED: key and value. "
+                    "Never call with empty arguments. "
+                    "Natural language: user says 'Remember: my city is Tokyo' → "
+                    "remember(key='home_city', value='Tokyo'). "
+                    "kind optional: constraint|commitment|outcome|rationale."
                 ),
                 "parameters": {
-                    "key": {"type": "string", "description": "Short label for the fact"},
-                    "value": {"type": "string", "description": "The fact content"},
-                    "category": {
-                        "type": "string",
-                        "description": (
-                            "Optional grouping only (general, preference, technical, "
-                            "contact, project). Does not affect eviction; not a WM label."
-                        ),
+                    "type": "object",
+                    "properties": {
+                        "key": {
+                            "type": "string",
+                            "description": "REQUIRED short label (e.g. home_city, pet_name)",
+                        },
+                        "value": {
+                            "type": "string",
+                            "description": "REQUIRED fact content to store",
+                        },
+                        "category": {
+                            "type": "string",
+                            "description": (
+                                "Optional grouping only (general, preference, technical, "
+                                "contact, project). Does not affect eviction; not a WM label."
+                            ),
+                            "default": "general",
+                        },
+                        "is_core": {
+                            "type": "boolean",
+                            "description": "Optional: mark as core (never auto-evicted)",
+                            "default": False,
+                        },
+                        "kind": {
+                            "type": "string",
+                            "description": (
+                                "Optional WM label id: constraint|commitment|outcome|rationale. "
+                                "Empty → outcome. Explicit only."
+                            ),
+                            "default": "",
+                        },
                     },
-                    "is_core": {
-                        "type": "boolean",
-                        "description": "Optional: mark as core (never auto-evicted)",
-                    },
-                    "kind": {
-                        "type": "string",
-                        "description": (
-                            "Optional WM label id for eviction weight: "
-                            "constraint (约束, iron rule, weight 4), "
-                            "commitment (承诺, plan/next step, weight 3), "
-                            "outcome (结果, fact/result, weight 2; default), "
-                            "rationale (理由, why/process, weight 1). "
-                            "Empty or unknown → outcome. Explicit only; no keyword inference. "
-                            "category ≠ kind/label."
-                        ),
-                    },
+                    "required": ["key", "value"],
                 },
                 "category": "memory",
             },

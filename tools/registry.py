@@ -109,7 +109,13 @@ class ToolRegistry:
         return list(self._tools.values())
 
     def to_openai_tools(self) -> list:
-        """Convert registered tools to OpenAI function-calling format."""
+        """Convert registered tools to OpenAI function-calling format.
+
+        Flat parameter maps mark a field as required only when it has no
+        ``default`` key. Optional fields (category, kind, limit, …) must not
+        appear in ``required`` — that caused empty ``remember`` calls when
+        models tried to satisfy optional slots and dropped key/value.
+        """
         tools = []
         for t in self._tools.values():
             if t.parameters:
@@ -124,14 +130,20 @@ class ToolRegistry:
                         for k, v in t.parameters.items():
                             if isinstance(v, dict):
                                 params["properties"][k] = v
+                                # Optional if schema declares a default
+                                if "default" not in v:
+                                    params["required"].append(k)
                             else:
-                                params["properties"][k] = {"type": "string", "description": str(v)}
-                            params["required"].append(k)
+                                params["properties"][k] = {
+                                    "type": "string",
+                                    "description": str(v),
+                                }
+                                params["required"].append(k)
                 else:
                     # Non-dict parameters — wrap as single string input
                     params = {"type": "object", "properties": {
                         "input": {"type": "string", "description": str(t.parameters)}
-                    }}
+                    }, "required": ["input"]}
             else:
                 params = {"type": "object", "properties": {}, "required": []}
             tools.append({
@@ -1091,11 +1103,52 @@ def _memory_store_handler(content: str, category: str = "general",
 
 
 def _memory_search_handler(query: str = "", limit: int = 5) -> Dict:
-    """Search memory."""
+    """Search memory scoped to the active entity when available.
+
+    Prefer in-process MemorySystem (entity-filtered v-next) over the unscoped
+    HTTP MEMORY_V2_URL path, which can leak other entities' facts.
+    """
     if not query:
         return {"success": False, "error": "missing required parameter: query"}
     try:
-        import urllib.request
+        ww = _active_ww()
+        if ww is not None:
+            mt = _ensure_memory_tools(ww)
+            memory = getattr(ww, "memory", None)
+            eid = getattr(ww, "_current_entity_id", "") or ""
+            if memory is not None and hasattr(memory, "search"):
+                # Bind v-next entity before search so labeled facts + atoms filter
+                vnext = getattr(memory, "vnext", None)
+                if vnext is not None and eid and hasattr(vnext, "set_entity"):
+                    try:
+                        vnext.set_entity(eid)
+                    except Exception:
+                        pass
+                results = memory.search(query, limit=int(limit or 5))
+                rows = []
+                for a in results or []:
+                    if hasattr(a, "to_dict"):
+                        rows.append(a.to_dict())
+                    elif isinstance(a, dict):
+                        rows.append(a)
+                    else:
+                        rows.append({"content": str(a)})
+                out_eid = eid
+                if not out_eid and vnext is not None:
+                    out_eid = getattr(vnext, "entity_id", "") or ""
+                return {
+                    "success": True,
+                    "results": rows,
+                    "total": len(rows),
+                    "entity_id": out_eid,
+                    "output": "\n".join(
+                        str(r.get("content") or "") for r in rows if r.get("content")
+                    )[:2000],
+                }
+            # Fallback: entity-scoped recall_mine if search unavailable
+            if mt is not None:
+                return mt.recall_mine(query, limit=int(limit or 5))
+        # Last resort: HTTP path (may be unscoped — prefer not for chat)
         payload = json.dumps({"query": query, "limit": limit}).encode()
         req = urllib.request.Request(
             MEMORY_V2_URL + "/v2/search",
@@ -1157,55 +1210,196 @@ def _memory_stats_handler() -> Dict:
 
 # ── 8b. SELF-EDITING MEMORY HANDLERS ───────────────────
 
+def _active_ww():
+    """Return the active Worldwave instance, or None."""
+    ww_module = sys.modules.get("core.loop")
+    if ww_module and hasattr(ww_module, "_active_ww_instance"):
+        return getattr(ww_module, "_active_ww_instance", None)
+    return None
+
+
+def _ensure_memory_tools(ww):
+    """Ensure MemoryTools is bound to the current entity on ``ww``."""
+    if ww is None:
+        return None
+    tools = getattr(ww, "_memory_tools", None)
+    eid = getattr(ww, "_current_entity_id", "") or ""
+    if tools is not None:
+        # Re-bind entity every call — never silent-default to a stale entity
+        if eid and getattr(tools, "_entity_id", None) != eid:
+            tools.set_entity(eid)
+        elif eid and hasattr(tools, "_bind_vnext_entity"):
+            tools._bind_vnext_entity()
+        return tools
+    memory = getattr(ww, "memory", None)
+    if memory is None:
+        return None
+    try:
+        from core.memory.tools import MemoryTools
+
+        tools = MemoryTools(
+            memory_system=memory,
+            entity_state_mgr=getattr(ww, "entity_state_mgr", None),
+            entity_id=eid or "default",
+        )
+        ww._memory_tools = tools
+        return tools
+    except Exception as e:
+        logger.warning("MemoryTools init failed: %s", e)
+        return None
+
+
 def _remember_handler(
-    key: str,
-    value: str,
+    key: str = "",
+    value: str = "",
     category: str = "general",
     is_core: bool = False,
     kind: str = "",
+    **extra,
 ) -> Dict:
-    """Store a fact in entity memory (self-editing)."""
+    """Store a fact in entity memory (self-editing).
+
+    Empty key/value never claims success. One auto-repair attempt may extract
+    key=value from the active goal / user utterance when the model called
+    remember with missing arguments.
+    """
+    # Models sometimes nest args or pass content/fact aliases
+    if not key and isinstance(extra.get("name"), str):
+        key = extra["name"]
+    if not value and isinstance(extra.get("content"), str):
+        value = extra["content"]
+    if not value and isinstance(extra.get("fact"), str):
+        value = extra["fact"]
+    if not key and not value and isinstance(extra.get("text"), str):
+        value = extra["text"]
+
+    key = (key or "").strip() if isinstance(key, str) else str(key or "").strip()
+    value = (value or "").strip() if isinstance(value, str) else str(value or "").strip()
+
+    ww = _active_ww()
+    mt = _ensure_memory_tools(ww)
+
+    # Auto-repair once: empty tool call → extract from goal utterance
+    if (not key or not value) and ww is not None:
+        utterance = ""
+        for attr in ("_last_goal", "_current_goal", "last_goal"):
+            u = getattr(ww, attr, None)
+            if isinstance(u, str) and u.strip():
+                utterance = u
+                break
+        if not utterance:
+            try:
+                state = getattr(ww, "state", None)
+                if state is not None:
+                    utterance = str(getattr(state, "goal", "") or "")
+            except Exception:
+                pass
+        if utterance:
+            try:
+                from core.memory.tools import extract_remember_kv
+
+                repaired = extract_remember_kv(utterance)
+            except Exception:
+                repaired = None
+            if repaired:
+                rk, rv = repaired
+                if not key:
+                    key = rk
+                if not value:
+                    value = rv
+
+    if not key or not value:
+        return {
+            "success": False,
+            "status": "error",
+            "error": "remember tool requires both key and value (received no/empty arguments)",
+            "message": "remember tool requires both key and value (received no/empty arguments)",
+            "output": (
+                "remember failed: missing key and/or value. "
+                "Call again with key='short_label' value='fact text'. "
+                "Example: remember(key='home_city', value='Tokyo')"
+            ),
+        }
+
+    if mt is None:
+        return {
+            "success": False,
+            "status": "error",
+            "error": "no memory tools / entity context for remember",
+            "message": "no memory tools / entity context for remember",
+            "output": "remember failed: memory system not available",
+        }
     try:
-        # Access the Worldwave instance via module-level reference
-        import sys
-        ww_module = sys.modules.get("core.loop")
-        if ww_module and hasattr(ww_module, '_active_ww_instance'):
-            ww = ww_module._active_ww_instance
-            if ww._memory_tools:
-                return ww._memory_tools.remember(
-                    key, value, category, is_core=bool(is_core), kind=kind or ""
-                )
-        return {"status": "stored", "key": key, "note": "stored in-memory only (no entity context)"}
+        return mt.remember(
+            key, value, category, is_core=bool(is_core), kind=kind or ""
+        )
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {
+            "success": False,
+            "status": "error",
+            "error": str(e),
+            "message": str(e),
+            "output": f"remember failed: {e}",
+        }
 
 
-def _forget_handler(key: str) -> Dict:
-    """Mark a fact as outdated."""
+def _forget_handler(key: str = "", **extra) -> Dict:
+    """Mark a fact as outdated — always scoped to current entity_id."""
+    if not key and isinstance(extra.get("name"), str):
+        key = extra["name"]
+    key = (key or "").strip()
+    if not key:
+        return {
+            "success": False,
+            "status": "error",
+            "error": "forget requires key",
+            "message": "forget requires key",
+            "output": "forget failed: key is required",
+        }
     try:
-        import sys
-        ww_module = sys.modules.get("core.loop")
-        if ww_module and hasattr(ww_module, '_active_ww_instance'):
-            ww = ww_module._active_ww_instance
-            if ww._memory_tools:
-                return ww._memory_tools.forget(key)
-        return {"status": "forgotten", "key": key, "note": "no entity context"}
+        ww = _active_ww()
+        mt = _ensure_memory_tools(ww)
+        if mt is not None:
+            return mt.forget(key)
+        return {
+            "success": False,
+            "status": "error",
+            "error": "no memory tools / entity context for forget",
+            "message": "no memory tools / entity context for forget",
+            "output": "forget failed: memory system not available",
+        }
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {
+            "success": False,
+            "status": "error",
+            "error": str(e),
+            "message": str(e),
+            "output": f"forget failed: {e}",
+        }
 
 
-def _recall_mine_handler(query: str = "", limit: int = 10) -> Dict:
-    """Query stored facts about current entity."""
+def _recall_mine_handler(query: str = "", limit: int = 10, **extra) -> Dict:
+    """Query stored facts about the current entity only."""
     try:
-        import sys
-        ww_module = sys.modules.get("core.loop")
-        if ww_module and hasattr(ww_module, '_active_ww_instance'):
-            ww = ww_module._active_ww_instance
-            if ww._memory_tools:
-                return ww._memory_tools.recall_mine(query, limit)
-        return {"facts": {}, "total": 0, "note": "no entity context"}
+        ww = _active_ww()
+        mt = _ensure_memory_tools(ww)
+        if mt is not None:
+            return mt.recall_mine(query or "", int(limit or 10))
+        return {
+            "success": True,
+            "facts": {},
+            "total": 0,
+            "output": "",
+            "note": "no entity context",
+        }
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {
+            "success": False,
+            "status": "error",
+            "error": str(e),
+            "message": str(e),
+            "output": f"recall_mine failed: {e}",
+        }
 
 
 def _switch_topic_handler(title: str = "") -> Dict:
@@ -1685,24 +1879,34 @@ def default_registry(guardrails=None) -> ToolRegistry:
 
     # ── 8b. SELF-EDITING MEMORY (Entity continuity) ──
     r.register_from_def("remember",
-        "Store a fact in your persistent memory. Use this when you learn something "
-        "new about the user or need to remember information across conversations. "
-        "Facts stored with 'remember' persist across ALL platforms (Telegram, terminal, etc.) "
-        "and survive server restarts. "
-        "Set kind (label id) explicitly: constraint=约束 (iron rule, weight 4), "
-        "commitment=承诺 (plan/next step, weight 3), outcome=结果 (fact/result, weight 2; default), "
-        "rationale=理由 (why/process, weight 1). "
-        "category is optional grouping only — does not affect eviction (category ≠ kind/label). "
-        "Prefer is_core=True for must-keep facts; constraint is soft high weight if is_core omitted. "
-        "Examples: "
+        "Store a fact in your persistent memory for the CURRENT user/entity. "
+        "REQUIRED args: key (short label) AND value (fact text). Never call with empty {}. "
+        "When the user says natural language like 'Remember: my city is Tokyo' or "
+        "'Please remember my pet is Luna', call remember with structured args, e.g. "
+        "key='home_city' value='Tokyo' or key='pet_name' value='Luna'. "
+        "Also accepts explicit key=… value=… from the user. "
+        "Facts persist across platforms and restarts. "
+        "Optional kind: constraint (iron rule), commitment (plan), outcome (fact; default), "
+        "rationale (why). Optional is_core=true for must-keep facts. "
+        "Examples: remember(key='home_city', value='Tokyo'); "
         "remember(key='no_netplan', value='never change netplan', kind='constraint'); "
-        "remember(key='plan_choice', value='use Docker sandbox', kind='commitment'); "
-        "remember(key='build_result', value='tests passed', kind='outcome'); "
-        "remember(key='model_reason', value='chose flash for latency', kind='rationale')",
+        "remember(key='prove_product_code', value='PROD-MEM-123')",
         _remember_handler,
         parameters={
-            "key": {"type": "string", "description": "Short label for this fact"},
-            "value": {"type": "string", "description": "The fact content to store"},
+            "key": {
+                "type": "string",
+                "description": (
+                    "REQUIRED short label for the fact, snake_case preferred "
+                    "(e.g. home_city, pet_name, prove_product_code, current_job)."
+                ),
+            },
+            "value": {
+                "type": "string",
+                "description": (
+                    "REQUIRED fact content to store (e.g. 'Tokyo', 'Luna', "
+                    "'PROD-MEM-123'). Use the user's words when possible."
+                ),
+            },
             "category": {
                 "type": "string",
                 "description": (
@@ -1711,23 +1915,27 @@ def default_registry(guardrails=None) -> ToolRegistry:
                 ),
                 "default": "general",
             },
-            "is_core": {"type": "boolean", "description": "Optional: mark as core (never auto-evicted)", "default": False},
+            "is_core": {
+                "type": "boolean",
+                "description": "Optional: mark as core (never auto-evicted)",
+                "default": False,
+            },
             "kind": {
                 "type": "string",
                 "description": (
-                    "Optional label (kind): constraint (约束, iron rule), "
-                    "commitment (承诺, plan/next step), outcome (结果, fact/result), "
-                    "rationale (理由, why). Empty/unknown → outcome. "
-                    "Explicit only; no keyword inference. category ≠ kind/label."
+                    "Optional label (kind): constraint (iron rule), "
+                    "commitment (plan/next step), outcome (fact/result), "
+                    "rationale (why). Empty/unknown → outcome. "
+                    "Explicit only; no keyword inference."
                 ),
                 "default": "",
             },
         },
         examples=[
+            'remember(key="home_city", value="Tokyo")',
+            'remember(key="pet_name", value="Luna")',
             'remember(key="no_netplan", value="never change netplan", kind="constraint")',
-            'remember(key="plan_choice", value="use Docker sandbox", kind="commitment")',
-            'remember(key="build_result", value="tests passed", kind="outcome")',
-            'remember(key="model_reason", value="chose flash for latency", kind="rationale")',
+            'remember(key="prove_product_code", value="PROD-MEM-123")',
         ],
         category="memory")
 

@@ -208,13 +208,25 @@ class MemoryVNext:
                 "value": value,
             },
         )
-        # Supersede prior same-key current facts
-        prior = self.atoms.query(text=f"{key}:", current_only=True, limit=5)
+        # Supersede prior same-key current facts for THIS entity only
+        prior = self.atoms.query(text=f"{key}:", current_only=True, limit=20)
+        superseded = False
         for old in prior:
-            if old.content.startswith(f"{key}:") and old.atom_id != atom.atom_id:
-                self.atoms.updates(atom, old)
-                break
-        else:
+            if old.atom_id == atom.atom_id:
+                continue
+            if not old.content.startswith(f"{key}:"):
+                continue
+            old_meta = old.meta if isinstance(old.meta, dict) else {}
+            old_eid = str(old_meta.get("entity_id") or "")
+            old_ents = [str(e) for e in (old.entities or [])]
+            if old_eid and old_eid != eid:
+                continue
+            if not old_eid and eid not in old_ents and eid != "default":
+                continue
+            self.atoms.updates(atom, old)
+            superseded = True
+            break
+        if not superseded:
             self.atoms.add(atom)
 
         if is_core:

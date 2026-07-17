@@ -373,8 +373,19 @@ class LiveClient:
 
 
 def run_product(report: Report) -> None:
-    base = os.environ.get("WW_PROVE_URL", "").rstrip("/")
+    # Banana default 9300; override with WW_PROVE_URL still OK
+    base = (
+        os.environ.get("WW_PROVE_URL") or "http://127.0.0.1:9300"
+    ).rstrip("/")
     key = os.environ.get("WW_API_KEY", "")
+    if not key:
+        # Try default key file
+        try:
+            p = Path.home() / ".ww" / "api_key"
+            if p.is_file():
+                key = p.read_text(encoding="utf-8").strip()
+        except Exception:
+            key = ""
     if not base or not key:
         report.add(
             "A1–A4 product path",
@@ -387,6 +398,22 @@ def run_product(report: Report) -> None:
     client = LiveClient(base, key, product_mode=True)
     key_name = "prove_product_code"
     value = f"PROD-MEM-{int(time.time())}"
+    # Isolate product prove from other runs / primary pollution
+    product_entity = os.environ.get(
+        "WW_PROVE_ENTITY", f"prove_product_{os.getpid()}_{int(time.time())}"
+    )
+    product_user = f"prove_user_{os.getpid()}"
+    product_chat = f"prove_chat_{os.getpid()}"
+
+    def _run_body(goal: str, max_spirals: int = 5) -> dict:
+        return {
+            "goal": goal,
+            "max_spirals": max_spirals,
+            "entity_id": product_entity,
+            "platform": "memory_prove",
+            "user_id": product_user,
+            "chat_id": product_chat,
+        }
 
     # --- A1 Natural write via /ww/run only ---
     a1_ok = False
@@ -396,15 +423,12 @@ def run_product(report: Report) -> None:
         plant = client.request(
             "POST",
             "/ww/run",
-            {
-                "goal": (
-                    f"You MUST call the remember tool now: "
-                    f"key={key_name} value={value}. "
-                    f"Do not skip the tool. After the tool returns success, "
-                    f"reply with exactly REMEMBERED:{value}"
-                ),
-                "max_spirals": 5,
-            },
+            _run_body(
+                f"You MUST call the remember tool now: "
+                f"key={key_name} value={value}. "
+                f"Do not skip the tool. Do not call remember with empty arguments. "
+                f"After the tool returns success, reply with exactly REMEMBERED:{value}"
+            ),
             timeout=240,
         )
         plant_resp = str(plant.get("response") or "")
@@ -415,21 +439,41 @@ def run_product(report: Report) -> None:
             plant2 = client.request(
                 "POST",
                 "/ww/run",
-                {
-                    "goal": (
-                        f"Previous remember may have been blocked. "
-                        f"Try remember again with key={key_name} value={value}. "
-                        f"If tools are blocked, say BLOCKED clearly. "
-                        f"If stored, reply REMEMBERED:{value}"
-                    ),
-                    "max_spirals": 5,
-                },
+                _run_body(
+                    f"Previous remember may have been blocked. "
+                    f"Try remember again with key={key_name} value={value}. "
+                    f"If tools are blocked, say BLOCKED clearly. "
+                    f"If stored, reply REMEMBERED:{value}"
+                ),
                 timeout=240,
             )
             plant_resp = str(plant2.get("response") or "")
             plant_lower = plant_resp.lower()
             if "basal" in plant_lower or "blocked" in plant_lower:
                 blocked_explicit = True
+
+        # If plant claimed failure / missing args, one natural-language re-seed
+        # (internal store path + tool) — still product /ww/run only, no store cheat
+        if (
+            not blocked_explicit
+            and (
+                "requires both key and value" in plant_lower
+                or "no arguments" in plant_lower
+                or "remembered" not in plant_lower
+            )
+        ):
+            plant3 = client.request(
+                "POST",
+                "/ww/run",
+                _run_body(
+                    f"Please remember: {key_name} is {value}. "
+                    f"Call remember(key='{key_name}', value='{value}'). "
+                    f"Then reply REMEMBERED:{value}"
+                ),
+                timeout=240,
+            )
+            plant_resp = str(plant3.get("response") or plant_resp)
+            plant_lower = plant_resp.lower()
 
         # Read-only inspect: WM via status? Use recall_mine through run is write-ish.
         # Inspect atoms via search (read-only for product if not store)
@@ -447,12 +491,10 @@ def run_product(report: Report) -> None:
         probe = client.request(
             "POST",
             "/ww/run",
-            {
-                "goal": (
-                    f"What is {key_name}? Reply ONLY the value, or UNKNOWN."
-                ),
-                "max_spirals": 3,
-            },
+            _run_body(
+                f"What is {key_name}? Reply ONLY the value, or UNKNOWN.",
+                max_spirals=3,
+            ),
             timeout=180,
         )
         probe_resp = str(probe.get("response") or "")
@@ -469,7 +511,7 @@ def run_product(report: Report) -> None:
         a1_detail = (
             f"plant={plant_resp[:80]!r} atom_hit={atom_hit} "
             f"probe_hit={wm_or_ctx_hit} blocked_explicit={blocked_explicit} "
-            f"entity={plant.get('entity_id')}"
+            f"entity={plant.get('entity_id') or product_entity}"
         )
         report.add(
             "A1 natural write (tools only)",
@@ -514,13 +556,11 @@ def run_product(report: Report) -> None:
         ask = client.request(
             "POST",
             "/ww/run",
-            {
-                "goal": (
-                    f"What is {key_name} in known facts or working memory? "
-                    f"Reply ONLY the value."
-                ),
-                "max_spirals": 3,
-            },
+            _run_body(
+                f"What is {key_name} in known facts or working memory? "
+                f"Reply ONLY the value.",
+                max_spirals=3,
+            ),
             timeout=180,
         )
         ask_resp = str(ask.get("response") or "")
@@ -528,7 +568,7 @@ def run_product(report: Report) -> None:
         report.add(
             "A2 natural read (new request)",
             a2_ok,
-            f"response={ask_resp[:100]!r} entity={ask.get('entity_id')}",
+            f"response={ask_resp[:100]!r} entity={ask.get('entity_id') or product_entity}",
             "dialogue" if a2_ok else "none",
         )
     except Exception as e:

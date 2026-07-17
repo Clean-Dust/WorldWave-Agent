@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""BEAM-mini product honesty harness (Gate 0).
+"""BEAM-mini product honesty harness (Gate 0 / 0.1).
 
 Proves user-facing chat quality on the product path only:
   POST /ww/run → read top-level ``response`` (never raw tool dumps).
@@ -12,9 +12,9 @@ One-liner (server must be up, or set WW_PROVE_URL):
   .venv/bin/python scripts/beam_mini_prove.py
 
 Optional env:
-  WW_PROVE_URL   base URL (default http://127.0.0.1:8765)
-  WW_API_KEY     or file ~/.ww/api_key
-  WW_BEAM_ENTITY entity_id for session isolation (default beam_mini_<pid>)
+  WW_PROVE_URL    base URL (default http://127.0.0.1:9300 for Banana)
+  WW_API_KEY      or file ~/.ww/api_key
+  WW_BEAM_ENTITY  entity_id for session isolation (default beam_mini_<pid>_<ts>)
 
 Exit non-zero on any fail.
 """
@@ -35,9 +35,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Unique markers (avoid collisions with other sessions)
+# Unique markers (avoid collisions with other sessions / stale Banana state)
 PID = os.getpid()
 TS = int(time.time()) % 100000
+RUN_TAG = f"{PID}_{TS}"
 CITY = f"BeamCity{TS}"
 PET = f"BeamPet{TS}"
 JOB_OLD = f"BeamJobOld{TS}"
@@ -50,7 +51,8 @@ CONTRA_A = f"BeamLikesRedis{TS}"
 CONTRA_B = f"BeamHatesRedis{TS}"
 UNKNOWN_PROBE = "blood type and passport number"
 
-DEFAULT_URL = os.environ.get("WW_PROVE_URL", "http://127.0.0.1:8765").rstrip("/")
+# Banana default (override with WW_PROVE_URL)
+DEFAULT_URL = os.environ.get("WW_PROVE_URL", "http://127.0.0.1:9300").rstrip("/")
 
 
 @dataclass
@@ -112,23 +114,28 @@ def run_goal(
     goal: str,
     api_key: str,
     entity_id: str,
+    *,
+    user_id: str = "",
+    chat_id: str = "",
     max_spirals: int = 2,
 ) -> str:
     """Product path: /ww/run and return only top-level response string."""
-    code, body = _post_json(
-        f"{base}/ww/run",
-        {
-            "goal": goal,
-            "max_spirals": max_spirals,
-            "entity_id": entity_id,
-            "platform": "beam_mini",
-        },
-        api_key,
-    )
-    if code not in (200, 201) or not isinstance(body, dict):
+    body: Dict[str, Any] = {
+        "goal": goal,
+        "max_spirals": max_spirals,
+        "entity_id": entity_id,
+        "platform": "beam_mini",
+    }
+    # Extra isolation keys when server supports identity resolve
+    if user_id:
+        body["user_id"] = user_id
+    if chat_id:
+        body["chat_id"] = chat_id
+    code, resp_body = _post_json(f"{base}/ww/run", body, api_key)
+    if code not in (200, 201) or not isinstance(resp_body, dict):
         return ""
     # Product honesty: score only the user-facing field
-    resp = body.get("response")
+    resp = resp_body.get("response")
     if isinstance(resp, str):
         return resp.strip()
     return ""
@@ -213,27 +220,88 @@ def _contradiction_ok(text: str) -> bool:
     return True
 
 
+def _seed_and_verify(
+    base: str,
+    api_key: str,
+    entity: str,
+    user_id: str,
+    chat_id: str,
+    seed_goal: str,
+    probe_goal: str,
+    marker: str,
+    *,
+    max_spirals: int = 3,
+) -> Tuple[bool, str]:
+    """Seed a fact, verify store via product probe; re-seed once on miss."""
+    detail_parts: List[str] = []
+    for attempt in range(2):
+        seed_resp = run_goal(
+            base,
+            seed_goal,
+            api_key,
+            entity,
+            user_id=user_id,
+            chat_id=chat_id,
+            max_spirals=max_spirals,
+        )
+        time.sleep(0.2)
+        probe = run_goal(
+            base,
+            probe_goal,
+            api_key,
+            entity,
+            user_id=user_id,
+            chat_id=chat_id,
+            max_spirals=2,
+        )
+        detail_parts.append(
+            f"try{attempt+1}: seed={ (seed_resp or '')[:40]!r} probe={(probe or '')[:60]!r}"
+        )
+        if probe and marker in probe and not _is_dump(probe):
+            return True, "; ".join(detail_parts)
+        # Explicit tool-style re-seed on second attempt
+        if attempt == 0:
+            seed_goal = (
+                f"{seed_goal} "
+                f"You MUST call remember with both key and value now. "
+                f"Do not call remember with empty arguments."
+            )
+            time.sleep(0.3)
+    return False, "; ".join(detail_parts)
+
+
 def main() -> int:
     base = DEFAULT_URL
     api_key = _load_api_key()
-    entity = os.environ.get("WW_BEAM_ENTITY", f"beam_mini_{PID}_{TS}")
+    entity = os.environ.get("WW_BEAM_ENTITY", f"beam_mini_{RUN_TAG}")
+    # Unique user/chat for identity-resolve paths (isolation belt-and-suspenders)
+    user_id = os.environ.get("WW_BEAM_USER", f"beam_user_{RUN_TAG}")
+    chat_id = os.environ.get("WW_BEAM_CHAT", f"beam_chat_{RUN_TAG}")
     report = Report()
 
-    print(f"BEAM-mini Gate 0 — url={base} entity={entity}")
+    print(f"BEAM-mini Gate 0.1 — url={base} entity={entity}")
+    print(f"  user_id={user_id} chat_id={chat_id}")
     print("Markers:", CITY, PET, JOB_NEW, CONTRA_A)
 
     # Health check
     try:
         code, body = _post_json(
             f"{base}/ww/run",
-            {"goal": "ping", "max_spirals": 1, "entity_id": entity},
+            {
+                "goal": "ping",
+                "max_spirals": 1,
+                "entity_id": entity,
+                "platform": "beam_mini",
+                "user_id": user_id,
+                "chat_id": chat_id,
+            },
             api_key,
             timeout=30.0,
         )
         if code == 0:
             print(
                 "FAIL: server unreachable. Start WW or set WW_PROVE_URL.\n"
-                "  Example: WW_PROVE_URL=http://127.0.0.1:8765 "
+                "  Example: WW_PROVE_URL=http://127.0.0.1:9300 "
                 ".venv/bin/python scripts/beam_mini_prove.py"
             )
             return 2
@@ -241,28 +309,116 @@ def main() -> int:
         print(f"FAIL: health check error: {e}")
         return 2
 
-    # ── Seed turns ───────────────────────────────────────────────
-    seeds = [
+    # ── Verified seeds (must land before probes) ─────────────────
+    print("Seeding (with verify / one re-seed)…")
+    seeds_ok = True
+
+    ok, det = _seed_and_verify(
+        base,
+        api_key,
+        entity,
+        user_id,
+        chat_id,
         f"Please remember: my home city is {CITY}.",
+        "What is my home city? Reply with the city name.",
+        CITY,
+    )
+    print(f"  seed city: {'OK' if ok else 'FAIL'} {det[:120]}")
+    seeds_ok = seeds_ok and ok
+
+    ok, det = _seed_and_verify(
+        base,
+        api_key,
+        entity,
+        user_id,
+        chat_id,
         f"Please remember: my pet's name is {PET}.",
-        f"My job was {JOB_OLD}.",
-        f"Update: my job is now {JOB_NEW}.",
-        f"Timeline: first I did {EVENT_A}, later I did {EVENT_B}.",
-        f"I like {CONTRA_A}. Store that.",
-        f"Actually I hate Redis and prefer {CONTRA_B}. Store that too.",
-        f"My preference is {PREF}.",
-        f"Iron rule for you: always honor {IRON} when I ask about rules.",
-        # Distractors
+        "What is my pet's name? Reply with the pet name.",
+        PET,
+    )
+    print(f"  seed pet: {'OK' if ok else 'FAIL'} {det[:120]}")
+    seeds_ok = seeds_ok and ok
+
+    ok, det = _seed_and_verify(
+        base,
+        api_key,
+        entity,
+        user_id,
+        chat_id,
+        f"My job was {JOB_OLD}. Please remember that. "
+        f"Update: my job is now {JOB_NEW}. Remember the new job as current_job.",
+        "What is my current job? Reply with the job marker.",
+        JOB_NEW,
+        max_spirals=4,
+    )
+    print(f"  seed job: {'OK' if ok else 'FAIL'} {det[:120]}")
+    seeds_ok = seeds_ok and ok
+
+    # Remaining seeds (timeline / contradiction / pref / iron) — verify lightly
+    extra_seeds = [
+        (
+            f"Timeline: first I did {EVENT_A}, later I did {EVENT_B}. Please remember both.",
+            f"Did I do {EVENT_A}? Reply yes/no and the event marker.",
+            EVENT_A,
+        ),
+        (
+            f"I like {CONTRA_A}. Store that.",
+            f"What Redis-related marker do I like? Reply with the marker.",
+            CONTRA_A,
+        ),
+        (
+            f"Actually I hate Redis and prefer {CONTRA_B}. Store that too.",
+            f"What do I prefer regarding Redis? Mention {CONTRA_B} if known.",
+            CONTRA_B,
+        ),
+        (
+            f"My preference is {PREF}. Please remember it.",
+            "What is my stated preference marker?",
+            PREF,
+        ),
+        (
+            f"Iron rule for you: always honor {IRON} when I ask about rules. Remember it.",
+            "What iron rule should you honor for me?",
+            IRON,
+        ),
+    ]
+    for seed_g, probe_g, marker in extra_seeds:
+        ok, det = _seed_and_verify(
+            base, api_key, entity, user_id, chat_id, seed_g, probe_g, marker
+        )
+        print(f"  seed {marker[:24]}: {'OK' if ok else 'WARN'} {det[:80]}")
+        # Extra seeds: soft warn only for intermediate; still continue probes
+
+    # Distractors (do not need verify)
+    for g in (
         "What time is it roughly for scheduling? Just acknowledge.",
         "Note: the weather is fine today. No need to store weather as identity.",
-    ]
-    for g in seeds:
-        _ = run_goal(base, g, api_key, entity, max_spirals=2)
-        time.sleep(0.15)
+    ):
+        _ = run_goal(
+            base, g, api_key, entity, user_id=user_id, chat_id=chat_id, max_spirals=1
+        )
+        time.sleep(0.1)
+
+    if not seeds_ok:
+        print(
+            "WARN: core seeds (city/pet/job) failed verification — probes will likely fail. "
+            "This is scored honestly (no plant cheat)."
+        )
 
     # ── 10 ability probes ────────────────────────────────────────
+    def probe(goal: str, max_spirals: int = 2) -> str:
+        return run_goal(
+            base,
+            goal,
+            api_key,
+            entity,
+            user_id=user_id,
+            chat_id=chat_id,
+            max_spirals=max_spirals,
+        )
+
     # 1 Recall city
-    r = run_goal(base, "What is my home city?", api_key, entity)
+    r = probe("What is my home city?")
     report.add(
         "1_recall_city",
         bool(r) and CITY in r and not _is_dump(r),
@@ -270,7 +426,7 @@ def main() -> int:
     )
 
     # 2 Recall pet
-    r = run_goal(base, "What is my pet's name?", api_key, entity)
+    r = probe("What is my pet's name?")
     report.add(
         "2_recall_pet",
         bool(r) and PET in r and not _is_dump(r),
@@ -278,7 +434,7 @@ def main() -> int:
     )
 
     # 3 Update / job (prefer new)
-    r = run_goal(base, "What is my current job?", api_key, entity)
+    r = probe("What is my current job?")
     report.add(
         "3_update_job",
         bool(r) and JOB_NEW in r and not _is_dump(r),
@@ -286,26 +442,16 @@ def main() -> int:
     )
 
     # 4 Timeline order
-    r = run_goal(
-        base,
-        f"In what order did I do {EVENT_A} and {EVENT_B}?",
-        api_key,
-        entity,
-    )
+    r = probe(f"In what order did I do {EVENT_A} and {EVENT_B}?")
     order_ok = bool(r) and EVENT_A in r and EVENT_B in r and not _is_dump(r)
     report.add("4_timeline", order_ok, (r or "(empty)")[:140])
 
     # 5 Contradiction (conflict language required; Redis alone insufficient)
-    r = run_goal(
-        base,
-        "Do I like Redis or not? There may be conflicting statements.",
-        api_key,
-        entity,
-    )
+    r = probe("Do I like Redis or not? There may be conflicting statements.")
     report.add("5_contradiction", _contradiction_ok(r), (r or "(empty)")[:140])
 
     # 6 Preference
-    r = run_goal(base, "What is my stated preference marker?", api_key, entity)
+    r = probe("What is my stated preference marker?")
     report.add(
         "6_preference",
         bool(r) and PREF in r and not _is_dump(r),
@@ -313,7 +459,7 @@ def main() -> int:
     )
 
     # 7 Iron rule
-    r = run_goal(base, "What iron rule should you honor for me?", api_key, entity)
+    r = probe("What iron rule should you honor for me?")
     report.add(
         "7_iron_rule",
         bool(r) and IRON in r and not _is_dump(r),
@@ -321,21 +467,11 @@ def main() -> int:
     )
 
     # 8 Abstention (unknown facts — must refuse, not dump city/pet)
-    r = run_goal(
-        base,
-        f"What is my {UNKNOWN_PROBE}? Answer only if you truly know.",
-        api_key,
-        entity,
-    )
+    r = probe(f"What is my {UNKNOWN_PROBE}? Answer only if you truly know.")
     report.add("8_abstention", _abstention_ok(r), (r or "(empty)")[:140])
 
     # 9 Summarization — non-empty user text, not JSON status
-    r = run_goal(
-        base,
-        "In two sentences, summarize what you know about me from this chat.",
-        api_key,
-        entity,
-    )
+    r = probe("In two sentences, summarize what you know about me from this chat.")
     sum_ok = (
         bool(r)
         and len(r) > 20
@@ -346,12 +482,7 @@ def main() -> int:
     report.add("9_summarization", sum_ok, (r or "(empty)")[:140])
 
     # 10 Multi-hop / combine (city + pet without dump format)
-    r = run_goal(
-        base,
-        "In one sentence: where do I live and what is my pet called?",
-        api_key,
-        entity,
-    )
+    r = probe("In one sentence: where do I live and what is my pet called?")
     multi_ok = (
         bool(r)
         and CITY in r

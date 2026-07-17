@@ -342,21 +342,45 @@ class MemorySystem:
                 "source": source,
             })
 
-        # 1. Atom nets — primary product store for remember()
+        eid = getattr(self.vnext, "entity_id", None) or "default"
+
+        def _atom_belongs_to_entity(atom, entity: str) -> bool:
+            """Hard entity filter — never surface other entities' remember atoms."""
+            if not entity or entity == "default":
+                # Still prefer tagged atoms; untagged legacy atoms allowed only for default
+                meta = getattr(atom, "meta", None) or {}
+                if isinstance(meta, dict) and meta.get("entity_id"):
+                    return str(meta.get("entity_id")) == entity or entity == "default"
+                return True
+            meta = getattr(atom, "meta", None) or {}
+            if isinstance(meta, dict):
+                me = str(meta.get("entity_id") or "")
+                if me:
+                    return me == entity
+            ents = [str(e) for e in (getattr(atom, "entities", None) or [])]
+            if entity in ents:
+                return True
+            # No entity tag on atom → do not leak into a non-default entity view
+            return False
+
+        # 1. Atom nets — primary product store for remember() (entity-scoped)
         try:
-            for a in self.vnext.atoms.current_truth(query, limit=limit):
+            for a in self.vnext.atoms.current_truth(query, limit=max(limit * 4, 8)):
+                if not _atom_belongs_to_entity(a, eid):
+                    continue
                 ad = a.to_dict()
                 # Surface raw value from meta for json.dumps harnesses
                 meta = ad.get("meta") if isinstance(ad.get("meta"), dict) else {}
                 if meta.get("value") and meta["value"] not in (ad.get("content") or ""):
                     ad["content"] = f"{ad.get('content', '')}\n{meta['value']}".strip()
                 _push(ad, float(a.confidence), "vnext_atom")
+                if len(rows) >= limit:
+                    break
         except Exception as e:
             logger.debug("vnext atom recall failed: %s", e)
 
         # 2. Labeled facts (key / value match) for active entity
         try:
-            eid = getattr(self.vnext, "entity_id", None) or "default"
             listed = self.vnext.list_facts(query, entity_id=eid, limit=limit)
             for k, info in (listed.get("facts") or {}).items():
                 if isinstance(info, dict):
