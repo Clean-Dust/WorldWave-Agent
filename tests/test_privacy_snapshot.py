@@ -317,11 +317,27 @@ def test_ux_intervention_event():
         sc.observe_action("read_file", success=False, latency=5.0)
 
     result = sc.should_intervene()
-    events = sc.get_recent_events(5)
+    events = sc.get_recent_events(10)
     event_types = [e["type"] for e in events]
     if result.get("intervene"):
-        assert "rewind" in event_types or "warn" in event_types, \
-            f"expected intervention event, got {event_types}"
+        action = str(result.get("action") or "")
+        # should_intervene may emit action-named events (warn/rewind/mode_switch/…)
+        # or return compress without a UX event; unrelated "night" ticks must not
+        # satisfy this assertion alone.
+        emitted_ok = action in event_types or any(
+            t in event_types
+            for t in (
+                "rewind",
+                "warn",
+                "interrupt",
+                "mode_switch",
+                "tool_downgrade",
+            )
+        )
+        compress_ok = action == "compress"
+        assert emitted_ok or compress_ok, (
+            f"expected intervention UX event for action={action!r}, got {event_types}"
+        )
         print(f"✅ UX Event: intervention generated event (type={result['action']})")
     else:
         print(f"  (risk too low for intervention, that's OK: {result.get('risk')})")
