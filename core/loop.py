@@ -1043,15 +1043,64 @@ class Worldwave:
         self._last_goal = user_goal_raw
         self._current_goal = user_goal_raw
 
-        # ── Coding mode auto (PM 0.9): CODING_AGENT essence + AGENTS.md + role=coder ──
+        # ── Coding mode auto (PM 0.10): essence + model route + loop bridge ──
         try:
             from coding.mode import is_coding_goal, build_coding_context
+            from coding.model_route import resolve_coding_model, apply_coding_model_to_client
+            from coding.loop_bridge import handle_coding_user_message
             if is_coding_goal(user_goal_raw):
                 coding_ctx = build_coding_context(goal=user_goal_raw, force=True)
                 self._coding_mode = coding_ctx
-                self._log(
-                    f"## Coding mode ON role={coding_ctx.get('role', {}).get('role', 'coder')}"
-                )
+                # Prefer WW_CODING_MODEL when set; fallback to main model
+                try:
+                    main_model = getattr(self, "model", None) or getattr(
+                        getattr(self, "llm", None), "model", None
+                    )
+                    route = resolve_coding_model(
+                        config=getattr(self, "config", None) if isinstance(
+                            getattr(self, "config", None), dict
+                        ) else {},
+                        main_model=main_model,
+                        prefer_coding=True,
+                    )
+                    self._coding_model_route = route
+                    llm = getattr(self, "llm", None) or getattr(self, "client", None)
+                    if llm is not None and route.get("coding_preferred"):
+                        apply_coding_model_to_client(llm, route)
+                    self._log(
+                        f"## Coding mode ON role={coding_ctx.get('role', {}).get('role', 'coder')} "
+                        f"model={route.get('model')} src={route.get('source')}"
+                    )
+                except Exception as route_err:
+                    logger.debug("coding model route skipped: %s", route_err)
+                    self._log(
+                        f"## Coding mode ON role={coding_ctx.get('role', {}).get('role', 'coder')}"
+                    )
+                # Simulated loop user-message path: redirect + autocompact threshold
+                try:
+                    msgs = []
+                    if hasattr(self, "state") and hasattr(self.state, "messages"):
+                        msgs = list(self.state.messages or [])
+                    path = handle_coding_user_message(
+                        message=user_goal_raw,
+                        messages=msgs,
+                        project_root=os.getcwd(),
+                        goal=user_goal_raw,
+                    )
+                    self._coding_user_path = path
+                    if path.get("redirect") and path["redirect"].get("success"):
+                        self._log(
+                            f"## Coding redirect → {path['redirect'].get('subgoal', '')[:80]}"
+                        )
+                    if path.get("autocompact") and path["autocompact"].get("triggered"):
+                        self._log("## Coding autocompact triggered")
+                        if path.get("messages") is not None and hasattr(self, "state"):
+                            try:
+                                self.state.messages = path["messages"]
+                            except Exception:
+                                pass
+                except Exception as path_err:
+                    logger.debug("coding user path skipped: %s", path_err)
             else:
                 self._coding_mode = {"active": False}
         except Exception as e:

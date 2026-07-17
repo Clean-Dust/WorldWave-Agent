@@ -397,9 +397,10 @@ class LLMClient:
         except Exception:
             pass
 
-        # Coding mode auto: CODING_AGENT essence + role=coder when goal looks like coding
+        # Coding mode auto: CODING_AGENT essence + role=coder + model route
         try:
             from coding.mode import build_coding_context, is_coding_goal
+            from coding.model_route import resolve_coding_model, apply_coding_model_to_client
             goal = ""
             for m in reversed(msgs):
                 if m.get("role") == "user":
@@ -409,6 +410,18 @@ class LLMClient:
                 ctx = build_coding_context(goal=goal, force=False)
                 if ctx.get("system_block"):
                     system_parts.append(ctx["system_block"])
+                # Prefer WW_CODING_MODEL in coding mode; keep fallback + log
+                try:
+                    route = resolve_coding_model(
+                        main_model=getattr(self, "model", None),
+                        main_provider=getattr(self, "_provider", None),
+                        prefer_coding=True,
+                    )
+                    self._coding_model_route = route
+                    if route.get("coding_preferred"):
+                        apply_coding_model_to_client(self, route)
+                except Exception:
+                    pass
         except Exception:
             pass
         

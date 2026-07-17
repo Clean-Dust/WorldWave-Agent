@@ -1,19 +1,20 @@
 # CODING_AGENT.md — WorldWave Coding Playbook
 
-Default engineering harness for coding tasks (PM 0.9 productized path). Prefer this sequence over ad-hoc shell edits.
+Default engineering harness for coding tasks (PM 0.10 live path). Prefer this sequence over ad-hoc shell edits.
 
 ## Default path (auto)
 
-When a goal looks like coding, WorldWave activates **coding mode**:
+When a goal looks like coding (bugfix / implement / refactor / write tests — EN+ZH), WorldWave activates **coding mode**:
 
 1. Inject this playbook essence into system context
 2. Auto-load project `AGENTS.md` when present
 3. Set capability role = **coder** (architect cannot edit)
-4. Prefer `coding_run_ticket` / the orchestrated loop below
+4. Prefer `WW_CODING_MODEL` (optional `WW_CODING_PROVIDER`); fallback to main model
+5. Prefer `coding_run_ticket` / the orchestrated loop below
 
 ```
 ┌─────────────┐
-│ coding mode │  essence + AGENTS.md + role=coder
+│ coding mode │  essence + AGENTS.md + role=coder + model route
 └──────┬──────┘
        ▼
 ┌─────────────┐     ┌──────────┐     ┌────────────┐
@@ -30,9 +31,9 @@ When a goal looks like coding, WorldWave activates **coding mode**:
                           fail ◄─── │   verify     │ ──► green → done
                             │       └──────────────┘
                             ▼
-                    circuit (same-fp×3) + one replan
+              explain_failure → circuit (same-fp) + replan
                             │
-                    handoff (no infinite loop)
+                    handoff (max_tool_rounds / max_same_fp)
 ```
 
 ## Loop steps
@@ -46,19 +47,29 @@ When a goal looks like coding, WorldWave activates **coding mode**:
 4. **Outline** — `coding_outline` on the target file for line-accurate symbols.
 5. **Edit** — Prefer `coding_edit_symbol` (AST, syntax check, rollback). Use `coding_apply_patch` for multi-hunk unified diffs. Avoid raw `rm`/`dd`/pipe-to-shell.
 6. **Verify** — `coding_verify` (execution-grounded). Causal policy blocks `git commit` until verify is green after coding writes.
-7. **Explain / replan** — On failure: `coding_explain_failure` → `coding_replan` with failure fingerprints. Circuit trips after 3 same-fingerprint strikes → handoff report, stop thrashing.
-8. **Steer** — Mid-task user redirect via `coding_redirect` / `apply_redirect(message)` updates subgoal/plan observably.
-9. **AutoCompact** — Near context budget, `coding_autocompact` keeps a structured summary (goal, files touched, tests, open issues) without destroying `.ww/edit_log.jsonl`.
-10. **Optional** — `coding_sample_repair` when `WW_CODING_SAMPLES=k>0`; `coding_adversarial_tests` for edge drafts; **worktree isolation** via `coding_worktree_start` / `coding_worktree_finish` for branch-scoped edits.
+7. **Explain / replan** — On failure: `coding_explain_failure` → `coding_replan` with failure fingerprints **and** explain bullets. Circuit trips after same-fingerprint strikes (`WW_CODING_MAX_SAME_FP`, default 3) → handoff report, stop thrashing. Bound total tool rounds with `WW_CODING_MAX_TOOL_ROUNDS` (default 20).
+8. **Steer** — Mid-task user redirect via `coding_redirect` / `apply_redirect(message)`, or the loop user-message path (`coding.loop_bridge.handle_coding_user_message`) — updates subgoal/plan observably.
+9. **AutoCompact** — Near context budget, `coding_autocompact` (also auto from loop_bridge when over threshold) keeps a structured summary (goal, files touched, tests, open issues) without destroying `.ww/edit_log.jsonl`.
+10. **Optional** — `coding_sample_repair` when `WW_CODING_SAMPLES=k>0`; `coding_adversarial_tests` for edge drafts; **worktree isolation** via `coding_worktree_start` / `coding_worktree_finish` or `WW_CODING_USE_WORKTREE=1`.
 
 ## Orchestrator
 
 `coding_run_ticket(goal, …)` runs the deterministic path:
 
-`repo_map → grep/graph locate → edit_symbol|apply_patch → verify → on fail circuit + one replan`
+`repo_map → grep/graph locate → edit_symbol|apply_patch → verify → on fail explain + circuit + replan`
 
-- Same fingerprint threshold → stop + structured handoff
+- Same fingerprint threshold / max_tool_rounds → stop + structured handoff
 - `user_summary` is reply-safe (never dump raw tool JSON as the user reply)
+- `CodingMetrics` on the result: `rounds`, `tools`, `verifies`, `redirects`, `trips`, `autocompacts` (export via `.to_dict()` / `.export(path)`)
+
+## Model route
+
+```bash
+export WW_CODING_MODEL=your-coding-model
+export WW_CODING_PROVIDER=optional-provider   # optional
+```
+
+Coding mode prefers this model; if unset, falls back to the main agent model and logs the route.
 
 ## Policy (deny-first)
 
@@ -71,11 +82,20 @@ When a goal looks like coding, WorldWave activates **coding mode**:
 
 ## Worktree
 
-For isolated multi-file work:
+For isolated multi-file work (optional; no new hard deps):
 
-1. `coding_worktree_start` → new branch + worktree path
+1. Set `WW_CODING_USE_WORKTREE=1` and/or call `coding_worktree_start` → new branch + worktree path
 2. Edit/verify inside the worktree path
 3. `coding_worktree_finish` with `action=remove` or `merge`
+
+## Live prove (CI default = mock)
+
+```bash
+# Deterministic multi-turn (default)
+WW_CODING_LIVE_LLM=0 python scripts/coding_prove.py --live
+# Optional real LLM (skipped in default prove)
+WW_CODING_LIVE_LLM=1 python scripts/coding_live_prove.py
+```
 
 ## Tool search
 

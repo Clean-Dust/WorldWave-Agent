@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""WW Coding Engine prove harness — V1–V10 + E2E E1–E6.
+"""WW Coding Engine prove harness — V1–V10 + E2E E1–E6 + live + scale.
 
 Usage:
   python scripts/coding_prove.py --all
   python scripts/coding_prove.py --e2e
   python scripts/coding_prove.py --scale
+  python scripts/coding_prove.py --live
 
 Exit 0 only if all selected checks pass.
 """
@@ -590,15 +591,38 @@ def run_scale() -> int:
     return 0
 
 
+def run_live() -> int:
+    """Delegate to coding_live_prove (default mock; WW_CODING_LIVE_LLM=1 optional)."""
+    import importlib.util
+    import runpy
+    live_path = ROOT / "scripts" / "coding_live_prove.py"
+    # Prefer runpy so dataclasses see a registered module name
+    try:
+        ns = runpy.run_path(str(live_path), run_name="coding_live_prove")
+        main_fn = ns.get("main")
+        if callable(main_fn):
+            return int(main_fn())
+    except SystemExit as e:
+        return int(e.code or 0)
+    # Fallback: importlib with sys.modules registration
+    spec = importlib.util.spec_from_file_location("coding_live_prove", live_path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules["coding_live_prove"] = mod
+    spec.loader.exec_module(mod)
+    return int(mod.main())
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="WW Coding Engine prove harness")
     p.add_argument("--all", action="store_true", help="Run V1–V10")
     p.add_argument("--e2e", action="store_true", help="Run E2E E1–E6")
     p.add_argument("--scale", action="store_true", help="Run scale fixture gates")
+    p.add_argument("--live", action="store_true", help="Run live multi-turn prove (mock by default)")
     args = p.parse_args(argv)
 
     # Default to --all when no flags
-    if not any([args.all, args.e2e, args.scale]):
+    if not any([args.all, args.e2e, args.scale, args.live]):
         args.all = True
 
     codes = []
@@ -608,6 +632,8 @@ def main(argv=None) -> int:
         codes.append(run_e2e())
     if args.scale:
         codes.append(run_scale())
+    if args.live:
+        codes.append(run_live())
     return 1 if any(c != 0 for c in codes) else 0
 
 

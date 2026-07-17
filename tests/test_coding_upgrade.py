@@ -243,7 +243,7 @@ class TestHarnessReplan:
 class TestRegistration:
     def test_pm_version(self):
         from coding import PM_VERSION, get_status
-        assert PM_VERSION == "0.9.0"
+        assert PM_VERSION == "0.10.0"
         st = get_status()
         assert "code_graph" in st["modules"]
         assert "microcompact" in st["modules"]

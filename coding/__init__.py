@@ -1,15 +1,16 @@
 """ww/coding/__init__.py — WorldWave Programming Module (WW-PM)
 
-Default engineering harness (productized path PM 0.9):
+Default engineering harness (productized path PM 0.10):
   coding mode auto → orchestrator (map/grep/graph → edit → verify → circuit)
   → steerable redirect → autocompact → require-test default ON.
+  Live multi-turn, corpus stress, model route, CodingMetrics, loop bridge.
 """
 
 from __future__ import annotations
 from typing import Dict, List, Optional
 
 # Version
-PM_VERSION = "0.9.0"
+PM_VERSION = "0.10.0"
 
 
 # ── Lazy-init module singletons ───────────────────────────────────────
@@ -198,10 +199,15 @@ def get_status() -> Dict:
             "mode",
             "orchestrator",
             "autocompact",
+            "model_route",
+            "loop_bridge",
         ],
         "defaults": {
             "require_test": True,
             "samples": 0,
             "role": "coder",
+            "max_tool_rounds": 20,
+            "max_same_fp": 3,
+            "live_llm": False,
         },
     }

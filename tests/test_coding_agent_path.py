@@ -1,4 +1,4 @@
-"""tests/test_coding_agent_path.py — PM 0.9 productized coding path."""
+"""tests/test_coding_agent_path.py — PM 0.10 productized coding path."""
 
 from __future__ import annotations
 
@@ -22,6 +22,9 @@ class TestCodingMode:
         assert is_coding_goal("fix the bug in pkg/core.py leaf function")
         assert is_coding_goal("implement refactor of coding/orchestrator.py")
         assert is_coding_goal("run pytest and edit_symbol on add")
+        assert is_coding_goal("bugfix regression in leaf")
+        assert is_coding_goal("write tests for the module")
+        assert is_coding_goal("重构代码并写测试")
         assert not is_coding_goal("what is the weather today?")
         assert not is_coding_goal("hello")
 
@@ -173,14 +176,16 @@ class TestDefaults:
             else:
                 os.environ["WW_CODING_SAMPLES"] = old
 
-    def test_pm_version_0_9(self):
+    def test_pm_version_0_10(self):
         from coding import PM_VERSION, get_status
-        assert PM_VERSION == "0.9.0"
+        assert PM_VERSION == "0.10.0"
         st = get_status()
-        assert st["version"] == "0.9.0"
+        assert st["version"] == "0.10.0"
         assert "orchestrator" in st["modules"]
         assert "mode" in st["modules"]
         assert "autocompact" in st["modules"]
+        assert "model_route" in st["modules"]
+        assert "loop_bridge" in st["modules"]
         assert st["defaults"]["require_test"] is True
 
     def test_tools_registered(self):

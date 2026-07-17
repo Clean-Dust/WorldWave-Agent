@@ -35,6 +35,10 @@ kanban_*.json
 # Generated coding scale fixture (regenerate via scripts/coding_scale_fixture.py)
 tests/fixtures/coding_scale/
 
+# Optional coding corpus cache (sparse clone; self-bootstrap does not need this)
+tests/fixtures/coding_corpus_cache/
+
+
 # OS files
 .DS_Store
 Thumbs.db

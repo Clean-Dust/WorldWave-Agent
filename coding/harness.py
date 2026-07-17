@@ -227,11 +227,17 @@ def coding_replan(
     failure_fingerprints: List[str] = None,
     goal: str = "",
     notes: str = "",
+    explain: Dict = None,
 ) -> Dict:
-    """Produce new subgoals from plan state + failure fingerprints."""
+    """Produce new subgoals from plan state + failure fingerprints.
+
+    PM 0.10: optional *explain* from coding_explain_failure is folded into
+    replan subgoals and plan_state so the next edit has failure context.
+    """
     global _plan_state
     state = plan_state or _plan_state
     fps = failure_fingerprints or []
+    explain = explain or {}
     if not fps:
         # Pull from circuit breaker history
         try:
@@ -264,6 +270,17 @@ def coding_replan(
         "title": "coding_graph_who_calls / blast_radius on failing symbols",
         "status": "pending",
     })
+    # explain_failure context into replan
+    bullets = list(explain.get("bullets") or [])
+    if explain.get("summary") or bullets:
+        title = explain.get("summary") or (bullets[0] if bullets else "failure analysis")
+        subgoals.append({
+            "id": "g_explain",
+            "title": f"From explain_failure: {str(title)[:160]}",
+            "status": "pending",
+            "explain_bullets": bullets[:8],
+            "priority": "high",
+        })
     if unique_fps:
         subgoals.append({
             "id": "g3",
@@ -295,6 +312,10 @@ def coding_replan(
     new_state = {
         "subgoals": subgoals,
         "failures": unique_fps,
+        "explain": {
+            "summary": explain.get("summary") or "",
+            "bullets": bullets[:8],
+        },
         "version": int(state.get("version", 0)) + 1,
         "goal": goal or state.get("goal", ""),
         "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -306,6 +327,7 @@ def coding_replan(
         "plan_state": new_state,
         "subgoals": subgoals,
         "failure_fingerprints": unique_fps,
+        "explain_used": bool(explain.get("summary") or bullets),
         "message": f"Replanned with {len(subgoals)} subgoals from {len(unique_fps)} failure fingerprint(s)",
     }
 
@@ -490,8 +512,9 @@ def get_harness_tools() -> List[Dict]:
                     "notes": {"type": "string"},
                 },
             },
-            "handler": lambda plan_state=None, failure_fingerprints=None, goal="", notes="": coding_replan(
-                plan_state, failure_fingerprints, goal, notes
+            "handler": lambda plan_state=None, failure_fingerprints=None, goal="", notes="",
+                              explain=None: coding_replan(
+                plan_state, failure_fingerprints, goal, notes, explain=explain
             ),
             "category": "code_planning",
             "permission": "safe",

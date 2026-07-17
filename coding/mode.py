@@ -19,17 +19,29 @@ ESSENCE_MAX_CHARS = int(os.environ.get("WW_CODING_ESSENCE_MAX", "1800") or "1800
 # Tool-count threshold above which we hint coding_tool_search
 TOOL_SEARCH_HINT_THRESHOLD = int(os.environ.get("WW_CODING_TOOL_HINT_THRESHOLD", "40") or "40")
 
-# Keywords / patterns that signal a coding goal
+# Keywords / patterns that signal a coding goal (EN + ZH, PM 0.10 expanded)
 _CODING_KEYWORDS = {
-    "fix", "bug", "implement", "refactor", "edit", "patch", "test", "pytest",
-    "unittest", "compile", "syntax", "function", "class", "module", "import",
-    "typeerror", "attributeerror", "nameerror", "importerror", "traceback",
+    # English core
+    "fix", "bug", "bugfix", "implement", "refactor", "edit", "patch", "test",
+    "pytest", "unittest", "compile", "syntax", "function", "class", "module",
+    "import", "typeerror", "attributeerror", "nameerror", "importerror", "traceback",
     "pr", "pull request", "commit", "diff", "lint", "mypy", "ruff",
     "codebase", "repo", "repository", "source code", "write code",
-    "add test", "unit test", "integration test", "failing test",
-    "coding_", "edit_symbol", "apply_patch", "repo_map",
+    "add test", "unit test", "integration test", "failing test", "write tests",
+    "write test", "add tests", "coding_", "edit_symbol", "apply_patch", "repo_map",
+    "debug", "stacktrace", "stack trace", "regression", "hotfix", "code review",
+    # Chinese
     "修复", "重构", "实现", "代码", "测试", "函数", "模块", "报错",
+    "修 bug", "修bug", "写测试", "写单测", "单元测试", "集成测试",
+    "实现功能", "重构代码", "修复缺陷", "调试", "堆栈",
 }
+
+# Strong single-signal phrases (EN + ZH) — one hit is enough with light context
+_STRONG_CODING_PHRASES = (
+    "bugfix", "write tests", "write test", "add tests", "failing test",
+    "unit test", "implement ", "refactor ", "fix the bug", "fix bug",
+    "写测试", "写单测", "修复缺陷", "重构代码", "实现功能", "修 bug", "修bug",
+)
 
 _CODING_FILE_EXT = re.compile(
     r"\b[\w./-]+\.(py|js|ts|tsx|jsx|go|rs|java|c|cpp|h|hpp|rb|php|cs|kt|swift|sh|md)\b",
@@ -57,8 +69,13 @@ def is_coding_goal(text: str) -> bool:
     if _CODING_FILE_EXT.search(s) or _CODING_PATHISH.search(s) or _CODING_SYMBOL.search(s):
         return True
 
+    # Strong phrases (bugfix / implement / refactor / write tests EN+ZH)
+    for phrase in _STRONG_CODING_PHRASES:
+        if phrase in lower or phrase in s:
+            return True
+
     # Keyword hits (need at least one strong signal, or two weak ones)
-    hits = sum(1 for kw in _CODING_KEYWORDS if kw in lower)
+    hits = sum(1 for kw in _CODING_KEYWORDS if kw in lower or kw in s)
     if hits >= 2:
         return True
     if hits >= 1 and any(
@@ -66,7 +83,14 @@ def is_coding_goal(text: str) -> bool:
         for w in (
             "file", "line", "error", "fail", "broken", "stack", "exception",
             "function", "method", "module", "package", "api", "endpoint",
+            "code", "test", "bug", "代码", "测试", "函数", "模块",
         )
+    ):
+        return True
+    # Single strong English verbs alone still count when goal is short
+    if hits >= 1 and any(
+        re.search(rf"\b{re.escape(w)}\b", lower)
+        for w in ("bugfix", "implement", "refactor", "hotfix")
     ):
         return True
 
