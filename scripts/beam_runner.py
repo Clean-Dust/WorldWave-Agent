@@ -96,6 +96,35 @@ def _load_done_keys(path: Path) -> Set[str]:
     return done
 
 
+def _load_answer_rows(out_dir: Path, systems: Sequence[str]) -> List[dict]:
+    """Load all answer rows from answers_*.jsonl (resume-safe full picture)."""
+    by_key: Dict[str, dict] = {}
+    order: List[str] = []
+    for system in systems:
+        path = out_dir / f"answers_{system}.jsonl"
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict):
+                continue
+            k = str(
+                row.get("key")
+                or f"{row.get('chat_id')}:{row.get('ability')}:{row.get('probe_index')}:{system}"
+            )
+            # Last write wins for duplicate keys (re-run without --resume)
+            if k not in by_key:
+                order.append(k)
+            by_key[k] = row
+    return [by_key[k] for k in order]
+
+
 def entity_for(scale: str, chat_id: str, run_tag: str) -> str:
     return f"beam_{scale}_{chat_id}_{run_tag}"
 
@@ -208,7 +237,69 @@ def probe_ww(
     return {"llm_response": resp, "raw": raw, "status": raw.get("status")}
 
 
-def answer_b1(question: str, chat: BeamChat, max_chars: int = 12000) -> str:
+# Default B1 window large enough for full 100K chat text; override via --b1-max-chars.
+DEFAULT_B1_MAX_CHARS = 350_000
+
+_ENV_LOADED = False
+
+
+def _ensure_env_loaded() -> None:
+    """Load repo-root ``.env`` into os.environ when keys may be missing.
+
+    Never prints values. Safe to call repeatedly.
+    """
+    global _ENV_LOADED
+    if _ENV_LOADED:
+        return
+    _ENV_LOADED = True
+    env_path = ROOT / ".env"
+    if not env_path.is_file():
+        return
+    try:
+        from dotenv import load_dotenv  # type: ignore
+
+        load_dotenv(env_path, override=False)
+        return
+    except Exception:
+        pass
+    # Manual KEY=VALUE parse (no secrets logged)
+    try:
+        for raw in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export ") :].strip()
+            key, _, val = line.partition("=")
+            key = key.strip()
+            if not key or key in os.environ:
+                continue
+            val = val.strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+                val = val[1:-1]
+            os.environ[key] = val
+    except Exception:
+        return
+
+
+def _resolve_answer_model(explicit: Optional[str] = None) -> str:
+    if explicit and str(explicit).strip():
+        return str(explicit).strip()
+    env = (
+        (os.environ.get("WW_BEAM_ANSWER_MODEL") or "").strip()
+        or (os.environ.get("WW_MODEL") or "").strip()
+    )
+    if env:
+        return env
+    try:
+        from core.llm import DEFAULT_MODEL  # type: ignore
+
+        return DEFAULT_MODEL
+    except Exception:
+        return "deepseek-v4-flash"
+
+
+def answer_b1(question: str, chat: BeamChat, max_chars: int = DEFAULT_B1_MAX_CHARS) -> str:
     blob = chat_text_blob(chat)
     return b1_context_prompt(question, blob, max_chars=max_chars)
 
@@ -218,17 +309,35 @@ def answer_b2(question: str, chat: BeamChat, top_k: int = 5) -> str:
     return b2_rag_prompt(question, blob, top_k=top_k)
 
 
-def _simple_llm_answer(prompt: str) -> str:
-    """Optional live LLM for B1/B2 when keys present; else return prompt stub."""
-    # Prefer in-process Worldwave LLM if available; skeleton keeps offline-safe.
+def _simple_llm_answer(
+    prompt: str,
+    *,
+    json_mode: bool = False,
+    model: Optional[str] = None,
+) -> str:
+    """Live LLM answer for B1/B2/judge when keys present; else honest empty string.
+
+    Builds ``LLMClient(model=...)`` correctly and calls
+    ``chat(messages=[...], phase="", json_mode=..., temperature=0.0)``.
+    On any failure returns ``""`` (no fake answers).
+    """
+    _ensure_env_loaded()
     try:
         from core.llm import LLMClient  # type: ignore
-
-        client = LLMClient({})
-        out = client.chat(prompt)
+    except Exception:
+        return ""
+    model_name = _resolve_answer_model(model)
+    try:
+        client = LLMClient(model=model_name)
+        out = client.chat(
+            messages=[{"role": "user", "content": prompt}],
+            phase="",
+            json_mode=bool(json_mode),
+            temperature=0.0,
+        )
         return str(out or "")
     except Exception:
-        # Offline: return empty so judge records fail honestly (no fake scores)
+        # Offline / API error: empty so judge records fail honestly (no fake scores)
         return ""
 
 
@@ -252,6 +361,7 @@ def run_system_on_chat(
     b2_top_k: int,
     judge_model: str,
     use_llm_judge: bool,
+    answer_model: str = "",
 ) -> List[dict]:
     rows: List[dict] = []
     # Ingest once per chat for WW
@@ -276,6 +386,7 @@ def run_system_on_chat(
 
     ability_filter = set(abilities) if abilities else None
     seen_abilities: List[str] = []
+    ans_model = (answer_model or "").strip() or None
     for probe in chat.probes:
         if ability_filter and probe.ability not in ability_filter:
             continue
@@ -306,14 +417,18 @@ def run_system_on_chat(
             if dry_run:
                 llm_response = "[dry-run: b1 prompt built]"
             else:
-                llm_response = _simple_llm_answer(prompt)
+                llm_response = _simple_llm_answer(
+                    prompt, json_mode=False, model=ans_model
+                )
             raw_extract = {"prompt_chars": len(prompt), "system": "b1"}
         elif system == "b2":
             prompt = answer_b2(probe.question, chat, top_k=b2_top_k)
             if dry_run:
                 llm_response = "[dry-run: b2 prompt built]"
             else:
-                llm_response = _simple_llm_answer(prompt)
+                llm_response = _simple_llm_answer(
+                    prompt, json_mode=False, model=ans_model
+                )
             raw_extract = {"prompt_chars": len(prompt), "system": "b2"}
         else:
             raise ValueError(f"unknown system: {system}")
@@ -324,14 +439,15 @@ def run_system_on_chat(
             probe.ideal,
             probe.rubric,
             llm_response if not dry_run else "",
-            llm_chat=None,  # wire LLM judge when use_llm_judge and keys present
+            llm_chat=None,
             model=judge_model,
             temperature=DEFAULT_JUDGE_TEMP,
         )
         if use_llm_judge and not dry_run:
-            # Optional live judge
-            def _chat(p: str) -> str:
-                return _simple_llm_answer(p)
+            # Live judge: same helper; json_mode so judge can emit structured scores
+            # (judge.py also parses free-text JSON as fallback).
+            def _chat(p: str, _m: Optional[str] = ans_model) -> str:
+                return _simple_llm_answer(p, json_mode=True, model=_m)
 
             judgment = judge_one(
                 probe.ability,
@@ -368,6 +484,22 @@ def run_system_on_chat(
         done.add(key)
         rows.append(row)
     return rows
+
+
+def _row_score(row: dict) -> float:
+    j = row.get("judgment") or {}
+    try:
+        return float(j.get("score") if j.get("score") is not None else 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def worst_case_rows(all_rows: List[dict], n: int = 20) -> List[dict]:
+    """Lowest-score probe rows (real scores only; empty list if no rows)."""
+    if not all_rows:
+        return []
+    ranked = sorted(all_rows, key=_row_score)
+    return ranked[: max(0, int(n))]
 
 
 def write_summary(
@@ -415,14 +547,19 @@ def write_summary(
             json.dumps(scores[s], indent=2), encoding="utf-8"
         )
 
+    protocol_complete = bool(meta.get("protocol_complete"))
+    official_claim = bool(meta.get("official_claim"))
     lines = [
         f"# BEAM eval summary — {scale}",
         "",
         f"- git: `{meta.get('git_sha')}`",
         f"- seed: `{meta.get('seed')}`",
         f"- judge_model: `{meta.get('judge_model')}` temp=`{meta.get('judge_temp')}`",
+        f"- answer_model: `{meta.get('answer_model') or 'n/a'}`",
         f"- systems: {', '.join(systems)}",
-        f"- official_claim: **false** (skeleton / Gate 0.6+; do not treat as official 100K)",
+        f"- protocol_complete: **{str(protocol_complete).lower()}**",
+        f"- official_claim: **{str(official_claim).lower()}** "
+        "(stays false until manager promotes; do not treat as official 100K)",
         "",
         "## Ability table (mean score)",
         "",
@@ -436,17 +573,56 @@ def write_summary(
             n = scores.get(s, {}).get(a, {}).get("n") or 0
             cells.append("—" if m is None else f"{m:.3f} (n={n})")
         lines.append(f"| {a} | " + " | ".join(cells) + " |")
+
+    worst = worst_case_rows(all_rows, n=20)
+    lines.extend(["", "## Worst cases (lowest score, top 20)", ""])
+    if not worst:
+        lines.append("_No scored rows in this run (empty or all skipped via resume)._")
+    else:
+        lines.extend(
+            [
+                "| rank | score | system | chat | ability | probe | pass | rationale |",
+                "|---:|---:|---|---|---|---:|---|---|",
+            ]
+        )
+        for i, row in enumerate(worst, start=1):
+            j = row.get("judgment") or {}
+            score = _row_score(row)
+            rationale = str(j.get("rationale") or "").replace("|", "/").replace("\n", " ")
+            if len(rationale) > 120:
+                rationale = rationale[:117] + "..."
+            lines.append(
+                f"| {i} | {score:.3f} | {row.get('system')} | {row.get('chat_id')} | "
+                f"{row.get('ability')} | {row.get('probe_index')} | "
+                f"{bool(j.get('pass'))} | {rationale} |"
+            )
+            # Also include a short response snippet under the table as details
+        lines.append("")
+        lines.append("### Worst-case response snippets")
+        lines.append("")
+        for i, row in enumerate(worst, start=1):
+            resp = str(row.get("llm_response") or "").replace("\n", " ").strip()
+            if len(resp) > 200:
+                resp = resp[:197] + "..."
+            q = str(row.get("question") or "").replace("\n", " ").strip()
+            if len(q) > 160:
+                q = q[:157] + "..."
+            lines.append(
+                f"{i}. **{row.get('system')}** `{row.get('chat_id')}` "
+                f"{row.get('ability')}#{row.get('probe_index')} "
+                f"score={_row_score(row):.3f}"
+            )
+            lines.append(f"   - Q: {q or '(empty)'}")
+            lines.append(f"   - A: {resp or '(empty)'}")
     lines.extend(
         [
-            "",
-            "## Worst cases",
-            "",
-            "_Placeholder: fill from lowest-score rows in answers_*.jsonl._",
             "",
             "## Notes",
             "",
             "- Mini harness ≠ official 100K.",
             "- Scores here may use heuristic judge when LLM judge is off.",
+            "- `protocol_complete` means full chats/abilities with resume-safe probe coverage "
+            "and live LLM judge; `official_claim` still requires manager promotion.",
             "- Never hand-edit score files.",
             "",
         ]
@@ -457,7 +633,81 @@ def write_summary(
     )
 
 
+def expected_probe_keys(
+    system: str,
+    chat: BeamChat,
+    *,
+    max_abilities: int = 0,
+    abilities: Optional[Sequence[str]] = None,
+) -> Set[str]:
+    """Keys that a full (non-dry, resume-safe) pass should cover for one chat."""
+    ability_filter = set(abilities) if abilities else None
+    seen_abilities: List[str] = []
+    keys: Set[str] = set()
+    for probe in chat.probes:
+        if ability_filter and probe.ability not in ability_filter:
+            continue
+        if max_abilities > 0:
+            if probe.ability not in seen_abilities:
+                if len(seen_abilities) >= max_abilities:
+                    continue
+                seen_abilities.append(probe.ability)
+        keys.add(f"{chat.chat_id}:{probe.ability}:{probe.index}:{system}")
+    return keys
+
+
+def compute_protocol_complete(
+    *,
+    dry_run: bool,
+    use_llm_judge: bool,
+    max_abilities: int,
+    abilities: Optional[Sequence[str]],
+    chat_filter: str,
+    all_chat_ids: Sequence[str],
+    processed_chat_ids: Sequence[str],
+    systems: Sequence[str],
+    out_dir: Path,
+    scale: str,
+    data_root: Path,
+) -> bool:
+    """True when full-scale live run finished with full probe coverage (resume-safe).
+
+    ``official_claim`` remains false until a manager promotes the run.
+    """
+    if dry_run or not use_llm_judge:
+        return False
+    if max_abilities > 0:
+        return False
+    if abilities:
+        return False
+    if (chat_filter or "").strip():
+        # Single-chat runs are not full protocol
+        return False
+    if not all_chat_ids:
+        return False
+    if set(str(c) for c in processed_chat_ids) != set(str(c) for c in all_chat_ids):
+        return False
+
+    for system in systems:
+        answers_path = out_dir / f"answers_{system}.jsonl"
+        done = _load_done_keys(answers_path)
+        for cid in all_chat_ids:
+            try:
+                chat = load_chat(scale, str(cid), data_root)
+            except FileNotFoundError:
+                return False
+            expected = expected_probe_keys(
+                system, chat, max_abilities=0, abilities=None
+            )
+            if not expected:
+                return False
+            if not expected.issubset(done):
+                return False
+    return True
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    _ensure_env_loaded()
     ap = argparse.ArgumentParser(description="WW official BEAM runner skeleton")
     ap.add_argument("--scale", default="100K", choices=list(SCALES))
     ap.add_argument(
@@ -477,9 +727,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--ingest-mode", default="turn", choices=["turn", "batch_n"])
     ap.add_argument("--batch-n", type=int, default=5)
     ap.add_argument("--max-turns", type=int, default=0, help="0=all; limit ingest")
-    ap.add_argument("--b1-max-chars", type=int, default=12000)
+    ap.add_argument(
+        "--b1-max-chars",
+        type=int,
+        default=DEFAULT_B1_MAX_CHARS,
+        help=(
+            f"B1 context window chars (default {DEFAULT_B1_MAX_CHARS} for full 100K; "
+            "lower for smoke)"
+        ),
+    )
     ap.add_argument("--b2-top-k", type=int, default=5)
     ap.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL)
+    ap.add_argument(
+        "--answer-model",
+        default="",
+        help="B1/B2 answer model (else WW_BEAM_ANSWER_MODEL / WW_MODEL / DEFAULT_MODEL)",
+    )
     ap.add_argument("--llm-judge", action="store_true", help="use LLM judge (else heuristic)")
     ap.add_argument("--base-url", default="", help="WW server for ww system")
     args = ap.parse_args(list(argv) if argv is not None else None)
@@ -503,6 +766,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     run_tag = args.run_tag or f"r{int(time.time())}"
     ability_list = [a.strip() for a in args.abilities.split(",") if a.strip()] or None
+    answer_model = (args.answer_model or "").strip()
+    if answer_model:
+        os.environ["WW_BEAM_ANSWER_MODEL"] = answer_model
 
     cfg = {
         "scale": args.scale,
@@ -515,6 +781,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "b2_top_k": args.b2_top_k,
         "judge_model": args.judge_model,
         "judge_temp": DEFAULT_JUDGE_TEMP,
+        "answer_model": answer_model or _resolve_answer_model(),
+        "llm_judge": bool(args.llm_judge),
         "dry_run": bool(args.dry_run),
         "max_abilities": args.max_abilities,
         "abilities": ability_list,
@@ -523,10 +791,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"results_dir={out_dir}")
     print(f"data_root={data_root}")
 
+    all_available_chat_ids = list_chat_ids(args.scale, data_root)
     if args.chat:
         chat_ids = [str(args.chat)]
     else:
-        chat_ids = list_chat_ids(args.scale, data_root)
+        chat_ids = list(all_available_chat_ids)
     if not chat_ids:
         print(
             f"No chats found under {data_root}/chats/{args.scale}. "
@@ -547,12 +816,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 1
 
     all_rows: List[dict] = []
+    processed_chat_ids: List[str] = []
     for cid in chat_ids:
         try:
             chat = load_chat(args.scale, cid, data_root)
         except FileNotFoundError as e:
             print(f"skip chat {cid}: {e}", file=sys.stderr)
             continue
+        processed_chat_ids.append(str(cid))
         entity_id = entity_for(args.scale, cid, run_tag)
         # Isolation: unique entity per chat — never share poisoned session
         for system in systems:
@@ -579,12 +850,30 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 b2_top_k=args.b2_top_k,
                 judge_model=args.judge_model,
                 use_llm_judge=bool(args.llm_judge),
+                answer_model=answer_model,
             )
             all_rows.extend(rows)
             print(
                 f"[{system}] chat={cid} turns={len(chat.turns)} "
                 f"probes_written={len(rows)} entity={entity_id}"
             )
+
+    protocol_complete = compute_protocol_complete(
+        dry_run=bool(args.dry_run),
+        use_llm_judge=bool(args.llm_judge),
+        max_abilities=int(args.max_abilities),
+        abilities=ability_list,
+        chat_filter=str(args.chat or ""),
+        all_chat_ids=all_available_chat_ids,
+        processed_chat_ids=processed_chat_ids,
+        systems=systems,
+        out_dir=out_dir,
+        scale=args.scale,
+        data_root=data_root,
+    )
+
+    # Prefer full jsonl (resume-safe) over this-session-only rows for summary/worst-case
+    summary_rows = _load_answer_rows(out_dir, systems) or all_rows
 
     meta = {
         "git_sha": _git_sha(),
@@ -595,17 +884,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         "data_root": str(data_root),
         "judge_model": args.judge_model,
         "judge_temp": DEFAULT_JUDGE_TEMP,
+        "answer_model": answer_model or _resolve_answer_model(),
+        "llm_judge": bool(args.llm_judge),
         "config": cfg,
         "config_hash": _config_hash(cfg),
         "results_dir": str(out_dir),
         "timestamps": {
             "finished": datetime.now(timezone.utc).isoformat(),
         },
-        "official_claim": False,
-        "note": "Gate 0.6 skeleton — not official BEAM ICLR scores",
+        "protocol_complete": protocol_complete,
+        "official_claim": False,  # manager must promote; never auto-claim
+        "chats_processed": len(processed_chat_ids),
+        "chats_available": len(all_available_chat_ids),
+        "rows_this_session": len(all_rows),
+        "rows_in_summary": len(summary_rows),
+        "note": (
+            "Gate 0.6+ runner — official_claim stays false until manager promotes. "
+            "protocol_complete reflects full-scale live coverage only."
+        ),
     }
-    write_summary(out_dir, args.scale, systems, all_rows, meta)
+    write_summary(out_dir, args.scale, systems, summary_rows, meta)
     print(f"wrote {out_dir / 'summary.md'}")
+    print(f"protocol_complete={str(protocol_complete).lower()}")
     print("official_claim=false")
     return 0
 

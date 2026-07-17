@@ -21,6 +21,12 @@
 # Live WW + baselines (requires server + WW_API_KEY or ~/.ww/api_key)
 .venv/bin/python scripts/beam_runner.py --scale 100K --systems ww,b1,b2 --chat 1
 .venv/bin/python scripts/beam_runner.py --scale 100K --systems ww --resume
+
+# Full-scale live path (all chats, all abilities, LLM judge)
+# --b1-max-chars defaults to 350000 for 100K-scale context windows
+# --answer-model optional (else WW_BEAM_ANSWER_MODEL / WW_MODEL / DEFAULT_MODEL)
+.venv/bin/python scripts/beam_runner.py --scale 100K --systems ww,b1,b2 \
+  --llm-judge --resume --answer-model deepseek-v4-flash
 ```
 
 ### Data layout
@@ -56,8 +62,11 @@ results/beam/{scale}/{HEAD}_{config_hash}/
 ```
 
 - **Do not hand-edit scores.**
-- `meta.json` records git SHA, model, temp, seed, scale; `official_claim` stays false until a managed official run.
+- `meta.json` records git SHA, model, temp, seed, scale; `official_claim` stays **false** until a manager promotes the run.
+- `protocol_complete` is **true** only when the run covers all chats and abilities (not dry-run), uses `--llm-judge`, and every expected probe key is present (resume-safe).
 - Judge: env `WW_BEAM_JUDGE_MODEL` / `--judge-model`; default temp 0.0.
+- Answer model (B1/B2): `--answer-model` or `WW_BEAM_ANSWER_MODEL` / `WW_MODEL`.
+- B1 window: `--b1-max-chars` (default **350000** for full 100K chats).
 
 ### Isolation rules
 

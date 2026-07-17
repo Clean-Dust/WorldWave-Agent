@@ -192,3 +192,141 @@ def test_public_reply_rejects_metrics_dict():
         "spirals_completed": 0,
     }
     assert extract_user_response(result) == ""
+
+
+def test_simple_llm_answer_builds_messages(monkeypatch):
+    """_simple_llm_answer must construct LLMClient(model=...) and chat(messages=...)."""
+    import types
+
+    import beam_runner as br
+
+    captured: dict = {}
+
+    class FakeClient:
+        def __init__(self, model="default", **kwargs):
+            captured["model"] = model
+            captured["kwargs"] = kwargs
+
+        def chat(self, messages, phase="", json_mode=True, temperature=None, **kw):
+            captured["messages"] = messages
+            captured["phase"] = phase
+            captured["json_mode"] = json_mode
+            captured["temperature"] = temperature
+            return "ok-answer"
+
+    fake_mod = types.ModuleType("core.llm")
+    fake_mod.LLMClient = FakeClient
+    fake_mod.DEFAULT_MODEL = "test-default-model"
+    monkeypatch.setitem(sys.modules, "core.llm", fake_mod)
+    monkeypatch.delenv("WW_BEAM_ANSWER_MODEL", raising=False)
+    monkeypatch.delenv("WW_MODEL", raising=False)
+    br._ENV_LOADED = True  # skip dotenv side effects
+
+    out = br._simple_llm_answer("hello probe", json_mode=False, model="my-answer-model")
+    assert out == "ok-answer"
+    assert captured["model"] == "my-answer-model"
+    assert captured["messages"] == [{"role": "user", "content": "hello probe"}]
+    assert captured["phase"] == ""
+    assert captured["json_mode"] is False
+    assert captured["temperature"] == 0.0
+
+    out_j = br._simple_llm_answer("judge me", json_mode=True, model="judge-model")
+    assert out_j == "ok-answer"
+    assert captured["json_mode"] is True
+    assert captured["model"] == "judge-model"
+    assert captured["messages"] == [{"role": "user", "content": "judge me"}]
+
+
+def test_simple_llm_answer_failure_returns_empty(monkeypatch):
+    import types
+
+    import beam_runner as br
+
+    class BoomClient:
+        def __init__(self, model="x", **kwargs):
+            pass
+
+        def chat(self, *a, **k):
+            raise RuntimeError("no network")
+
+    fake_mod = types.ModuleType("core.llm")
+    fake_mod.LLMClient = BoomClient
+    fake_mod.DEFAULT_MODEL = "x"
+    monkeypatch.setitem(sys.modules, "core.llm", fake_mod)
+    br._ENV_LOADED = True
+    assert br._simple_llm_answer("q") == ""
+
+def test_worst_case_rows_from_real_scores():
+    import beam_runner as br
+
+    rows = [
+        {
+            "system": "b1",
+            "chat_id": "1",
+            "ability": "abstention",
+            "probe_index": 0,
+            "question": "q0",
+            "llm_response": "bad",
+            "judgment": {"score": 0.9, "pass": True, "rationale": "high"},
+        },
+        {
+            "system": "b1",
+            "chat_id": "1",
+            "ability": "information_extraction",
+            "probe_index": 0,
+            "question": "q1",
+            "llm_response": "worse",
+            "judgment": {"score": 0.1, "pass": False, "rationale": "low"},
+        },
+        {
+            "system": "b2",
+            "chat_id": "2",
+            "ability": "summarization",
+            "probe_index": 1,
+            "question": "q2",
+            "llm_response": "mid",
+            "judgment": {"score": 0.4, "pass": False, "rationale": "mid"},
+        },
+    ]
+    worst = br.worst_case_rows(rows, n=2)
+    assert len(worst) == 2
+    assert worst[0]["judgment"]["score"] == 0.1
+    assert worst[1]["judgment"]["score"] == 0.4
+
+
+def test_write_summary_worst_cases_not_placeholder(tmp_path: Path):
+    import beam_runner as br
+
+    rows = [
+        {
+            "system": "b1",
+            "chat_id": "9",
+            "ability": "abstention",
+            "probe_index": 0,
+            "question": "What is my passport?",
+            "llm_response": "I invent a number",
+            "judgment": {
+                "score": 0.0,
+                "pass": False,
+                "rationale": "hallucinated passport",
+            },
+        }
+    ]
+    meta = {
+        "git_sha": "deadbeef",
+        "seed": 1,
+        "judge_model": "test",
+        "judge_temp": 0.0,
+        "answer_model": "test-ans",
+        "protocol_complete": False,
+        "official_claim": False,
+    }
+    br.write_summary(tmp_path, "100K", ["b1"], rows, meta)
+    text = (tmp_path / "summary.md").read_text(encoding="utf-8")
+    assert "Placeholder" not in text
+    assert "Worst cases" in text
+    assert "hallucinated passport" in text
+    assert "protocol_complete: **false**" in text
+    assert "official_claim: **false**" in text
+    meta_out = json.loads((tmp_path / "meta.json").read_text(encoding="utf-8"))
+    assert meta_out["official_claim"] is False
