@@ -1,0 +1,25 @@
+{
+  "id": "t14_retry_backoff",
+  "name": "Retry backoff never increases",
+  "goal": "`pkg/retry.py::next_delay` should double delay each attempt (capped) but returns constant. Inspired by client SDK retry bugs.",
+  "difficulty": "medium",
+  "tags": [
+    "retry",
+    "inspired"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/retry.py",
+    "symbol": "next_delay",
+    "new_body": "def next_delay(attempt, base=0.1, cap=2.0):\n    if attempt < 0:\n        attempt = 0\n    d = base * (2 ** attempt)\n    return min(d, cap)\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": "Pattern: exponential backoff stuck at base delay (common client SDK / HTTP retry helpers). Synthetic fixture.",
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

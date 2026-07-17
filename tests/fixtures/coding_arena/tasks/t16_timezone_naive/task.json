@@ -1,0 +1,25 @@
+{
+  "id": "t16_timezone_naive",
+  "name": "Naive UTC assume broken",
+  "goal": "`pkg/timeutil.py::to_epoch` treats naive datetimes as local by using wrong assumption \u2014 should treat naive as UTC. Multi-file with `pkg/events.py`.",
+  "difficulty": "hard",
+  "tags": [
+    "time",
+    "timezone"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 90,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/timeutil.py",
+    "symbol": "to_epoch",
+    "new_body": "def to_epoch(dt):\n    from datetime import timezone\n    if dt.tzinfo is None:\n        dt = dt.replace(tzinfo=timezone.utc)\n    return int(dt.timestamp())\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": true,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

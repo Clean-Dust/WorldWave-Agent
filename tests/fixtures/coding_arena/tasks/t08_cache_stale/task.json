@@ -1,0 +1,25 @@
+{
+  "id": "t08_cache_stale",
+  "name": "Stale cache after update",
+  "goal": "`pkg/cache.py::Store` returns stale values after `set` because get does not check version. Fix `get` to honor updates. `pkg/repo.py` wraps Store.",
+  "difficulty": "medium",
+  "tags": [
+    "cache",
+    "state"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/cache.py",
+    "symbol": "Store",
+    "new_body": "class Store:\n    def __init__(self):\n        self._data = {}\n        self._version = 0\n\n    def set(self, key, value):\n        self._data[key] = value\n        self._version += 1\n        return self._version\n\n    def get(self, key, default=None):\n        if key in self._data:\n            return self._data[key]\n        return default\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

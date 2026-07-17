@@ -1,0 +1,25 @@
+{
+  "id": "t03_missing_none_guard",
+  "name": "None guard on normalize",
+  "goal": "`pkg/textutil.py::normalize_name` crashes on None. It should return empty string for None/empty and lowercase-strip otherwise. Used by `pkg/users.py`.",
+  "difficulty": "easy",
+  "tags": [
+    "null-safety",
+    "smoke"
+  ],
+  "adversarial": true,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/textutil.py",
+    "symbol": "normalize_name",
+    "new_body": "def normalize_name(name):\n    if name is None:\n        return \"\"\n    s = str(name).strip().lower()\n    return s\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": true,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

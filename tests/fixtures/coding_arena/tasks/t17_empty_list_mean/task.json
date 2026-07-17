@@ -1,0 +1,25 @@
+{
+  "id": "t17_empty_list_mean",
+  "name": "Mean of empty list",
+  "goal": "`pkg/stats.py::mean` should raise ValueError on empty input (not return 0). Adversarial empty edge.",
+  "difficulty": "easy",
+  "tags": [
+    "stats",
+    "adversarial"
+  ],
+  "adversarial": true,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/stats.py",
+    "symbol": "mean",
+    "new_body": "def mean(xs):\n    xs = list(xs)\n    if not xs:\n        raise ValueError(\"empty\")\n    return sum(xs) / len(xs)\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

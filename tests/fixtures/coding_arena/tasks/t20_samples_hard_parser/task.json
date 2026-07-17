@@ -1,0 +1,26 @@
+{
+  "id": "t20_samples_hard_parser",
+  "name": "Hard CSV parser (samples>=2)",
+  "goal": "`pkg/csvkit.py::parse_line` must split on commas but respect simple double quotes. Hard task \u2014 sample repair path enabled (samples>=2). Multi-file with `pkg/loader.py`.",
+  "difficulty": "hard",
+  "tags": [
+    "csv",
+    "samples",
+    "hard"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 2,
+  "timeout_s": 90,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/csvkit.py",
+    "symbol": "parse_line",
+    "new_body": "def parse_line(line):\n    out = []\n    cur = []\n    in_q = False\n    i = 0\n    s = line or \"\"\n    while i < len(s):\n        ch = s[i]\n        if ch == '\"':\n            in_q = not in_q\n        elif ch == \",\" and not in_q:\n            out.append(\"\".join(cur))\n            cur = []\n        else:\n            cur.append(ch)\n        i += 1\n    out.append(\"\".join(cur))\n    return out\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": true,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

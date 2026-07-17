@@ -1,0 +1,25 @@
+{
+  "id": "t01_add_wrong_op",
+  "name": "Fix broken add operator",
+  "goal": "`pkg/math_ops.py::add` returns incorrect results for positive integers. Fix `add` so `add(a,b)==a+b`. `pkg/service.py` calls add \u2014 keep the public API stable.",
+  "difficulty": "easy",
+  "tags": [
+    "arithmetic",
+    "smoke"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/math_ops.py",
+    "symbol": "add",
+    "new_body": "def add(a, b):\n    \"\"\"Return a + b.\"\"\"\n    return a + b\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": true,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

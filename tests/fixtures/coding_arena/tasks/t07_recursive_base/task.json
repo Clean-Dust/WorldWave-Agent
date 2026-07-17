@@ -1,0 +1,24 @@
+{
+  "id": "t07_recursive_base",
+  "name": "Broken factorial base case",
+  "goal": "`pkg/recur.py::factorial` base case is wrong (returns n instead of 1 for 0). Fix it. `pkg/combo.py` uses factorial for n choose k.",
+  "difficulty": "medium",
+  "tags": [
+    "recursion"
+  ],
+  "adversarial": true,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/recur.py",
+    "symbol": "factorial",
+    "new_body": "def factorial(n):\n    if n < 0:\n        raise ValueError(\"n must be >= 0\")\n    if n in (0, 1):\n        return 1\n    return n * factorial(n - 1)\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

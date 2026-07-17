@@ -1,0 +1,25 @@
+{
+  "id": "t05_json_key_typo",
+  "name": "JSON response key typo",
+  "goal": "`pkg/api_client.py::parse_user` reads `user_name` but payloads use `username`. Fix the key. `pkg/session.py` stores the result.",
+  "difficulty": "easy",
+  "tags": [
+    "json",
+    "typo"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/api_client.py",
+    "symbol": "parse_user",
+    "new_body": "def parse_user(payload):\n    if not isinstance(payload, dict):\n        raise TypeError(\"payload must be dict\")\n    return {\n        \"id\": payload.get(\"id\"),\n        \"username\": payload.get(\"username\") or \"\",\n    }\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

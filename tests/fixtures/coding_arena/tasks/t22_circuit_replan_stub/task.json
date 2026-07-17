@@ -1,0 +1,26 @@
+{
+  "id": "t22_circuit_replan_stub",
+  "name": "Always-wrong echo (circuit metrics path)",
+  "goal": "`pkg/echo.py::transform` should uppercase text but lowercases. Multi-file. Used to exercise circuit/replan metrics when partial fixes fail.",
+  "difficulty": "easy",
+  "tags": [
+    "circuit",
+    "replan"
+  ],
+  "adversarial": false,
+  "supports_redirect": true,
+  "samples": 2,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/echo.py",
+    "symbol": "transform",
+    "new_body": "def transform(s):\n    return (s or \"\").upper()\n",
+    "redirect_message": "Focus on uppercase transform"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

@@ -1,0 +1,25 @@
+{
+  "id": "t02_off_by_one_slice",
+  "name": "Off-by-one in window slice",
+  "goal": "`pkg/window.py::take_first_n` should return the first n items but drops the last. Fix the slice. `pkg/api.py` depends on it.",
+  "difficulty": "easy",
+  "tags": [
+    "off-by-one",
+    "smoke"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/window.py",
+    "symbol": "take_first_n",
+    "new_body": "def take_first_n(items, n):\n    if n <= 0:\n        return []\n    return list(items)[:n]\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": true,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

@@ -1,0 +1,25 @@
+{
+  "id": "t15_pagination_cursor",
+  "name": "Pagination cursor exclusive/inclusive",
+  "goal": "`pkg/page.py::slice_after` should return items after cursor (exclusive) but includes the cursor item. Fix exclusive semantics.",
+  "difficulty": "medium",
+  "tags": [
+    "pagination",
+    "inspired"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/page.py",
+    "symbol": "slice_after",
+    "new_body": "def slice_after(items, cursor=None, limit=10):\n    items = list(items)\n    if cursor is None:\n        return items[:limit]\n    try:\n        idx = items.index(cursor)\n    except ValueError:\n        return []\n    return items[idx + 1 : idx + 1 + limit]\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": "Pattern: cursor pagination inclusive vs exclusive off-by-one (GraphQL/REST list APIs). Synthetic.",
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

@@ -49,8 +49,13 @@ class CodingMetrics:
     redirects: int = 0
     trips: int = 0
     autocompacts: int = 0
+    microcompacts: int = 0
     replans: int = 0
     samples: int = 0
+    graph_calls: int = 0
+    grep_calls: int = 0
+    max_same_fp: int = 0
+    model_id: str = ""
     ticket_id: Optional[str] = None
     goal: str = ""
     started_at: Optional[str] = None
@@ -75,15 +80,24 @@ class CodingMetrics:
     def record_autocompact(self, n: int = 1) -> None:
         self.autocompacts += n
 
+    def record_microcompact(self, n: int = 1) -> None:
+        self.microcompacts += n
+
     def record_replan(self, n: int = 1) -> None:
         self.replans += n
 
     def record_sample(self, n: int = 1) -> None:
         self.samples += n
 
+    def record_graph(self, n: int = 1) -> None:
+        self.graph_calls += n
+
+    def record_grep(self, n: int = 1) -> None:
+        self.grep_calls += n
+
     def to_dict(self) -> Dict[str, Any]:
         d = asdict(self)
-        # Canonical JSON fields required by PM 0.10
+        # Canonical JSON fields (PM 0.10 + 0.11 arena extensions)
         return {
             "rounds": d["rounds"],
             "tools": d["tools"],
@@ -91,8 +105,13 @@ class CodingMetrics:
             "redirects": d["redirects"],
             "trips": d["trips"],
             "autocompacts": d["autocompacts"],
+            "microcompacts": d["microcompacts"],
             "replans": d["replans"],
             "samples": d["samples"],
+            "graph_calls": d["graph_calls"],
+            "grep_calls": d["grep_calls"],
+            "max_same_fp": d["max_same_fp"],
+            "model_id": d["model_id"],
             "ticket_id": d["ticket_id"],
             "goal": d["goal"],
             "started_at": d["started_at"],
@@ -361,8 +380,12 @@ def coding_run_ticket(
     try:
         from coding.model_route import resolve_coding_model
         model_route = resolve_coding_model(prefer_coding=True)
+        if isinstance(model_route, dict):
+            metrics.model_id = str(model_route.get("model") or "")
     except Exception as e:
         model_route = {"error": str(e)}
+
+    metrics.max_same_fp = int(max_same_fp)
 
     tool_rounds = 0
     results: Dict[str, Any] = {
@@ -416,6 +439,7 @@ def coding_run_ticket(
         from coding.perception import grep
         if pattern:
             g = grep(pattern, path=project_root, glob="*.py", max_matches=30)
+            metrics.record_grep()
             locate["grep"] = {
                 "count": g.get("count", 0),
                 "matches": (g.get("matches") or [])[:10],
@@ -433,6 +457,7 @@ def coding_run_ticket(
         from coding.code_graph import CodeGraphStore
         store = CodeGraphStore(project_root=project_root)
         build_r = store.build(project_root, force=False)
+        metrics.record_graph()
         locate["graph_build"] = {
             "success": True,
             "nodes": (build_r or {}).get("nodes") if isinstance(build_r, dict) else None,
@@ -442,6 +467,7 @@ def coding_run_ticket(
             target = symbol or pattern
             locate["who_calls"] = store.who_calls(target)
             locate["blast_radius"] = store.blast_radius(target, max_depth=3)
+            metrics.record_graph(2)
         store.close()
     except Exception as e:
         locate["graph"] = {"error": str(e)}

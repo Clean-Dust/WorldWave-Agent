@@ -1,0 +1,26 @@
+{
+  "id": "t10_rate_limit_inclusive",
+  "name": "Rate limit inclusive bug",
+  "goal": "`pkg/ratelimit.py::allow` should allow at most `limit` calls per window but uses `>` instead of `>=` incorrectly (off-by-one: allows limit+1). Inspired by API gateway rate-limit edge cases.",
+  "difficulty": "medium",
+  "tags": [
+    "rate-limit",
+    "inspired",
+    "adversarial"
+  ],
+  "adversarial": true,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/ratelimit.py",
+    "symbol": "RateLimiter",
+    "new_body": "class RateLimiter:\n    def __init__(self, limit):\n        self.limit = limit\n        self.count = 0\n\n    def allow(self):\n        if self.count >= self.limit:\n            return False\n        self.count += 1\n        return True\n\n    def reset(self):\n        self.count = 0\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": "Pattern: inclusive/exclusive boundary in token/request counters (API gateway / reverse-proxy rate limit off-by-one). Synthetic offline fixture.",
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

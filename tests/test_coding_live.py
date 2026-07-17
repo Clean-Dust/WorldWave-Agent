@@ -274,8 +274,8 @@ class TestCodingGoalExpanded:
 class TestPMVersion010:
     def test_pm_version(self):
         from coding import PM_VERSION, get_status
-        assert PM_VERSION == "0.10.0"
+        assert PM_VERSION == "0.11.0"
         st = get_status()
-        assert st["version"] == "0.10.0"
+        assert st["version"] == "0.11.0"
         assert "model_route" in st["modules"]
         assert "loop_bridge" in st["modules"]

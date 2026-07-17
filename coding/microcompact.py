@@ -155,7 +155,24 @@ def wrap_handler(handler: Callable, limit: int = DEFAULT_LIMIT) -> Callable:
 
     def _wrapped(*args, **kwargs):
         result = handler(*args, **kwargs)
-        return compact_result(result, limit=limit)
+        out = compact_result(result, limit=limit)
+        # Count truncations for arena / CodingMetrics (B5)
+        try:
+            truncated = False
+            if isinstance(out, dict) and out.get("truncated"):
+                truncated = True
+            elif out is not result and isinstance(result, (str, dict, list)):
+                # compact_result may rewrite structure when truncated
+                if isinstance(out, dict) and (
+                    out.get("fingerprint") and out.get("original_length")
+                ):
+                    truncated = True
+            if truncated:
+                from coding.orchestrator import get_metrics
+                get_metrics().record_microcompact()
+        except Exception:
+            pass
+        return out
 
     # Preserve name for debugging
     _wrapped.__name__ = getattr(handler, "__name__", "wrapped") + "_microcompact"

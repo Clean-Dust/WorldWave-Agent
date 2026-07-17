@@ -302,13 +302,36 @@ class TestRunner:
         self._last_xml_path: Optional[str] = None
 
     def run(self, test_path: str = None, extra_args: List[str] = None) -> Dict:
-        """Run tests and return structured results."""
+        """Run tests and return structured results.
+
+        Without an explicit *test_path*, only runs ``./tests`` when that
+        directory exists in *cwd*. Never falls back to collecting the entire
+        repository (avoids multi-minute hangs in sandboxes / arena).
+        """
         if self._config is None:
             return {"error": f"Unsupported framework: {self._framework}"}
 
+        cwd = os.getcwd()
+        resolved = test_path
+        if not resolved:
+            cand = os.path.join(cwd, "tests")
+            if os.path.isdir(cand):
+                resolved = cand
+            else:
+                return {
+                    "success": False,
+                    "error": "No test_path provided and no ./tests directory in cwd",
+                    "passed": 0,
+                    "failed": 0,
+                    "total": 0,
+                    "exit_code": -1,
+                    "output": "",
+                    "framework": self._framework,
+                    "fingerprint": ErrorFingerprint.fingerprint("no-test-path"),
+                }
+
         cmd = list(self._config["command"])
-        if test_path:
-            cmd.append(test_path)
+        cmd.append(resolved)
 
         # Add junit-xml if supported
         if "xml_flag" in self._config:
@@ -319,14 +342,21 @@ class TestRunner:
         if extra_args:
             cmd.extend(extra_args)
 
+        # Bound wall time; arena/sandbox can tighten via WW_CODING_TEST_TIMEOUT
+        try:
+            timeout_s = int(os.environ.get("WW_CODING_TEST_TIMEOUT", "120") or "120")
+        except ValueError:
+            timeout_s = 120
+        timeout_s = max(5, min(timeout_s, 120))
+
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=120, cwd=os.getcwd()
+                cmd, capture_output=True, text=True, timeout=timeout_s, cwd=cwd
             )
         except subprocess.TimeoutExpired:
             return {
                 "success": False,
-                "error": "Test timed out (120s)",
+                "error": f"Test timed out ({timeout_s}s)",
                 "framework": self._framework,
             }
         except FileNotFoundError:

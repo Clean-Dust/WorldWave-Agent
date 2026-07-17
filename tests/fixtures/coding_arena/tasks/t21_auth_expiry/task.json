@@ -1,0 +1,25 @@
+{
+  "id": "t21_auth_expiry",
+  "name": "Token expiry uses wrong comparison",
+  "goal": "`pkg/auth.py::is_expired` should treat `now >= exp` as expired but uses `>`. Inspired by JWT exp edge cases.",
+  "difficulty": "medium",
+  "tags": [
+    "auth",
+    "inspired"
+  ],
+  "adversarial": true,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/auth.py",
+    "symbol": "is_expired",
+    "new_body": "def is_expired(exp, now):\n    return now >= exp\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": "Pattern: JWT/token exp boundary (RFC7519-style) off-by-one at exact expiry instant. Synthetic.",
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

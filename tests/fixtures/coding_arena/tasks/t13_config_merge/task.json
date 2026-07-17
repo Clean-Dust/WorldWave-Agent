@@ -1,0 +1,25 @@
+{
+  "id": "t13_config_merge",
+  "name": "Shallow config merge loses nested",
+  "goal": "`pkg/merge.py::deep_merge` currently overwrites nested dicts entirely. Must deep-merge dict values. Multi-file: used by `pkg/settings.py`.",
+  "difficulty": "hard",
+  "tags": [
+    "merge",
+    "nested"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 90,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/merge.py",
+    "symbol": "deep_merge",
+    "new_body": "def deep_merge(base, override):\n    out = dict(base or {})\n    for k, v in (override or {}).items():\n        if isinstance(v, dict) and isinstance(out.get(k), dict):\n            out[k] = deep_merge(out[k], v)\n        else:\n            out[k] = v\n    return out\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": true,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

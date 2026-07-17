@@ -1,0 +1,34 @@
+{
+  "id": "t18_redirect_mul_focus",
+  "name": "Redirect-capable mul fix",
+  "goal": "Initial goal: fix `pkg/mathx.py::add`. Mid-task redirect may focus on `mul` instead. Both should be correct for full credit on hidden tests. Supports redirect injection path.",
+  "difficulty": "medium",
+  "tags": [
+    "redirect",
+    "multi-symbol"
+  ],
+  "adversarial": false,
+  "supports_redirect": true,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/mathx.py",
+    "symbol": "add",
+    "new_body": "def add(a, b):\n    return a + b\n",
+    "extra_fixes": [
+      {
+        "method": "edit_symbol",
+        "file": "pkg/mathx.py",
+        "symbol": "mul",
+        "new_body": "def mul(a, b):\n    return a * b\n"
+      }
+    ],
+    "redirect_message": "Instead focus on fixing mul as well"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

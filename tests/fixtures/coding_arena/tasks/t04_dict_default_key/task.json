@@ -1,0 +1,24 @@
+{
+  "id": "t04_dict_default_key",
+  "name": "Wrong dict default key",
+  "goal": "`pkg/config.py::get_setting` looks up the wrong default key when missing. Should return `defaults[key]` if present else None. `pkg/app.py` uses it for theme.",
+  "difficulty": "easy",
+  "tags": [
+    "dict"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/config.py",
+    "symbol": "get_setting",
+    "new_body": "def get_setting(settings, key, defaults=None):\n    defaults = defaults or {}\n    if key in settings:\n        return settings[key]\n    return defaults.get(key)\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

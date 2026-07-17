@@ -1,6 +1,6 @@
-# Coding Engine (WW-PM 0.10)
+# Coding Engine (WW-PM 0.11)
 
-WorldWave's default engineering harness lives in `coding/`. PM 0.10 hardens the **live multi-turn path**: mode → map/grep/graph → edit → verify → circuit/replan, with steerable redirect, AutoCompact, CodingMetrics, model route, and corpus stress — all offline-provable.
+WorldWave's default engineering harness lives in `coding/`. PM 0.11 hardens (arena + 0.10 foundation) the **live multi-turn path**: mode → map/grep/graph → edit → verify → circuit/replan, with steerable redirect, AutoCompact, CodingMetrics, model route, and corpus stress — all offline-provable.
 
 ## Default path
 
@@ -103,3 +103,14 @@ python -m pytest tests/test_coding_upgrade.py tests/test_coding.py \
 ## Playbook
 
 See `coding/CODING_AGENT.md` for the default-path diagram and worktree guidance.
+
+## Coding arena (PM 0.11)
+
+Hidden-test pass@1 vs a fixed reference baseline. Mock mode is default for CI.
+
+```bash
+python scripts/coding_arena.py --smoke
+python scripts/coding_arena.py --full --vs-baseline
+```
+
+See `docs/coding-north-star.md` for Outcome A/B/C definitions. Reports: `results/coding_arena/`.

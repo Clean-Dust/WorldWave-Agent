@@ -1,0 +1,24 @@
+{
+  "id": "t06_sort_key_reversed",
+  "name": "Sort key reversed",
+  "goal": "`pkg/rank.py::top_scores` should return highest scores first but sorts ascending. Fix sort order. `pkg/leaderboard.py` formats the list.",
+  "difficulty": "easy",
+  "tags": [
+    "sort"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/rank.py",
+    "symbol": "top_scores",
+    "new_body": "def top_scores(pairs, k=3):\n    \"\"\"pairs: list of (name, score). Return top-k by score desc.\"\"\"\n    ordered = sorted(pairs, key=lambda p: p[1], reverse=True)\n    return ordered[:k]\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

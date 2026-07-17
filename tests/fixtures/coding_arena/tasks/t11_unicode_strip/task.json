@@ -1,0 +1,25 @@
+{
+  "id": "t11_unicode_strip",
+  "name": "Unicode whitespace not stripped",
+  "goal": "`pkg/clean.py::clean_token` only strips ASCII spaces; must also strip unicode whitespace (\\u00a0, \\u2003). Adversarial edge case.",
+  "difficulty": "medium",
+  "tags": [
+    "unicode",
+    "adversarial"
+  ],
+  "adversarial": true,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/clean.py",
+    "symbol": "clean_token",
+    "new_body": "def clean_token(s):\n    if s is None:\n        return \"\"\n    return str(s).strip()\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

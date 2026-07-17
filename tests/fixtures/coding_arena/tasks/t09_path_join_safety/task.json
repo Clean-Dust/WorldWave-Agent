@@ -1,0 +1,26 @@
+{
+  "id": "t09_path_join_safety",
+  "name": "Path join allows escape",
+  "goal": "`pkg/files.py::safe_join` should reject `..` segments (path traversal). Inspired by common OSS path traversal bugs. `pkg/static.py` serves files via safe_join.",
+  "difficulty": "medium",
+  "tags": [
+    "security",
+    "path",
+    "inspired"
+  ],
+  "adversarial": true,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/files.py",
+    "symbol": "safe_join",
+    "new_body": "def safe_join(root, *parts):\n    import os\n    root = os.path.abspath(root)\n    candidate = os.path.abspath(os.path.join(root, *parts))\n    if not (candidate == root or candidate.startswith(root + os.sep)):\n        raise ValueError(\"path escapes root\")\n    # reject any .. segment in parts\n    for p in parts:\n        if p in (\"..\",) or (isinstance(p, str) and \"..\" in p.split(os.sep)):\n            raise ValueError(\"path escapes root\")\n    return candidate\n"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": "Pattern: path traversal via unsanitized join (common in static file servers; e.g. historical issues in simple HTTP servers / Flask send_file misuse). Documented pattern only \u2014 no third-party commit.",
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

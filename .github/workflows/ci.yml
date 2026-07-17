@@ -63,3 +63,7 @@ jobs:
     - name: Test
       run: |
         python -m pytest tests/ -v --tb=short
+
+    - name: Coding arena smoke
+      run: |
+        WW_ARENA_LLM=0 WW_CODING_REQUIRE_TEST=1 python scripts/coding_arena.py --smoke --vs-baseline

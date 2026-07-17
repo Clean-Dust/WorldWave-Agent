@@ -1,6 +1,6 @@
 # CODING_AGENT.md — WorldWave Coding Playbook
 
-Default engineering harness for coding tasks (PM 0.10 live path). Prefer this sequence over ad-hoc shell edits.
+Default engineering harness for coding tasks (PM 0.11 coding path). Prefer this sequence over ad-hoc shell edits.
 
 ## Default path (auto)
 

@@ -1,0 +1,25 @@
+{
+  "id": "t19_redirect_rename_field",
+  "name": "Redirect to rename field",
+  "goal": "Primary: fix `pkg/model.py::User.display`. Redirect may ask to also fix `email` normalization.",
+  "difficulty": "medium",
+  "tags": [
+    "redirect"
+  ],
+  "adversarial": false,
+  "supports_redirect": true,
+  "samples": 0,
+  "timeout_s": 45,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/model.py",
+    "symbol": "User",
+    "new_body": "class User:\n    def __init__(self, name, email):\n        self.name = name\n        self.email = email\n\n    def display(self):\n        return (self.name or \"\").strip()\n\n    def normalized_email(self):\n        return (self.email or \"\").strip().lower()\n",
+    "redirect_message": "Also fix email normalization to lowercase"
+  },
+  "baseline_strategy": "naive",
+  "inspired_by": null,
+  "hard": false,
+  "smoke": false,
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}
