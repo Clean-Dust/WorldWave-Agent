@@ -29,6 +29,7 @@ from .sleep import DailyScheduler, IdleDetector, SleepConsolidation, SleepDaemon
 from .recall import RecallEngine
 from .reconsolidation import Reconsolidation
 from .edges import EdgeStore
+from .entity_scope import atom_belongs_to_entity, resolve_entity_id
 from .vnext import MemoryVNext, memory_vnext_enabled
 
 logger = logging.getLogger("ww.memory.system")
@@ -342,31 +343,18 @@ class MemorySystem:
                 "source": source,
             })
 
-        eid = getattr(self.vnext, "entity_id", None) or "default"
-
-        def _atom_belongs_to_entity(atom, entity: str) -> bool:
-            """Hard entity filter — never surface other entities' remember atoms."""
-            if not entity or entity == "default":
-                # Still prefer tagged atoms; untagged legacy atoms allowed only for default
-                meta = getattr(atom, "meta", None) or {}
-                if isinstance(meta, dict) and meta.get("entity_id"):
-                    return str(meta.get("entity_id")) == entity or entity == "default"
-                return True
-            meta = getattr(atom, "meta", None) or {}
-            if isinstance(meta, dict):
-                me = str(meta.get("entity_id") or "")
-                if me:
-                    return me == entity
-            ents = [str(e) for e in (getattr(atom, "entities", None) or [])]
-            if entity in ents:
-                return True
-            # No entity tag on atom → do not leak into a non-default entity view
-            return False
+        # Request ContextVar > vnext instance (never a stale process-global)
+        eid = resolve_entity_id(
+            "",
+            instance_fallback=getattr(self.vnext, "entity_id", None) or "default",
+        )
 
         # 1. Atom nets — primary product store for remember() (entity-scoped)
         try:
-            for a in self.vnext.atoms.current_truth(query, limit=max(limit * 4, 8)):
-                if not _atom_belongs_to_entity(a, eid):
+            for a in self.vnext.atoms.current_truth(
+                query, limit=max(limit * 4, 8), entity_id=eid
+            ):
+                if not atom_belongs_to_entity(a, eid):
                     continue
                 ad = a.to_dict()
                 # Surface raw value from meta for json.dumps harnesses
@@ -414,9 +402,14 @@ class MemorySystem:
         except Exception as e:
             logger.debug("vnext fact recall failed: %s", e)
 
-        # 3. Topic STM previews (when query matches parked topics)
+        # 3. Topic STM previews — entity-filtered (no foreign conversation)
         try:
-            for h in self.vnext.topic_stm.search(query, top_k=limit):
+            raw_stm = self.vnext.topic_stm.search(query, top_k=max(limit * 3, 6))
+            if hasattr(self.vnext, "_filter_stm_hits"):
+                stm_hits = self.vnext._filter_stm_hits(raw_stm, eid, limit=limit)
+            else:
+                stm_hits = raw_stm[:limit] if eid == "default" else []
+            for h in stm_hits:
                 preview = str(h.get("text_preview") or h.get("title") or "")
                 if not preview:
                     continue
@@ -426,10 +419,11 @@ class MemorySystem:
                         "atom_id": f"stm:{tid}" if tid else f"stm:{hash(preview) & 0xFFFFFFFF:08x}",
                         "content": preview,
                         "atom_type": "episodic",
-                        "entities": [],
+                        "entities": [eid],
                         "source": "vnext_stm",
                         "tags": ["topic_stm"],
                         "title": h.get("title"),
+                        "meta": {"entity_id": eid},
                     },
                     float(h.get("composite") or h.get("bm25") or 0.5),
                     "vnext_stm",
@@ -592,13 +586,24 @@ class MemorySystem:
         )
         return result.get("atom_id", "")
 
-    def search(self, query: str, limit: int = 10) -> List[MemoryAtom]:
+    def search(
+        self, query: str, limit: int = 10, *, entity_id: str = ""
+    ) -> List[MemoryAtom]:
         """Search legacy hippocampus + v-next atoms/facts/STM when enabled.
 
         Returns MemoryAtom list whose to_dict() content includes raw stored
         values so ``value in json.dumps(search)`` works for product proves.
+
+        Always entity-scoped when a request entity is bound.
         """
         self.mark_active()
+        eid = resolve_entity_id(
+            entity_id,
+            instance_fallback=(
+                getattr(self.vnext, "entity_id", None) if self.vnext else None
+            )
+            or "default",
+        )
         atoms: List[MemoryAtom] = []
         seen_ids: set = set()
         seen_content: set = set()
@@ -620,9 +625,19 @@ class MemorySystem:
 
         # Product path first: AtomNetStore / labeled facts / topic STM
         for r in self._collect_vnext_result_rows(query, limit):
-            _add(self._memory_atom_from_dict(r.get("atom") or {}))
+            ad = r.get("atom") or {}
+            # Defense: skip foreign entity rows
+            if not atom_belongs_to_entity(ad, eid):
+                # fact rows always have meta.entity_id; dicts without tag: only default
+                meta = ad.get("meta") if isinstance(ad.get("meta"), dict) else {}
+                if meta.get("entity_id") and str(meta.get("entity_id")) != eid:
+                    continue
+                if ad.get("source") in ("vnext_fact", "vnext_atom") and meta.get("entity_id"):
+                    if str(meta.get("entity_id")) != eid:
+                        continue
+            _add(self._memory_atom_from_dict(ad))
 
-        # Dual-include legacy buffer for migration
+        # Dual-include legacy buffer for migration — entity-tag filter only
         try:
             legacy = self.recall_engine.recall(
                 query, top_k=limit, max_tokens=-1
@@ -636,6 +651,16 @@ class MemorySystem:
             atom = self.hippocampus.get(atom_id) if atom_id else None
             if atom is None and atom_data.get("content"):
                 atom = self._memory_atom_from_dict(atom_data)
+            if atom is None:
+                continue
+            # For non-default entities, only surface legacy atoms that mention eid
+            if eid and eid != "default":
+                tags = list(getattr(atom, "tags", None) or [])
+                ents = list(getattr(atom, "entities", None) or [])
+                ctx = str(getattr(atom, "context_id", "") or "")
+                blob = " ".join(str(x) for x in tags + ents) + " " + ctx
+                if eid not in blob and eid not in (atom.content or ""):
+                    continue
             _add(atom)
 
         return atoms[:limit]
@@ -722,15 +747,15 @@ class MemorySystem:
         """Single non-system memory picture (labeled facts + topic + recall).
 
         Prompt isolation: persona stays in system; this is context only.
+        Entity is always resolved (explicit > request ContextVar > instance).
         """
         if self.vnext is None:
             return ""
-        if entity_id:
-            try:
-                self.vnext.set_entity(entity_id)
-            except Exception:
-                pass
-        return self.vnext.inject_for_turn(query, entity_id=entity_id or "")
+        eid = resolve_entity_id(
+            entity_id,
+            instance_fallback=getattr(self.vnext, "entity_id", None) or "default",
+        )
+        return self.vnext.inject_for_turn(query, entity_id=eid)
 
     def request_dream(self) -> dict:
         if self.vnext is None:

@@ -266,8 +266,21 @@ class Worldwave:
         last context) so the agent has continuity across platforms and time.
         Memory tools always bind to this entity_id — never silent-default to
         primary when a task entity was set.
+
+        Also pushes entity into the request ContextVar so concurrent rebinds of
+        process-global state cannot clobber mid-flight reads (Gate 0.2).
+        Prefer wrapping the full run with ``bind_entity`` at the server layer.
         """
         self._current_entity_id = entity_id or ""
+        if entity_id:
+            try:
+                from core.memory.entity_scope import peek_request_entity, set_request_entity
+
+                # Only update ContextVar inside an active request bind_entity scope
+                if peek_request_entity() is not None:
+                    set_request_entity(entity_id)
+            except Exception:
+                pass
         if self.entity_state_mgr and entity_id:
             state = self.entity_state_mgr.get(entity_id)
             if platform:
@@ -309,9 +322,14 @@ class Worldwave:
         if self.memory is not None:
             vnext = getattr(self.memory, "vnext", None)
             vnext_active = vnext is not None
-            if vnext_active and hasattr(vnext, "set_entity") and self._current_entity_id:
+            if vnext_active and self._current_entity_id:
                 try:
-                    vnext.set_entity(self._current_entity_id)
+                    from core.memory.entity_scope import peek_request_entity, set_request_entity
+
+                    if peek_request_entity() is not None:
+                        set_request_entity(self._current_entity_id)
+                    if hasattr(vnext, "set_entity"):
+                        vnext.set_entity(self._current_entity_id)
                 except Exception:
                     pass
 

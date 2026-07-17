@@ -618,6 +618,7 @@ class AtomNetStore:
         text: str = "",
         logical_net: Optional[str] = None,
         entity: str = "",
+        entity_id: str = "",
         current_only: bool = True,
         include_historical: bool = False,
         limit: int = 20,
@@ -625,14 +626,23 @@ class AtomNetStore:
         """Query atoms. current_only excludes invalid/superseded (freshness).
 
         include_historical=True returns superseded atoms as well (historical query).
+
+        entity_id: cognitive entity isolation (meta.entity_id) — hard filter.
+        entity: soft name match in entities list / content (legacy).
         """
+        from .entity_scope import atom_belongs_to_entity
+
         results: List[MemoryAtomV2] = []
         q = (text or "").lower()
         ent = (entity or "").lower()
+        eid = (entity_id or "").strip()
         for a in self._atoms.values():
             if logical_net and a.logical_net != logical_net:
                 continue
             if current_only and not include_historical and not a.is_currently_valid:
+                continue
+            # Hard cognitive-entity isolation (Gate 0.2)
+            if eid and not atom_belongs_to_entity(a, eid):
                 continue
             if ent and ent not in {e.lower() for e in a.entities} and ent not in a.content.lower():
                 continue
@@ -650,14 +660,30 @@ class AtomNetStore:
         )
         return results[:limit]
 
-    def current_truth(self, query: str, limit: int = 5) -> List[MemoryAtomV2]:
+    def current_truth(
+        self, query: str, limit: int = 5, *, entity_id: str = ""
+    ) -> List[MemoryAtomV2]:
         """Freshness-safe: invalid/superseded never win as current truth."""
-        hits = self.query(text=query, current_only=True, include_historical=False, limit=limit * 3)
+        hits = self.query(
+            text=query,
+            current_only=True,
+            include_historical=False,
+            entity_id=entity_id,
+            limit=limit * 3,
+        )
         return [h for h in hits if h.is_currently_valid][:limit]
 
-    def historical(self, query: str, limit: int = 10) -> List[MemoryAtomV2]:
+    def historical(
+        self, query: str, limit: int = 10, *, entity_id: str = ""
+    ) -> List[MemoryAtomV2]:
         """Include superseded/invalid for timeline views."""
-        return self.query(text=query, current_only=False, include_historical=True, limit=limit)
+        return self.query(
+            text=query,
+            current_only=False,
+            include_historical=True,
+            entity_id=entity_id,
+            limit=limit,
+        )
 
     def all(self) -> List[MemoryAtomV2]:
         return list(self._atoms.values())

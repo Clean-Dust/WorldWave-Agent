@@ -26,6 +26,11 @@ import time
 from typing import Any, Dict, Optional, Tuple
 
 from core.entity_state import normalize_wm_kind
+from core.memory.entity_scope import (
+    peek_request_entity,
+    resolve_entity_id,
+    set_request_entity,
+)
 
 log = logging.getLogger("ww.memory.tools")
 
@@ -178,14 +183,33 @@ class MemoryTools:
     def __init__(self, memory_system=None, entity_state_mgr=None, entity_id: str = ""):
         self._memory = memory_system
         self._entity_mgr = entity_state_mgr
+        # Instance fallback; request ContextVar wins on every tool call (Gate 0.2)
         self._entity_id = entity_id or "default"
         self._wire_wm_evict()
         self._bind_vnext_entity()
 
+    @property
+    def entity_id(self) -> str:
+        """Active entity for this tool call (request scope > instance)."""
+        return self._active_entity()
+
     def set_entity(self, entity_id: str):
-        """Set the current entity context (called before each interaction)."""
+        """Set the current entity context (called before each interaction).
+
+        Updates instance binding. Only mutates request ContextVar when a
+        ``bind_entity`` scope is already active (avoids permanent pollution).
+        """
         self._entity_id = entity_id or "default"
+        if peek_request_entity() is not None:
+            set_request_entity(self._entity_id)
         self._bind_vnext_entity()
+
+    def _active_entity(self) -> str:
+        """Request ContextVar when bound; else this tools instance entity."""
+        scoped = peek_request_entity()
+        if scoped:
+            return scoped
+        return (self._entity_id or "default").strip() or "default"
 
     def _vnext(self):
         if self._memory is None:
@@ -194,9 +218,11 @@ class MemoryTools:
 
     def _bind_vnext_entity(self) -> None:
         vnext = self._vnext()
+        eid = self._active_entity()
         if vnext is not None and hasattr(vnext, "set_entity"):
             try:
-                vnext.set_entity(self._entity_id)
+                # Pass only instance fallback update; vnext.set_entity respects scope
+                vnext.set_entity(eid)
             except Exception as e:
                 log.debug("vnext.set_entity failed: %s", e)
 
@@ -282,7 +308,7 @@ class MemoryTools:
         is_core: bool = False,
         kind: str = "",
     ) -> dict:
-        """Store a fact in the single memory system for ``self._entity_id``.
+        """Store a fact in the single memory system for the active entity.
 
         Args:
             key: Short label for the fact (e.g., "user_name", "preferred_model")
@@ -307,7 +333,8 @@ class MemoryTools:
                 "output": "remember failed: key and value are required",
             }
 
-        # Always re-bind v-next to current entity before write
+        # Always re-bind v-next to current (request-scoped) entity before write
+        eid = self._active_entity()
         self._bind_vnext_entity()
 
         kind_arg: Optional[str] = kind if (kind is not None and str(kind).strip()) else None
@@ -326,14 +353,14 @@ class MemoryTools:
                     is_core=bool(is_core),
                     logical_net="world",
                     category=category,
-                    entity_id=self._entity_id,
+                    entity_id=eid,
                 )
                 previous = result.get("previous")
                 resolved_kind = normalize_wm_kind(result.get("kind") or resolved_kind)
                 stored = True
                 log.info(
                     "Entity %s: remember(vnext) '%s' kind=%s is_core=%s",
-                    self._entity_id[:12],
+                    eid[:12],
                     key,
                     resolved_kind,
                     is_core,
@@ -352,16 +379,16 @@ class MemoryTools:
                         content=fact_text,
                         source="inference",
                         atom_type="semantic",
-                        tags=[key, category, kind_tag, self._entity_id],
-                        context_id=f"remember:{self._entity_id}:{resolved_kind}",
+                        tags=[key, category, kind_tag, eid],
+                        context_id=f"remember:{eid}:{resolved_kind}",
                         is_core=True,
                     )
                     stored = True
                 elif hasattr(self._memory, "store_fact"):
                     self._memory.store_fact(
                         fact=fact_text,
-                        entities=[key, category, kind_tag, self._entity_id],
-                        context_id=f"remember:{self._entity_id}:{resolved_kind}",
+                        entities=[key, category, kind_tag, eid],
+                        context_id=f"remember:{eid}:{resolved_kind}",
                     )
                     stored = True
             except Exception as e:
@@ -375,11 +402,11 @@ class MemoryTools:
             or (self._vnext() is None)
         ):
             try:
-                state = self._entity_mgr.get(self._entity_id)
+                state = self._entity_mgr.get(eid)
                 if previous is None:
                     previous = state.working_memory.get(key)
                 self._entity_mgr.set_working_memory(
-                    self._entity_id,
+                    eid,
                     key,
                     value,
                     kind=kind_arg,
@@ -398,7 +425,7 @@ class MemoryTools:
                 "error": "remember failed: no store backend accepted the write",
                 "message": "remember failed: no store backend accepted the write",
                 "output": "remember failed: storage unavailable",
-                "entity_id": self._entity_id,
+                "entity_id": eid,
             }
 
         return {
@@ -409,7 +436,7 @@ class MemoryTools:
             "previous": previous,
             "is_core": bool(is_core),
             "kind": resolved_kind,
-            "entity_id": self._entity_id,
+            "entity_id": eid,
             "timestamp": time.time(),
             "output": f"Remembered {key}: {value}",
             "store": "vnext" if self._vnext() is not None else "legacy_shim",
@@ -429,12 +456,13 @@ class MemoryTools:
                 "output": "forget failed: key is required",
             }
 
+        eid = self._active_entity()
         self._bind_vnext_entity()
         was = None
         vnext = self._vnext()
         if vnext is not None:
             try:
-                result = vnext.forget(key, entity_id=self._entity_id)
+                result = vnext.forget(key, entity_id=eid)
                 was = result.get("was")
             except Exception as e:
                 log.warning("vnext.forget failed: %s", e)
@@ -444,33 +472,33 @@ class MemoryTools:
                 self._memory.store_fact(
                     fact=f"[SUPERSEDED] {key}",
                     entities=[key, "superseded"],
-                    context_id=f"forget:{self._entity_id}",
+                    context_id=f"forget:{eid}",
                 )
             except Exception as e:
                 log.debug("forget store_fact: %s", e)
 
         if entity_wm_dual_write_enabled() and self._entity_mgr and vnext is not None:
             try:
-                state = self._entity_mgr.get(self._entity_id)
+                state = self._entity_mgr.get(eid)
                 if was is None:
                     was = state.working_memory.get(key)
-                self._entity_mgr.delete_working_memory(self._entity_id, key)
+                self._entity_mgr.delete_working_memory(eid, key)
             except Exception as e:
                 log.debug("entity forget dual-write: %s", e)
 
         # Unit-fixture path: EntityState only when no product store
         if vnext is None and self._entity_mgr:
             try:
-                state = self._entity_mgr.get(self._entity_id)
+                state = self._entity_mgr.get(eid)
                 if was is None:
                     was = state.working_memory.get(key)
-                self._entity_mgr.delete_working_memory(self._entity_id, key)
+                self._entity_mgr.delete_working_memory(eid, key)
             except Exception as e:
                 log.debug("entity forget fixture path: %s", e)
 
         log.info(
             "Entity %s: forget '%s' (was: %s)",
-            self._entity_id[:12],
+            eid[:12],
             key,
             was,
         )
@@ -480,6 +508,7 @@ class MemoryTools:
             "status": "forgotten",
             "key": key,
             "was": was,
+            "entity_id": eid,
             "timestamp": time.time(),
             "output": f"Forgot {key}" + (f" (was: {was})" if was else ""),
         }
@@ -488,6 +517,7 @@ class MemoryTools:
 
     def recall_mine(self, query: str = "", limit: int = 10) -> dict:
         """Query labeled facts for the current entity only (no cross-entity leak)."""
+        eid = self._active_entity()
         self._bind_vnext_entity()
         facts: Dict[str, str] = {}
         vnext = self._vnext()
@@ -495,7 +525,7 @@ class MemoryTools:
         if vnext is not None:
             try:
                 listed = vnext.list_facts(
-                    query, entity_id=self._entity_id, limit=limit
+                    query, entity_id=eid, limit=limit
                 )
                 raw = listed.get("facts") or {}
                 # Flatten value dicts → str for tool output compat
@@ -509,7 +539,7 @@ class MemoryTools:
 
         # Prefer v-next; only fall back to entity if v-next empty / missing
         if not facts and self._entity_mgr:
-            state = self._entity_mgr.get(self._entity_id)
+            state = self._entity_mgr.get(eid)
             facts = dict(state.working_memory)
             if query:
                 query_lower = query.lower()
@@ -530,7 +560,7 @@ class MemoryTools:
             "success": True,
             "facts": facts_out,
             "total": len(items),
-            "entity_id": self._entity_id,
+            "entity_id": eid,
             "output": output,
             "store": "vnext" if vnext is not None else "entity_shim",
         }
@@ -551,7 +581,7 @@ class MemoryTools:
             result = vnext.switch_topic(title=title or "")
             log.info(
                 "Entity %s: switch_topic → %s",
-                self._entity_id[:12],
+                self._active_entity()[:12],
                 result.get("title") or result.get("active_id"),
             )
             return {

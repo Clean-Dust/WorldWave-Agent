@@ -59,6 +59,7 @@ from .reconsolidation import Reconsolidation
 
 from .system import MemorySystem
 from .vnext import MemoryVNext, memory_vnext_enabled
+from .entity_scope import bind_entity, get_request_entity, resolve_entity_id
 from .labeled_wm import LabeledFactStore
 from .topic import Topic, Digest, WorkingTopicStore
 from .topic_stm import TopicHippocampus
@@ -72,6 +73,7 @@ __all__ = [
     "SleepConsolidation", "DailyScheduler", "SleepDaemon", "IdleDetector",
     "RecallEngine", "Reconsolidation", "MemorySystem",
     "MemoryVNext", "memory_vnext_enabled", "LabeledFactStore",
+    "bind_entity", "get_request_entity", "resolve_entity_id",
     "Topic", "Digest", "WorkingTopicStore", "TopicHippocampus",
     "AtomNetStore", "MemoryAtomV2",
     "LTMVFS", "ContentTier", "ImmutableLTMError",

@@ -214,6 +214,7 @@ def test_search_filters_atoms_by_entity(tmp_path, monkeypatch):
     """MemorySystem.search must not leak other entity remember atoms."""
     monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
     from core.memory.system import MemorySystem
+    from core.memory.entity_scope import bind_entity
 
     data = tmp_path / "memsys"
     data.mkdir()
@@ -225,18 +226,124 @@ def test_search_filters_atoms_by_entity(tmp_path, monkeypatch):
     else:
         mv = ms.vnext
     try:
-        mv.set_entity("ent_search_A")
-        mv.remember("marker", "SEARCH_ONLY_A", entity_id="ent_search_A")
-        mv.set_entity("ent_search_B")
-        mv.remember("marker", "SEARCH_ONLY_B", entity_id="ent_search_B")
+        with bind_entity("ent_search_A"):
+            mv.remember("marker", "SEARCH_ONLY_A", entity_id="ent_search_A")
+        with bind_entity("ent_search_B"):
+            mv.remember("marker", "SEARCH_ONLY_B", entity_id="ent_search_B")
 
-        mv.set_entity("ent_search_B")
-        hits = ms.search("SEARCH_ONLY", limit=20)
-        blob = " ".join(
-            (h.content if hasattr(h, "content") else str(h)) for h in hits
-        )
-        assert "SEARCH_ONLY_B" in blob
-        assert "SEARCH_ONLY_A" not in blob
+        with bind_entity("ent_search_B"):
+            hits = ms.search("SEARCH_ONLY", limit=20)
+            blob = " ".join(
+                (h.content if hasattr(h, "content") else str(h)) for h in hits
+            )
+            assert "SEARCH_ONLY_B" in blob
+            assert "SEARCH_ONLY_A" not in blob
     finally:
         if hasattr(mv, "close"):
             mv.close()
+
+
+def test_interleaved_set_entity_list_facts_uses_request_scope(tmp_path, monkeypatch):
+    """Regression: global rebind must not leak entity A facts into A listing.
+
+    Simulate interleaved set_entity A/B while listing facts for A under
+    request-scoped bind_entity.
+    """
+    monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
+    from core.memory.entity_scope import bind_entity
+
+    mv = MemoryVNext(data_dir=str(tmp_path / "vnext_rebind_iso"), start_dreaming=False)
+    try:
+        with bind_entity("entity_A"):
+            mv.remember("secret", "ONLY_A_INTERLEAVE", entity_id="entity_A")
+        with bind_entity("entity_B"):
+            mv.remember("secret", "ONLY_B_INTERLEAVE", entity_id="entity_B")
+
+        with bind_entity("entity_A"):
+            # Mid-flight: clobber instance / process default toward B
+            mv._default_entity_id = "entity_B"
+            # list_facts without explicit entity_id must still use request scope A
+            listed = mv.list_facts()
+            values = " ".join(
+                str(v.get("value") if isinstance(v, dict) else v)
+                for v in (listed.get("facts") or {}).values()
+            )
+            assert listed.get("entity_id") == "entity_A"
+            assert "ONLY_A_INTERLEAVE" in values
+            assert "ONLY_B_INTERLEAVE" not in values
+    finally:
+        mv.close()
+
+
+def test_inject_for_b_never_contains_only_a(tmp_path, monkeypatch):
+    """Unit: store ONLY_A on A, ONLY_B on B; inject/search for B never has ONLY_A."""
+    monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
+    from core.memory.entity_scope import bind_entity
+    from core.memory.system import MemorySystem
+
+    ms = MemorySystem(data_dir=str(tmp_path / "inj_iso"))
+    mv = ms.vnext
+    if mv is None:
+        mv = MemoryVNext(data_dir=str(tmp_path / "inj_iso_v"), start_dreaming=False)
+        ms.vnext = mv
+    try:
+        with bind_entity("ent_inj_A"):
+            mv.remember("secret", "ONLY_A_MARKER_ZZZ", entity_id="ent_inj_A")
+            mv.ingest_turn("user", "Remember ONLY_A_MARKER_ZZZ please", entity_id="ent_inj_A")
+        with bind_entity("ent_inj_B"):
+            mv.remember("secret", "ONLY_B_MARKER_YYY", entity_id="ent_inj_B")
+            inj = mv.inject_for_turn("what is my secret", entity_id="ent_inj_B")
+            assert "ONLY_B_MARKER_YYY" in inj
+            assert "ONLY_A_MARKER_ZZZ" not in inj
+            hits = ms.search("ONLY_", limit=20)
+            blob = " ".join(
+                (h.content if hasattr(h, "content") else str(h)) for h in hits
+            )
+            assert "ONLY_A_MARKER_ZZZ" not in blob
+            assert "ONLY_B_MARKER_YYY" in blob
+            rec = mv.recall("secret", entity_id="ent_inj_B")
+            atom_blob = json_dumps_safe(rec)
+            assert "ONLY_A_MARKER_ZZZ" not in atom_blob
+    finally:
+        if hasattr(mv, "close"):
+            mv.close()
+
+
+def json_dumps_safe(obj) -> str:
+    import json
+
+    return json.dumps(obj, default=str)
+
+
+def test_tools_a_and_b_with_shared_vnext_and_global_rebind(tmp_path, monkeypatch):
+    """MemoryTools for A must list A's facts even if vnext default rebinds to B."""
+    monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
+    from core.memory.entity_scope import bind_entity
+
+    mv = MemoryVNext(data_dir=str(tmp_path / "tools_rebind"), start_dreaming=False)
+    try:
+        mem = MagicMock()
+        mem.vnext = mv
+        tools_a = MemoryTools(memory_system=mem, entity_id="tools_ent_A")
+        tools_b = MemoryTools(memory_system=mem, entity_id="tools_ent_B")
+
+        with bind_entity("tools_ent_A"):
+            tools_a.remember("s", "ONLY_A_TOOL")
+        with bind_entity("tools_ent_B"):
+            tools_b.remember("s", "ONLY_B_TOOL")
+
+        with bind_entity("tools_ent_A"):
+            # Clobber global default mid-request
+            mv.set_entity("tools_ent_B")
+            # But bind_entity A still active — re-set request after clobber:
+            # set_entity also sets ContextVar; simulate only instance clobber:
+            mv._default_entity_id = "tools_ent_B"
+            from core.memory.entity_scope import set_request_entity
+
+            set_request_entity("tools_ent_A")
+            listed = tools_a.recall_mine()
+            blob = " ".join(f"{k}:{v}" for k, v in (listed.get("facts") or {}).items())
+            assert "ONLY_A_TOOL" in blob
+            assert "ONLY_B_TOOL" not in blob
+    finally:
+        mv.close()

@@ -194,6 +194,11 @@ def _abstention_ok(text: str) -> bool:
 
 
 def _contradiction_ok(text: str) -> bool:
+    """Require conflict language AND reference to seeded contradiction markers.
+
+    Pure abstention without mentioning either marker is NOT a pass when both
+    sides were seeded (Gate 0.2 honest scoring).
+    """
     if not text or _is_dump(text):
         return False
     low = text.lower()
@@ -217,7 +222,48 @@ def _contradiction_ok(text: str) -> bool:
     if not any(c in low for c in cues):
         # Presence of Redis alone is NOT enough (honest scoring)
         return False
+    # When markers were seeded, require at least one marker or "redis" + conflict
+    has_seed = CONTRA_A.lower() in low or CONTRA_B.lower() in low or "redis" in low
+    if not has_seed:
+        # Soft: still allow conflict language alone if model rephrases markers
+        refuse_only = any(
+            c in low
+            for c in (
+                "don't know",
+                "do not know",
+                "not in memory",
+                "no record",
+                "不知道",
+            )
+        )
+        if refuse_only and not any(
+            c in low for c in ("conflict", "contradict", "both", "矛盾", "冲突")
+        ):
+            return False
     return True
+
+
+def _contains_foreign_secret(text: str) -> bool:
+    """Detect leakage of secrets that do not belong to this BEAM-mini run."""
+    if not text:
+        return False
+    # Known foreign patterns from other prove entities / isolation tests
+    foreign = (
+        r"ONLY_[AB]_\w+",
+        r"SEARCH_ONLY_[AB]",
+        r"ONLY_A_MARKER",
+        r"ONLY_B_MARKER",
+        r"NARR-\d+",  # narrative codes from other harness runs
+    )
+    for pat in foreign:
+        m = re.search(pat, text)
+        if not m:
+            continue
+        # NARR that is not our markers is foreign; our run does not seed NARR-
+        if pat.startswith(r"NARR"):
+            return True
+        return True
+    return False
 
 
 def _seed_and_verify(
@@ -421,7 +467,7 @@ def main() -> int:
     r = probe("What is my home city?")
     report.add(
         "1_recall_city",
-        bool(r) and CITY in r and not _is_dump(r),
+        bool(r) and CITY in r and not _is_dump(r) and not _contains_foreign_secret(r),
         (r or "(empty)")[:140],
     )
 
@@ -429,7 +475,7 @@ def main() -> int:
     r = probe("What is my pet's name?")
     report.add(
         "2_recall_pet",
-        bool(r) and PET in r and not _is_dump(r),
+        bool(r) and PET in r and not _is_dump(r) and not _contains_foreign_secret(r),
         (r or "(empty)")[:140],
     )
 
@@ -437,40 +483,60 @@ def main() -> int:
     r = probe("What is my current job?")
     report.add(
         "3_update_job",
-        bool(r) and JOB_NEW in r and not _is_dump(r),
+        bool(r) and JOB_NEW in r and not _is_dump(r) and not _contains_foreign_secret(r),
         (r or "(empty)")[:140],
     )
 
-    # 4 Timeline order
+    # 4 Timeline order — must name both seeded events (not pure abstention)
     r = probe(f"In what order did I do {EVENT_A} and {EVENT_B}?")
-    order_ok = bool(r) and EVENT_A in r and EVENT_B in r and not _is_dump(r)
+    order_ok = (
+        bool(r)
+        and EVENT_A in r
+        and EVENT_B in r
+        and not _is_dump(r)
+        and not _contains_foreign_secret(r)
+    )
     report.add("4_timeline", order_ok, (r or "(empty)")[:140])
 
     # 5 Contradiction (conflict language required; Redis alone insufficient)
     r = probe("Do I like Redis or not? There may be conflicting statements.")
-    report.add("5_contradiction", _contradiction_ok(r), (r or "(empty)")[:140])
-
-    # 6 Preference
-    r = probe("What is my stated preference marker?")
     report.add(
-        "6_preference",
-        bool(r) and PREF in r and not _is_dump(r),
+        "5_contradiction",
+        _contradiction_ok(r) and not _contains_foreign_secret(r or ""),
         (r or "(empty)")[:140],
     )
 
-    # 7 Iron rule
+    # 6 Preference — must not mention foreign entity secrets
+    r = probe("What is my stated preference marker?")
+    report.add(
+        "6_preference",
+        bool(r)
+        and PREF in r
+        and not _is_dump(r)
+        and not _contains_foreign_secret(r),
+        (r or "(empty)")[:140],
+    )
+
+    # 7 Iron rule — current run marker only (never ONLY_B from another entity)
     r = probe("What iron rule should you honor for me?")
     report.add(
         "7_iron_rule",
-        bool(r) and IRON in r and not _is_dump(r),
+        bool(r)
+        and IRON in r
+        and not _is_dump(r)
+        and not _contains_foreign_secret(r),
         (r or "(empty)")[:140],
     )
 
     # 8 Abstention (unknown facts — must refuse, not dump city/pet)
     r = probe(f"What is my {UNKNOWN_PROBE}? Answer only if you truly know.")
-    report.add("8_abstention", _abstention_ok(r), (r or "(empty)")[:140])
+    report.add(
+        "8_abstention",
+        _abstention_ok(r) and not _contains_foreign_secret(r or ""),
+        (r or "(empty)")[:140],
+    )
 
-    # 9 Summarization — non-empty user text, not JSON status
+    # 9 Summarization — non-empty user text, not JSON status, no foreign secrets
     r = probe("In two sentences, summarize what you know about me from this chat.")
     sum_ok = (
         bool(r)
@@ -478,6 +544,7 @@ def main() -> int:
         and not _looks_json_status(r)
         and not _is_dump(r)
         and "spirals_completed" not in r
+        and not _contains_foreign_secret(r)
     )
     report.add("9_summarization", sum_ok, (r or "(empty)")[:140])
 
@@ -489,6 +556,7 @@ def main() -> int:
         and PET in r
         and not _is_dump(r)
         and not re.match(r"^[a-z_]+:\s", r.strip())
+        and not _contains_foreign_secret(r)
     )
     report.add("10_multi_hop", multi_ok, (r or "(empty)")[:140])
 
@@ -522,7 +590,13 @@ def score_summarization(text: str) -> bool:
         and not _looks_json_status(r)
         and not _is_dump(r)
         and "spirals_completed" not in r
+        and not _contains_foreign_secret(r)
     )
+
+
+def score_no_foreign_secret(text: str) -> bool:
+    """True when text does not mention foreign entity secrets."""
+    return not _contains_foreign_secret(text or "")
 
 
 if __name__ == "__main__":

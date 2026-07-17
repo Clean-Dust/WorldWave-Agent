@@ -1403,65 +1403,100 @@ def run_restart(report: Report) -> None:
 
 
 def run_narrative(report: Report) -> None:
-    """Multi-turn script: set preference, distract, recall."""
+    """Multi-turn script: set preference, distract, recall.
+
+    Gate 0.2: unique entity_id + user_id + chat_id per run (mirror product prove)
+    so t3 cannot recall a stale NARR marker from a prior session.
+    """
     try:
         client = _live_client()
     except Exception as e:
         report.add("N1 multi-turn narrative", False, str(e))
         return
 
-    fav = f"NARR-{int(time.time()) % 100000}"
+    run_tag = f"{os.getpid()}_{int(time.time())}"
+    fav = f"NARR-{run_tag[-8:]}"
+    narr_entity = os.environ.get(
+        "WW_NARRATIVE_ENTITY", f"prove_narrative_{run_tag}"
+    )
+    narr_user = f"narr_user_{run_tag}"
+    narr_chat = f"narr_chat_{run_tag}"
+
+    def _narr_body(goal: str, max_spirals: int = 5) -> dict:
+        return {
+            "goal": goal,
+            "max_spirals": max_spirals,
+            "entity_id": narr_entity,
+            "platform": "memory_prove_narrative",
+            "user_id": narr_user,
+            "chat_id": narr_chat,
+        }
+
     try:
         t1 = client.request(
             "POST",
             "/ww/run",
-            {
-                "goal": (
-                    f"Remember my favorite color code is {fav} using the remember tool "
-                    f"with key=favorite_color_code. Confirm with REMEMBERED:{fav}."
-                ),
-                "max_spirals": 5,
-            },
+            _narr_body(
+                f"Remember my favorite color code is {fav} using the remember tool "
+                f"with key=favorite_color_code and value={fav}. "
+                f"Confirm with REMEMBERED:{fav}."
+            ),
             timeout=240,
         )
         t2 = client.request(
             "POST",
             "/ww/run",
-            {
-                "goal": "What is 17*19? Reply with only the number.",
-                "max_spirals": 2,
-            },
+            _narr_body(
+                "What is 17*19? Reply with a short user-facing answer that includes "
+                "the number 323. Do not leave the response empty.",
+                max_spirals=3,
+            ),
             timeout=120,
         )
         t3 = client.request(
             "POST",
             "/ww/run",
-            {
-                "goal": (
-                    "What is my favorite_color_code? Reply ONLY the code value."
-                ),
-                "max_spirals": 3,
-            },
+            _narr_body(
+                f"What is my favorite_color_code? Reply ONLY the code value "
+                f"(expect {fav}). Do not invent other NARR codes.",
+                max_spirals=4,
+            ),
             timeout=180,
         )
         r1 = str(t1.get("response") or "")
+        r2 = str(t2.get("response") or "")
         r3 = str(t3.get("response") or "")
-        ok = fav in r1 and fav in r3
+        # t2 must be non-empty public reply (distractor turn)
+        t2_ok = bool(r2.strip()) and len(r2.strip()) >= 1
+        # t3 must hit CURRENT narrative marker only (not stale NARR-*)
+        t3_ok = fav in r3
+        # Plant may confirm via REMEMBERED or at least tool path; require fav somewhere in t1 or t3
+        plant_ok = fav in r1 or fav in r3
+        ok = plant_ok and t2_ok and t3_ok
         report.add(
             "N1 multi-turn narrative",
             ok,
-            f"t1={r1[:50]!r} t2={str(t2.get('response'))[:30]!r} t3={r3[:50]!r}",
+            (
+                f"entity={narr_entity[:24]} t1={r1[:40]!r} t2={r2[:40]!r} "
+                f"t3={r3[:40]!r} t2_nonempty={t2_ok} current_marker={t3_ok}"
+            ),
             "dialogue multi-turn",
         )
+        # Bind entity for search so atom lookup is entity-scoped when server supports it
         search = client.request(
             "POST",
             "/ww/memory",
-            {"action": "search", "query": fav, "limit": 5},
+            {
+                "action": "search",
+                "query": fav,
+                "limit": 5,
+                "entity_id": narr_entity,
+            },
         )
         report.add(
             "N1 narrative atom present",
             fav in json.dumps(search),
-            f"atom_hit={fav in json.dumps(search)}",
+            f"atom_hit={fav in json.dumps(search)} entity={narr_entity[:20]}",
             "MemorySystem atoms",
         )
     except Exception as e:

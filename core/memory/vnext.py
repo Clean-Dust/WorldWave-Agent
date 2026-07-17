@@ -35,6 +35,12 @@ from .atom_nets import (
     extract_atoms_from_topic,
 )
 from .dreaming import DreamingWorker, dreaming_enabled
+from .entity_scope import (
+    atom_belongs_to_entity,
+    peek_request_entity,
+    resolve_entity_id,
+    set_request_entity,
+)
 from .labeled_wm import LabeledFactStore
 from .ltm_vfs import ContentTier, LTMVFS
 from .topic import Topic, WorkingTopicStore, looks_like_topic_switch
@@ -114,8 +120,10 @@ class MemoryVNext:
         self.facts = LabeledFactStore(
             data_dir=os.path.join(self.data_dir, "facts"),
         )
-        # Active entity for tools / inject (Same Timeline coupling)
-        self.entity_id: str = "default"
+        # Instance fallback only — request scope prefers ContextVar (Gate 0.2)
+        self._default_entity_id: str = "default"
+        # Track which entity the active working topic belongs to
+        self._wm_entity_id: str = "default"
 
         self.dreaming: Optional[DreamingWorker] = None
         if start_dreaming and dreaming_enabled():
@@ -125,17 +133,81 @@ class MemoryVNext:
                 auto_start=True,
             )
 
-        # Core/persona reserved slice (mirrors facts.is_core for fast inject)
+        # Core/persona reserved slice — always rehydrated per entity (not cross-entity)
         self._core_facts: Dict[str, str] = {}
+        self._core_facts_entity: str = ""
 
-    def set_entity(self, entity_id: str) -> None:
-        """Bind memory pipeline to a cognitive entity (Same Timeline)."""
-        self.entity_id = entity_id or "default"
-        # Hydrate core slice from labeled store
-        snap = self.facts.export_snapshot(self.entity_id)
+    @property
+    def entity_id(self) -> str:
+        """Active entity: request ContextVar > instance fallback."""
+        return resolve_entity_id("", instance_fallback=self._default_entity_id)
+
+    @entity_id.setter
+    def entity_id(self, value: str) -> None:
+        self._default_entity_id = (value or "").strip() or "default"
+
+    def _eid(self, entity_id: str = "") -> str:
+        return resolve_entity_id(entity_id, instance_fallback=self._default_entity_id)
+
+    def _hydrate_core(self, eid: str) -> Dict[str, str]:
+        """Load is_core facts for eid only (never reuse another entity's cache)."""
+        if self._core_facts_entity == eid and self._core_facts is not None:
+            # Still re-read store for correctness under concurrent writes
+            pass
+        snap = self.facts.export_snapshot(eid)
         core_keys = set(snap.get("working_memory_core") or [])
         wm = snap.get("working_memory") or {}
         self._core_facts = {k: wm[k] for k in core_keys if k in wm}
+        self._core_facts_entity = eid
+        return self._core_facts
+
+    def set_entity(self, entity_id: str) -> None:
+        """Bind memory pipeline to a cognitive entity (Same Timeline).
+
+        Updates instance fallback. When a request scope (``bind_entity``) is
+        already active, also updates the ContextVar. Does **not** create a
+        permanent ContextVar without a request scope (avoids cross-test /
+        cross-call pollution).
+
+        When the cognitive entity changes, parks the previous working topic so
+        inject cannot surface another entity's conversation turns.
+        """
+        eid = (entity_id or "").strip() or "default"
+        prev = self._default_entity_id
+        prev_wm = self._wm_entity_id
+        self._default_entity_id = eid
+        # Only mutate ContextVar when a request scope is already active
+        if peek_request_entity() is not None:
+            set_request_entity(eid)
+        # Cross-entity: never keep previous entity's working topic in inject
+        if prev_wm != eid or (prev != eid and prev_wm != eid):
+            try:
+                self.wm.switch_topic(title=f"entity:{eid[:32]}", is_core=False)
+                if self.wm.active is not None:
+                    self.wm.active.meta = dict(self.wm.active.meta or {})
+                    self.wm.active.meta["entity_id"] = eid
+                    if eid not in (self.wm.active.entities or []):
+                        self.wm.active.entities = list(self.wm.active.entities or []) + [eid]
+            except Exception as e:
+                logger.debug("wm switch on entity change skipped: %s", e)
+        self._wm_entity_id = eid
+        self._hydrate_core(eid)
+
+    def _ensure_wm_entity(self, eid: str) -> None:
+        """Park foreign working topic before writing for eid."""
+        if self._wm_entity_id and self._wm_entity_id != eid:
+            try:
+                self.wm.switch_topic(title=f"entity:{eid[:32]}", is_core=False)
+                if self.wm.active is not None:
+                    self.wm.active.meta = dict(self.wm.active.meta or {})
+                    self.wm.active.meta["entity_id"] = eid
+                    if eid not in (self.wm.active.entities or []):
+                        self.wm.active.entities = list(self.wm.active.entities or []) + [eid]
+            except Exception as e:
+                logger.debug("wm ensure entity switch: %s", e)
+            self._wm_entity_id = eid
+        elif not self._wm_entity_id:
+            self._wm_entity_id = eid
 
     # ── Atom extract (shared leave/overflow path) ──
 
@@ -178,7 +250,8 @@ class MemoryVNext:
         kind is explicit only (constraint/commitment/outcome/rationale).
         is_core hard-protects under capacity. Single store under facts/.
         """
-        eid = entity_id or self.entity_id or "default"
+        eid = self._eid(entity_id)
+        self._ensure_wm_entity(eid)
         from core.entity_state import normalize_wm_kind
 
         resolved_kind = normalize_wm_kind(kind)
@@ -209,7 +282,9 @@ class MemoryVNext:
             },
         )
         # Supersede prior same-key current facts for THIS entity only
-        prior = self.atoms.query(text=f"{key}:", current_only=True, limit=20)
+        prior = self.atoms.query(
+            text=f"{key}:", current_only=True, entity_id=eid, limit=20
+        )
         superseded = False
         for old in prior:
             if old.atom_id == atom.atom_id:
@@ -229,17 +304,23 @@ class MemoryVNext:
         if not superseded:
             self.atoms.add(atom)
 
-        if is_core:
-            self._core_facts[key] = value
-        else:
-            # Drop from core slice if re-remembered without is_core
-            self._core_facts.pop(key, None)
+        if self._core_facts_entity == eid or not self._core_facts_entity:
+            if is_core:
+                self._core_facts[key] = value
+                self._core_facts_entity = eid
+            else:
+                # Drop from core slice if re-remembered without is_core
+                self._core_facts.pop(key, None)
 
-        # Light topic annotate (does not force switch)
+        # Light topic annotate (does not force switch) — tag with entity
         try:
+            if self.wm.active is not None:
+                self.wm.active.meta = dict(self.wm.active.meta or {})
+                self.wm.active.meta["entity_id"] = eid
             self.wm.append_turn(
                 "system", f"[remember:{resolved_kind}] {content}", is_core=is_core
             )
+            self._wm_entity_id = eid
         except Exception:
             pass
 
@@ -256,9 +337,11 @@ class MemoryVNext:
         }
 
     def forget(self, key: str, *, entity_id: str = "") -> dict:
-        eid = entity_id or self.entity_id or "default"
+        eid = self._eid(entity_id)
         was = self.facts.delete(eid, key)
-        hits = self.atoms.query(text=f"{key}:", current_only=True, limit=20)
+        hits = self.atoms.query(
+            text=f"{key}:", current_only=True, entity_id=eid, limit=20
+        )
         n = 0
         for a in hits:
             if a.content.startswith(f"{key}:") or key in a.entities:
@@ -266,7 +349,8 @@ class MemoryVNext:
                 a.superseded_by = a.superseded_by or "forgotten"
                 self.atoms.add(a)  # persist
                 n += 1
-        self._core_facts.pop(key, None)
+        if self._core_facts_entity == eid:
+            self._core_facts.pop(key, None)
         return {
             "status": "forgotten",
             "key": key,
@@ -279,7 +363,7 @@ class MemoryVNext:
         self, query: str = "", *, entity_id: str = "", limit: int = 50
     ) -> dict:
         """List labeled online facts (single store)."""
-        eid = entity_id or self.entity_id or "default"
+        eid = self._eid(entity_id)
         facts = self.facts.get_facts(eid)
         meta = self.facts.get_meta(eid)
         if query:
@@ -301,17 +385,23 @@ class MemoryVNext:
             }
         return {"facts": out, "total": len(items), "entity_id": eid}
 
-    def reflect(self, query: str = "") -> dict:
+    def reflect(self, query: str = "", *, entity_id: str = "") -> dict:
         """Lightweight reflect over opinion/observation nets + labeled core."""
-        opinions = self.atoms.query(logical_net="opinion", text=query, limit=10)
-        observations = self.atoms.query(logical_net="observation", text=query, limit=10)
-        eid = self.entity_id or "default"
+        eid = self._eid(entity_id)
+        opinions = self.atoms.query(
+            logical_net="opinion", text=query, entity_id=eid, limit=10
+        )
+        observations = self.atoms.query(
+            logical_net="observation", text=query, entity_id=eid, limit=10
+        )
         labeled = self.facts.get_facts(eid)
+        core = self._hydrate_core(eid)
         return {
             "opinions": [a.to_dict() for a in opinions],
             "observations": [a.to_dict() for a in observations],
-            "core": dict(self._core_facts),
+            "core": dict(core),
             "labeled_facts": labeled,
+            "entity_id": eid,
         }
 
     # ── Write track 2: passive lossless ──
@@ -324,13 +414,26 @@ class MemoryVNext:
         new_topic: bool = False,
         topic_title: str = "",
         auto_switch: bool = True,
+        entity_id: str = "",
     ) -> dict:
         """Land conversation turn as Experience raw + topic body (no dual LLM).
 
         Auto topic split (user turns): explicit markers, long gap + subject
         change, or low lexical overlap → park current topic to STM fully,
         start new topic body.
+
+        Experience atoms are tagged with the active cognitive entity so inject
+        / search never leak another entity's conversation.
         """
+        eid = self._eid(entity_id)
+        # If WM still holds another entity's topic, park it first
+        if self._wm_entity_id and self._wm_entity_id != eid:
+            try:
+                self.wm.switch_topic(title=f"entity:{eid[:32]}", is_core=False)
+            except Exception:
+                pass
+            self._wm_entity_id = eid
+
         switched = False
         switch_reason = ""
         if auto_switch and not new_topic and self.wm.active and role == "user":
@@ -352,13 +455,24 @@ class MemoryVNext:
             new_topic=new_topic,
             topic_title=topic_title,
         )
+        # Stamp entity on active topic for STM isolation
+        try:
+            topic.meta = dict(topic.meta or {})
+            topic.meta["entity_id"] = eid
+            if eid not in (topic.entities or []):
+                topic.entities = list(topic.entities or []) + [eid]
+        except Exception:
+            pass
+        self._wm_entity_id = eid
 
-        # Passive experience atom (raw, no second LLM)
+        # Passive experience atom (raw, no second LLM) — entity-tagged
         exp = MemoryAtomV2(
             content=f"{role}: {content}"[:500],
             logical_net="experience",
             source="passive",
             topic_id=topic.topic_id,
+            entities=[eid],
+            meta={"entity_id": eid},
         )
         self.atoms.add(exp)
 
@@ -371,6 +485,7 @@ class MemoryVNext:
             "digests": len(topic.digests),
             "tokens": topic.token_estimate(),
             "experience_atom": exp.atom_id,
+            "entity_id": eid,
         }
 
     def switch_topic(self, title: str = "", *, is_core: bool = False) -> dict:
@@ -399,13 +514,17 @@ class MemoryVNext:
         *,
         top_k: int = 5,
         progressive: bool = True,
+        entity_id: str = "",
     ) -> dict:
         """Hippocampus BM25 + LTM index + atom freshness filter.
 
         Progressive: LTM returns Abstract first.
         Invalid atoms never win as current truth.
         Optional RRF (WW_MEMORY_RRF=1): fuse BM25 STM + atom text + labeled facts.
+
+        Always entity-scoped: atoms / facts / STM previews filtered to entity_id.
         """
+        eid = self._eid(entity_id)
         # Optional modules — cross-encoder / HRR fail-loud if enabled incomplete
         if optional_module_enabled("hrr"):
             raise HRRUnavailableError(
@@ -420,11 +539,13 @@ class MemoryVNext:
                 "complete reranker. Default retrieval path remains fast FTS/BM25."
             )
 
-        stm_hits = self.topic_stm.search(query, top_k=top_k)
-        atom_hits = self.atoms.current_truth(query, limit=top_k)
+        stm_hits = self._filter_stm_hits(
+            self.topic_stm.search(query, top_k=top_k * 3), eid, limit=top_k
+        )
+        atom_hits = self.atoms.current_truth(query, limit=top_k, entity_id=eid)
         ltm_tier = ContentTier.ABSTRACT if progressive else ContentTier.DETAIL
         ltm_hits = self.ltm.search(query, top_k=top_k, tier=ltm_tier)
-        fact_hits = self._rank_labeled_facts(query, limit=top_k)
+        fact_hits = self._rank_labeled_facts(query, limit=top_k, entity_id=eid)
 
         # Optional RRF fusion (default OFF) — STM + atoms + labeled facts (+ LTM)
         fused = None
@@ -433,6 +554,7 @@ class MemoryVNext:
 
         return {
             "query": query,
+            "entity_id": eid,
             "stm": [
                 {
                     "topic_id": h["topic_id"],
@@ -451,9 +573,48 @@ class MemoryVNext:
             "tier": ltm_tier.value,
         }
 
-    def _rank_labeled_facts(self, query: str, limit: int = 5) -> List[dict]:
+    def _filter_stm_hits(
+        self, hits: List[dict], eid: str, limit: int = 5
+    ) -> List[dict]:
+        """Keep STM topics that belong to eid (meta/entities) or are untagged default-only."""
+        if not hits:
+            return []
+        out: List[dict] = []
+        for h in hits:
+            # topic_stm search returns dicts; try load topic for meta if present
+            tid = str(h.get("topic_id") or "")
+            topic = None
+            try:
+                if tid and hasattr(self.topic_stm, "get"):
+                    topic = self.topic_stm.get(tid)
+            except Exception:
+                topic = None
+            if topic is not None:
+                if not atom_belongs_to_entity(topic, eid):
+                    # Also check meta.entity_id path via fake atom-like
+                    meta = getattr(topic, "meta", None) or {}
+                    te = str(meta.get("entity_id") or "") if isinstance(meta, dict) else ""
+                    if te and te != eid:
+                        continue
+                    if te == "" and eid != "default":
+                        # Untagged parked topics: do not inject into other entities
+                        continue
+            else:
+                # No topic object — drop for non-default to avoid cross-entity preview leak
+                if eid != "default":
+                    preview = str(h.get("text_preview") or "")
+                    # Allow only if preview has no foreign marker patterns — keep conservative
+                    continue
+            out.append(h)
+            if len(out) >= limit:
+                break
+        return out
+
+    def _rank_labeled_facts(
+        self, query: str, limit: int = 5, *, entity_id: str = ""
+    ) -> List[dict]:
         """Rank labeled facts by simple term overlap (for RRF / inject)."""
-        eid = self.entity_id or "default"
+        eid = self._eid(entity_id)
         facts = self.facts.get_facts(eid)
         if not facts:
             return []
@@ -518,25 +679,27 @@ class MemoryVNext:
         persona blob. Labeled facts live here (single picture) — not a second
         parallel EntityState flat dump.
         """
-        eid = entity_id or self.entity_id or "default"
+        eid = self._eid(entity_id)
         # Bump access on inject so recency/access scoring stays meaningful
         labeled = self.facts.inject_block(eid, bump_access=True)
-        core_lines = [f"- {k}: {v}" for k, v in self._core_facts.items()]
-        # Also surface is_core keys from store if slice empty
-        if not core_lines:
-            snap = self.facts.export_snapshot(eid)
-            for k in snap.get("working_memory_core") or []:
-                v = (snap.get("working_memory") or {}).get(k)
-                if v is not None:
-                    core_lines.append(f"- {k}: {v}")
-                    self._core_facts[k] = v
+        core = self._hydrate_core(eid)
+        core_lines = [f"- {k}: {v}" for k, v in core.items()]
+        # Working topic only if it belongs to this entity (never cross-entity)
+        working = ""
+        if self.wm.active is not None:
+            meta = getattr(self.wm.active, "meta", None) or {}
+            te = str(meta.get("entity_id") or "") if isinstance(meta, dict) else ""
+            owner = te or self._wm_entity_id or ""
+            if not owner or owner == eid:
+                working = self.wm.inject_block()
         return {
             "system_persona_only": "",  # caller keeps persona/hard rules here
             "core_identity": "\n".join(core_lines) if core_lines else "",
             "labeled_facts": labeled,
-            "working_topic": self.wm.inject_block(),
+            "working_topic": working,
             "memory_retrieved": "",  # filled by recall at turn time
             "peer_cards": "",
+            "entity_id": eid,
         }
 
     def inject_for_turn(
@@ -550,13 +713,14 @@ class MemoryVNext:
           - LTM hits: Abstract tier first; expand Overview only if budget allows
           - Soft truncate remaining retrieval under max_chars
 
-        No parallel legacy flat-key dump.
+        No parallel legacy flat-key dump. All retrieval is entity-scoped.
         """
+        eid = self._eid(entity_id)
         budget = max(200, int(max_chars))
         parts: List[str] = []
         used = 0
 
-        blocks = self.build_context_blocks(entity_id=entity_id)
+        blocks = self.build_context_blocks(entity_id=eid)
 
         # 1) Core / persona — always
         if blocks["core_identity"]:
@@ -577,7 +741,7 @@ class MemoryVNext:
                 parts.append(lf)
                 used += len(lf)
 
-        # 3) Active working topic (trim if tight)
+        # 3) Active working topic (trim if tight) — already entity-filtered
         if blocks.get("working_topic"):
             wt = blocks["working_topic"]
             remain = budget - used
@@ -589,9 +753,12 @@ class MemoryVNext:
 
         # 4) Progressive retrieval: Abstract first; Overview only if budget allows
         if query and (budget - used) > 100:
-            rec = self.recall(query, top_k=3, progressive=True)
+            rec = self.recall(query, top_k=3, progressive=True, entity_id=eid)
             mem_lines: List[str] = []
             for a in rec.get("atoms") or []:
+                # Defense in depth: skip foreign entity atoms
+                if not atom_belongs_to_entity(a, eid):
+                    continue
                 mem_lines.append(
                     f"- [atom/{a.get('logical_net')}] {a.get('content', '')[:200]}"
                 )
@@ -649,7 +816,7 @@ class MemoryVNext:
     # ── Status / maintenance ──
 
     def status(self) -> dict:
-        eid = self.entity_id or "default"
+        eid = self._eid()
         return {
             "vnext_enabled": memory_vnext_enabled(),
             "single_system": True,

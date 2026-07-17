@@ -134,6 +134,8 @@ class MemoryRequest(BaseModel):
     limit: int = 10
     memory_id: str = ""
     confirm: str = ""
+    # Optional cognitive entity scope for search/recall (Gate 0.2 isolation)
+    entity_id: str = ""
 
 class GatewayMessage(BaseModel):
     platform: str = Field(..., pattern="^(telegram|discord|slack|mqtt|custom)$")
@@ -568,75 +570,82 @@ class WorldwaveServer:
                     window = conversation_window or (
                         f"{platform}:{entity_id}" if entity_id else window
                     )
-                if entity_id:
-                    self.ww.set_entity(entity_id, platform)
 
-                # Notify Mascot: Start thinking
-                try:
-                    from core.mascot import mascot
-                    mascot.on_task_start(goal)
-                except Exception:
-                    pass
+                # Gate 0.2: bind entity for the ENTIRE request on ContextVar so
+                # memory inject/search/tools cannot see another entity if a
+                # process-global rebind races (or sequential rebind mid-flight).
+                from core.memory.entity_scope import bind_entity
 
-                if model or provider:
+                with bind_entity(entity_id or "default"):
+                    if entity_id:
+                        self.ww.set_entity(entity_id, platform)
+
+                    # Notify Mascot: Start thinking
                     try:
-                        llm_config = {
-                            "model": model or self.config.get("model", "deepseek/deepseek-v4-flash")
-                        }
-                        if provider:
-                            llm_config["provider"] = provider
-                        self.ww.llm = self.ww.llm.__class__(llm_config)
-                    except Exception as e:
-                        logger.warning("Model switch failed: %s", e)
+                        from core.mascot import mascot
+                        mascot.on_task_start(goal)
+                    except Exception:
+                        pass
 
-                self._last_result = self.ww.run(
-                    goal,
-                    max_spirals,
-                    image_path=image_path,
-                    reasoning_effort=reasoning_effort,
-                    conversation_window=window,
-                )
-                # Always surface entity_id + clean user-facing response for clients
-                if isinstance(self._last_result, dict):
-                    from core.public_reply import extract_user_response
+                    if model or provider:
+                        try:
+                            llm_config = {
+                                "model": model or self.config.get("model", "deepseek/deepseek-v4-flash")
+                            }
+                            if provider:
+                                llm_config["provider"] = provider
+                            self.ww.llm = self.ww.llm.__class__(llm_config)
+                        except Exception as e:
+                            logger.warning("Model switch failed: %s", e)
 
-                    self._last_result["entity_id"] = entity_id or ""
-                    # Institutional E2: every /ww/run client can prefer ``response``
-                    # without re-implementing leak filters. Debug fields (summary,
-                    # evaluation.reason) may still say "Reflex arc" — OK if not chat.
-                    self._last_result["response"] = extract_user_response(
-                        self._last_result
+                    self._last_result = self.ww.run(
+                        goal,
+                        max_spirals,
+                        image_path=image_path,
+                        reasoning_effort=reasoning_effort,
+                        conversation_window=window,
                     )
+                    # Always surface entity_id + clean user-facing response for clients
+                    if isinstance(self._last_result, dict):
+                        from core.public_reply import extract_user_response
 
-                # Persist entity state after task (set_entity + record_interaction
-                # already save; re-save ensures dirty in-memory edits land on disk)
-                if entity_id and self.entity_mgr:
+                        self._last_result["entity_id"] = entity_id or ""
+                        # Institutional E2: every /ww/run client can prefer ``response``
+                        # without re-implementing leak filters. Debug fields (summary,
+                        # evaluation.reason) may still say "Reflex arc" — OK if not chat.
+                        self._last_result["response"] = extract_user_response(
+                            self._last_result
+                        )
+
+                    # Persist entity state after task (set_entity + record_interaction
+                    # already save; re-save ensures dirty in-memory edits land on disk)
+                    if entity_id and self.entity_mgr:
+                        try:
+                            state = self.entity_mgr.get(entity_id)
+                            if platform:
+                                state.last_platform = platform
+                            self.entity_mgr.save(state)
+                        except Exception as e:
+                            logger.warning("entity state save failed: %s", e)
+
+                    self._task_history.append({
+                        "goal": goal[:100],
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "status": self._last_result.get("status", "?"),
+                        "spirals": self._last_result.get("spirals_completed", 0),
+                        "entity_id": entity_id,
+                        "platform": platform,
+                        "window": window,
+                    })
+
                     try:
-                        state = self.entity_mgr.get(entity_id)
-                        if platform:
-                            state.last_platform = platform
-                        self.entity_mgr.save(state)
-                    except Exception as e:
-                        logger.warning("entity state save failed: %s", e)
-
-                self._task_history.append({
-                    "goal": goal[:100],
-                    "time": datetime.now(timezone.utc).isoformat(),
-                    "status": self._last_result.get("status", "?"),
-                    "spirals": self._last_result.get("spirals_completed", 0),
-                    "entity_id": entity_id,
-                    "platform": platform,
-                    "window": window,
-                })
-
-                try:
-                    from core.mascot import mascot
-                    success = self._last_result.get("status") in ("completed", "success")
-                    mascot.on_task_complete(
-                        success, str(self._last_result.get("result", ""))[:80]
-                    )
-                except Exception:
-                    pass
+                        from core.mascot import mascot
+                        success = self._last_result.get("status") in ("completed", "success")
+                        mascot.on_task_complete(
+                            success, str(self._last_result.get("result", ""))[:80]
+                        )
+                    except Exception:
+                        pass
 
                 return self._last_result
             finally:
@@ -1271,6 +1280,10 @@ def stop_auto():
 @app.post("/ww/memory")
 def memory_op(req: MemoryRequest):
     """Memory Operations (Backward Compatible: recall/search/snapshot/sleep/probe/store + update/delete)"""
+    from core.memory.entity_scope import bind_entity
+
+    # Scope search/recall to request entity when provided (Gate 0.2)
+    eid = (req.entity_id or "").strip()
     if req.action == "store":
         mid = server.memory.store_text(
             content=req.content,
@@ -1279,8 +1292,14 @@ def memory_op(req: MemoryRequest):
         )
         return {"memory_id": mid, "status": "stored"}
     elif req.action == "search":
-        results = server.memory.search(req.query, limit=req.limit)
-        return {"results": [a.to_dict() for a in results]}
+        with bind_entity(eid or "default"):
+            if eid and getattr(server.memory, "vnext", None) is not None:
+                try:
+                    server.memory.vnext.set_entity(eid)
+                except Exception:
+                    pass
+            results = server.memory.search(req.query, limit=req.limit, entity_id=eid)
+        return {"results": [a.to_dict() for a in results], "entity_id": eid or ""}
     elif req.action == "snapshot":
         return server.memory.snapshot(limit=req.limit)
     elif req.action == "sleep":
