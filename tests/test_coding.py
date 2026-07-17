@@ -883,7 +883,7 @@ class TestPMIntegration:
 
     def test_module_version(self):
         import coding
-        assert coding.PM_VERSION == "0.7.0"
+        assert coding.PM_VERSION == "0.8.0"
 
     def test_get_all_tools_returns_60(self):
         import coding
@@ -897,9 +897,10 @@ class TestPMIntegration:
     def test_get_status(self):
         import coding
         status = coding.get_status()
-        assert status["version"] == "0.7.0"
+        assert status["version"] == "0.8.0"
         assert status["tools_available"] >= 60
-        assert len(status["modules"]) == 14
+        assert len(status["modules"]) >= 14
+        assert "code_graph" in status["modules"]
 
     def test_all_tools_have_unique_names(self):
         import coding
@@ -915,6 +916,7 @@ class TestPMIntegration:
             assert t["category"] in (
                 "code_aci", "code_lsp", "code_planning",
                 "code_repair", "code_sandbox", "code_search", "code_tools",
+                "code_graph",
             ), f"Tool {t['name']} has unknown category: {t['category']}"
 
     def test_tool_names_follow_convention(self):
