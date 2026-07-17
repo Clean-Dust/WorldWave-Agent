@@ -377,20 +377,12 @@ def run_product(report: Report) -> None:
     base = (
         os.environ.get("WW_PROVE_URL") or "http://127.0.0.1:9300"
     ).rstrip("/")
-    key = os.environ.get("WW_API_KEY", "")
-    if not key:
-        # Try default key file
-        try:
-            p = Path.home() / ".ww" / "api_key"
-            if p.is_file():
-                key = p.read_text(encoding="utf-8").strip()
-        except Exception:
-            key = ""
+    key = _resolve_prove_api_key()
     if not base or not key:
         report.add(
             "A1–A4 product path",
             False,
-            "set WW_PROVE_URL and WW_API_KEY",
+            "set WW_PROVE_URL and WW_API_KEY (or ~/.ww/api_key)",
             "n/a",
         )
         return
@@ -1295,11 +1287,40 @@ def run_mechanism(report: Report) -> None:
     run_b_dream(report)
 
 
+def _resolve_prove_api_key() -> str:
+    """WW_API_KEY env, else ~/.ww/api_key (same as product mode)."""
+    key = (os.environ.get("WW_API_KEY") or "").strip()
+    if key:
+        return key
+    try:
+        p = Path.home() / ".ww" / "api_key"
+        if p.is_file():
+            key = p.read_text(encoding="utf-8").strip()
+            if key:
+                os.environ["WW_API_KEY"] = key
+                return key
+    except Exception:
+        pass
+    try:
+        from core.ww_api_key import resolve_ww_api_key
+
+        key = (resolve_ww_api_key() or "").strip()
+        if key:
+            return key
+    except Exception:
+        pass
+    return ""
+
+
 def _live_client() -> LiveClient:
-    base = os.environ.get("WW_PROVE_URL", "").rstrip("/")
-    key = os.environ.get("WW_API_KEY", "")
+    base = (
+        os.environ.get("WW_PROVE_URL") or "http://127.0.0.1:9300"
+    ).rstrip("/")
+    key = _resolve_prove_api_key()
     if not base or not key:
-        raise RuntimeError("set WW_PROVE_URL and WW_API_KEY")
+        raise RuntimeError(
+            "set WW_PROVE_URL and WW_API_KEY (or place key in ~/.ww/api_key)"
+        )
     return LiveClient(base, key, product_mode=True)
 
 
@@ -1349,8 +1370,10 @@ def run_restart(report: Report) -> None:
             )
             return
         # wait health
-        base = os.environ["WW_PROVE_URL"].rstrip("/")
-        key = os.environ["WW_API_KEY"]
+        base = (
+            os.environ.get("WW_PROVE_URL") or "http://127.0.0.1:9300"
+        ).rstrip("/")
+        key = _resolve_prove_api_key()
         healthy = False
         for _ in range(30):
             try:

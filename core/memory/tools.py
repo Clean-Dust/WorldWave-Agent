@@ -104,6 +104,16 @@ _RE_REMEMBER_COLON = re.compile(
     r"(?:please\s+)?remember\s*[:\-]\s*(.+)$",
     re.I | re.S,
 )
+# "Please remember this exact fact: …" / "remember this fact: …"
+_RE_REMEMBER_EXACT_FACT = re.compile(
+    r"(?:please\s+)?remember\s+this\s+(?:exact\s+)?fact\s*[:\-]\s*(.+)$",
+    re.I | re.S,
+)
+# Free-form single blob when model passes one string arg only
+_RE_FACT_IS = re.compile(
+    r"(?:my\s+)?([A-Za-z][A-Za-z0-9 _\-]{1,40}?)\s+(?:is|are|=)\s+(.+)$",
+    re.I | re.S,
+)
 _RE_STORE_THAT = re.compile(
     r"^(?:i\s+)?(?:like|hate|prefer|use|work\s+as|live\s+in)\s+(.+?)(?:\.\s*store.*)?$",
     re.I,
@@ -248,7 +258,25 @@ def extract_remember_facts(utterance: str) -> list:
                 best = max(vals, key=_val_score)
                 _add(store_key, best)
 
-    # 6) Remember: my X is Y  (skip if label already captured as bare k=v)
+    # 6) "Please remember this exact fact: …" before generic remember: patterns
+    m = _RE_REMEMBER_EXACT_FACT.search(text)
+    if m:
+        body = m.group(1).strip().strip(".'\"")
+        if body and len(body) < 500:
+            m2 = _RE_FACT_IS.search(body)
+            if m2 and "=" not in m2.group(1):
+                label, value = m2.group(1).strip(), m2.group(2).strip()
+                _add(_map_label_to_key(label, "user_fact"), value)
+            elif not found:
+                # Whole blob as a durable fact (real users / BEAM ingest)
+                key = "user_fact"
+                for rx, mapped in _NL_KEY_MAP:
+                    if rx.search(body):
+                        key = mapped
+                        break
+                _add(key, body)
+
+    # 7) Remember: my X is Y  (skip if label already captured as bare k=v)
     m = _RE_REMEMBER_IS.search(text)
     if m:
         label, value = m.group(1).strip(), m.group(2).strip()
@@ -258,7 +286,7 @@ def extract_remember_facts(utterance: str) -> list:
             key = _map_label_to_key(label, "fact")
             _add(key, value)
 
-    # 7) Remember: <free text>
+    # 8) Remember: <free text>
     m = _RE_REMEMBER_COLON.search(text)
     if m and not found:
         body = m.group(1).strip().strip(".'\"")
@@ -277,12 +305,23 @@ def extract_remember_facts(utterance: str) -> list:
                         break
                 _add(key, body)
 
-    # 8) "I like X. Store that."
+    # 9) "I like X. Store that."
     low = text.lower()
     if not found and ("store" in low or "remember" in low):
         m = _RE_STORE_THAT.match(text.strip())
         if m:
             _add("preference", m.group(1).strip().strip(".'\""))
+
+    # 10) Last resort: free-form "X is Y" when remember intent present
+    if not found and ("remember" in low or "store" in low or "key=" in low):
+        m2 = _RE_FACT_IS.search(text)
+        if m2 and "=" not in m2.group(1):
+            label, value = m2.group(1).strip(), m2.group(2).strip()
+            # Avoid capturing "this exact fact is …" as key
+            if label.lower() not in {
+                "this exact fact", "this fact", "the fact", "fact",
+            }:
+                _add(_map_label_to_key(label, "user_fact"), value)
 
     return found
 

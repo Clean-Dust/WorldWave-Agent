@@ -91,6 +91,61 @@ def test_extract_key_value_explicit():
     assert "PROD-MEM-999" in v
 
 
+def test_extract_remember_this_exact_fact():
+    """Natural language without key=/value= must still extract."""
+    from core.memory.tools import extract_remember_facts
+
+    utt = "Please remember this exact fact: my secret code is ALPHA99"
+    facts = extract_remember_facts(utt)
+    assert facts, "expected NL exact-fact extract"
+    keys = {f[0] for f in facts}
+    vals = " ".join(f[1] for f in facts)
+    assert "ALPHA99" in vals
+    # key should be mapped (user_name/secret-ish) or user_fact
+    assert keys
+
+
+def test_remember_handler_free_blob_and_multi(tmp_path, monkeypatch):
+    """Handler stores free-text and multi-fact without silent no-op."""
+    monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
+    from core.memory.entity_scope import bind_entity
+    from tools.registry import _remember_handler
+
+    mv = MemoryVNext(data_dir=str(tmp_path / "rem_multi"), start_dreaming=False)
+    try:
+        eid = "ent_nl_multi"
+        mem = MagicMock()
+        mem.vnext = mv
+        tools = MemoryTools(memory_system=mem, entity_id=eid)
+        # Wire active ww so handler finds tools
+        import tools.registry as reg
+
+        class _WW:
+            _memory_tools = tools
+            _last_goal = (
+                "Please remember preference_marker=BeamPrefNL1 and "
+                "iron_rule always honor BeamIronNL1. Remember both."
+            )
+            _current_goal = _last_goal
+
+        monkeypatch.setattr(reg, "_active_ww", lambda: _WW())
+        monkeypatch.setattr(reg, "_ensure_memory_tools", lambda ww: tools)
+
+        with bind_entity(eid):
+            out = _remember_handler()  # empty args → extract from goal
+            assert out.get("success") is True
+            assert out.get("stored_count", 0) >= 1
+            # Free blob path
+            out2 = _remember_handler(input="Please remember this exact fact: my city is ZetaNL")
+            assert out2.get("success") is True
+    finally:
+        if hasattr(mv, "close"):
+            try:
+                mv.close()
+            except Exception:
+                pass
+
+
 # ── Gate 0.5: preference / iron / timeline extract reliability ──
 
 

@@ -371,6 +371,50 @@ def test_extract_non_dict_returns_empty():
     assert extract_user_response([]) == ""
 
 
+def test_extract_rejects_metrics_summary_dict():
+    """Gate 0.6: StateManager.summary() must never become user response."""
+    from core.public_reply import is_metrics_dump
+
+    metrics = {
+        "session_id": "72cbe186ee47",
+        "current_spiral": 194,
+        "current_phase": "learn",
+        "total_checkpoints": 80,
+        "total_spirals": 194,
+        "active_interrupts": 1,
+        "interrupt_history": [
+            {
+                "reason": "rewind: phase 0 repeated 68 times",
+                "phase": "learn",
+                "spiral": 194,
+            }
+        ],
+    }
+    assert is_metrics_dump(metrics) is True
+    result = {
+        "status": "completed",
+        "response": "",
+        "summary": metrics,
+        "results": [],
+        "spirals_completed": 0,
+        "session_id": "72cbe186ee47",
+    }
+    assert extract_user_response(result) == ""
+    # Even if someone stuffed metrics into top-level response as string
+    import json
+
+    result2 = dict(result)
+    result2["response"] = json.dumps(metrics)
+    assert extract_user_response(result2) == ""
+    # Clean recovery text still works
+    result3 = {
+        "response": "Please try again — your memory is intact.",
+        "summary": metrics,
+        "results": [],
+    }
+    assert "try again" in extract_user_response(result3).lower()
+
+
 # ── collapse_multi_greeting ──────────────────────────────────────
 
 

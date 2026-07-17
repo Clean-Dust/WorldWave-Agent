@@ -4,6 +4,7 @@ SOUL.md
 
 # Runtime data
 data/
+results/
 **/archive.jsonl
 __pycache__/
 *.pyc

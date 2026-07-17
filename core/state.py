@@ -152,8 +152,72 @@ class StateManager:
             "phase": self.current_phase,
             "spiral": self.current_spiral,
         })
+        # Cap interrupt history so metrics never balloon across long sessions
+        hist = self.global_context.get("interrupts") or []
+        if len(hist) > 50:
+            self.global_context["interrupts"] = hist[-50:]
         self._save_session()
         return cp
+
+    def clear_interrupts(self) -> int:
+        """Clear active interrupt flags so a new task can proceed.
+
+        Returns number of interrupts cleared. History is retained for metrics
+        but no longer blocks ``get_last_checkpoint()``.
+        """
+        n = 0
+        for cp in self.checkpoints:
+            if cp.interrupted:
+                cp.interrupted = False
+                n += 1
+        return n
+
+    def prepare_for_run(self, conversation_window: str = "") -> str:
+        """Prepare process-global state for a new ``/ww/run`` task.
+
+        Root-cause fix (Gate 0.6): a shared StateManager previously kept
+        rewind/interrupt checkpoints forever. Subsequent runs on any
+        conversation hit ``get_last_checkpoint()`` and returned
+        status=completed with empty results and a metrics-dict summary.
+
+        Rules:
+        - Each task call clears active interrupts (HTTP runs are not
+          mid-spiral HITL resumes unless explicitly resumed).
+        - When ``conversation_window`` changes, mint a fresh session_id so
+          one poisoned chat cannot stick another window to the same id.
+        - Same window: still clear interrupts; keep session_id for continuity
+          only when there is no active interrupt poison.
+        """
+        window = (conversation_window or "").strip()
+        prev_window = str(self.global_context.get("conversation_window") or "")
+        had_active = any(c.interrupted for c in self.checkpoints)
+        self.clear_interrupts()
+
+        rotate = False
+        if window and window != prev_window:
+            rotate = True
+        elif had_active:
+            # Stale rewind/interrupt must not stick session_id across tasks
+            rotate = True
+
+        if rotate:
+            self.session_id = uuid.uuid4().hex[:12]
+            self.current_spiral = 0
+            self.current_phase = "idle"
+            self.current = None
+            # Drop checkpoint chain (history already logged); keep spirals light
+            self.checkpoints = []
+            # Preserve total_spirals count only as soft metric; reset per-session
+            self.global_context = {
+                "session_started": datetime.now(timezone.utc).isoformat(),
+                "total_spirals": 0,
+                "interrupts": [],
+                "conversation_window": window,
+            }
+        else:
+            self.global_context["conversation_window"] = window or prev_window
+
+        return self.session_id
     
     def resume(self, checkpoint_id: str, input_data: Dict[str, Any]):
         """from breakpoint recovery."""
@@ -240,7 +304,12 @@ class StateManager:
             json.dump(data, f, indent=2, default=str)
     
     def _load_last_session(self):
-        """try to load the latest session."""
+        """try to load the latest session.
+
+        Gate 0.6: never adopt a global latest session that has active
+        interrupts or belongs to a different conversation_window. Process
+        restarts start clean unless a healthy same-window session exists.
+        """
         if not os.path.isdir(self.persist_dir):
             return
         sessions = sorted(
@@ -253,10 +322,20 @@ class StateManager:
         try:
             with open(path) as f:
                 data = json.load(f)
-            # Discard interrupted sessions — don't carry stale errors forward
             cps = data.get("checkpoints", [])
+            # Discard interrupted / poisoned sessions
             if cps and any(c.get("interrupted") for c in cps):
-                # Remove the stale session file so it won't reload again
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                return
+            # Discard sessions that still list interrupt history with high count
+            # (legacy poison from pre-0.6 rewinds that left interrupted=False
+            # but left the process stuck via other paths)
+            gctx = data.get("global_context") or {}
+            interrupts = gctx.get("interrupts") or []
+            if len(interrupts) >= 10:
                 try:
                     os.remove(path)
                 except OSError:
@@ -264,10 +343,12 @@ class StateManager:
                 return
             self.session_id = data.get("session_id", self.session_id)
             self.current_spiral = data.get("current_spiral", 0)
-            self.global_context = data.get("global_context", self.global_context)
+            self.global_context = gctx if gctx else self.global_context
             # Do not load complete spirals (avoid memory bloat)
-            # Only keep the latest checkpoint
+            # Only keep non-interrupted checkpoints
             if cps:
-                self.checkpoints = [Checkpoint(**c) for c in cps]
-        except (json.JSONDecodeError, KeyError):
+                self.checkpoints = [
+                    Checkpoint(**c) for c in cps if not c.get("interrupted")
+                ]
+        except (json.JSONDecodeError, KeyError, TypeError):
             pass

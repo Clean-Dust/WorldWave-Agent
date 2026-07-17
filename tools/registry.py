@@ -1259,9 +1259,11 @@ def _remember_handler(
 ) -> Dict:
     """Store a fact in entity memory (self-editing).
 
-    Empty key/value never claims success. One auto-repair attempt may extract
-    key=value from the active goal / user utterance when the model called
-    remember with missing arguments.
+    Empty key/value never claims success. Auto-repair derives key/value from:
+    - aliases (content/fact/text/input/query)
+    - a single free-text string arg (models often omit structured args)
+    - the active goal / user utterance (NL remember)
+    Multi-fact utterances store all extracted pairs (not silent no-op).
     """
     # Models sometimes nest args or pass content/fact aliases
     if not key and isinstance(extra.get("name"), str):
@@ -1272,6 +1274,21 @@ def _remember_handler(
         value = extra["fact"]
     if not key and not value and isinstance(extra.get("text"), str):
         value = extra["text"]
+    # Single free-text blob (input / query / message / freeform)
+    free_blob = ""
+    for alias in ("input", "query", "message", "freeform", "utterance", "text"):
+        raw = extra.get(alias)
+        if isinstance(raw, str) and raw.strip():
+            free_blob = raw.strip()
+            break
+    # Some adapters pass a lone positional-style "args" string
+    if not free_blob and isinstance(extra.get("args"), str):
+        free_blob = extra["args"].strip()
+    if not free_blob and isinstance(key, str) and key.strip() and not value:
+        # Model put whole fact into key only
+        if " " in key or "=" in key or ":" in key or len(key) > 48:
+            free_blob = key
+            key = ""
 
     key = (key or "").strip() if isinstance(key, str) else str(key or "").strip()
     value = (value or "").strip() if isinstance(value, str) else str(value or "").strip()
@@ -1279,50 +1296,65 @@ def _remember_handler(
     ww = _active_ww()
     mt = _ensure_memory_tools(ww)
 
-    # Auto-repair once: empty tool call → extract from goal utterance
-    if (not key or not value) and ww is not None:
-        utterance = ""
+    def _utterance() -> str:
+        if free_blob:
+            return free_blob
+        if ww is None:
+            return ""
         for attr in ("_last_goal", "_current_goal", "last_goal"):
             u = getattr(ww, attr, None)
             if isinstance(u, str) and u.strip():
-                utterance = u
-                break
-        if not utterance:
-            try:
-                state = getattr(ww, "state", None)
-                if state is not None:
-                    utterance = str(getattr(state, "goal", "") or "")
-            except Exception:
-                pass
-        if utterance:
-            try:
-                from core.memory.tools import (
-                    default_kind_for_key,
-                    extract_remember_facts,
-                )
+                ut = u
+                if "[Current Request]" in ut:
+                    ut = ut.split("[Current Request]", 1)[-1].strip()
+                return ut
+        try:
+            state = getattr(ww, "state", None)
+            if state is not None:
+                return str(getattr(state, "goal", "") or "")
+        except Exception:
+            pass
+        return ""
 
-                facts = extract_remember_facts(utterance)
-            except Exception:
-                facts = []
-                default_kind_for_key = None  # type: ignore
-            if facts:
-                pick = facts[0]
-                if key:
-                    for fk, fv, fkind in facts:
-                        if fk == key:
-                            pick = (fk, fv, fkind)
-                            break
-                rk, rv, rkind = pick
-                if not key:
-                    key = rk
-                if not value:
-                    value = rv
-                if not (kind or "").strip() and rkind:
-                    kind = rkind
-                elif not (kind or "").strip() and default_kind_for_key is not None:
-                    kind = default_kind_for_key(key)
+    # Collect all facts to store (multi-fact must not silently no-op)
+    facts_to_store = []
 
-    if not key or not value:
+    if key and value:
+        facts_to_store.append((key, value, kind or ""))
+    else:
+        utterance = _utterance()
+        try:
+            from core.memory.tools import (
+                default_kind_for_key,
+                extract_remember_facts,
+            )
+
+            extracted = extract_remember_facts(utterance) if utterance else []
+        except Exception:
+            extracted = []
+            default_kind_for_key = None  # type: ignore
+        if extracted:
+            if key:
+                matched = [(fk, fv, fkind) for fk, fv, fkind in extracted if fk == key]
+                facts_to_store = matched or list(extracted)
+            else:
+                facts_to_store = list(extracted)
+            fixed = []
+            for fk, fv, fkind in facts_to_store:
+                knd = fkind or kind or ""
+                if not knd and default_kind_for_key is not None:
+                    try:
+                        knd = default_kind_for_key(fk)
+                    except Exception:
+                        knd = ""
+                fixed.append((fk, fv, knd))
+            facts_to_store = fixed
+        elif free_blob and not key:
+            facts_to_store.append(("user_fact", free_blob, kind or "outcome"))
+        elif free_blob and key and not value:
+            facts_to_store.append((key, free_blob, kind or ""))
+
+    if not facts_to_store:
         return {
             "success": False,
             "status": "error",
@@ -1335,14 +1367,6 @@ def _remember_handler(
             ),
         }
 
-    if not (kind or "").strip():
-        try:
-            from core.memory.tools import default_kind_for_key
-
-            kind = default_kind_for_key(key)
-        except Exception:
-            kind = kind or ""
-
     if mt is None:
         return {
             "success": False,
@@ -1351,18 +1375,61 @@ def _remember_handler(
             "message": "no memory tools / entity context for remember",
             "output": "remember failed: memory system not available",
         }
+
     try:
-        return mt.remember(
-            key, value, category, is_core=bool(is_core), kind=kind or ""
-        )
-    except Exception as e:
+        from core.memory.tools import default_kind_for_key
+    except Exception:
+        default_kind_for_key = None  # type: ignore
+
+    stored_keys = []
+    last = None
+    errors = []
+    for fk, fv, fkind in facts_to_store:
+        fk = (fk or "").strip()
+        fv = (fv or "").strip()
+        if not fk or not fv:
+            continue
+        knd = (fkind or kind or "").strip()
+        if not knd and default_kind_for_key is not None:
+            try:
+                knd = default_kind_for_key(fk)
+            except Exception:
+                knd = ""
+        try:
+            last = mt.remember(
+                fk, fv, category, is_core=bool(is_core), kind=knd or ""
+            )
+            if last.get("success") or last.get("status") == "stored":
+                stored_keys.append(fk)
+            else:
+                errors.append(str(last.get("error") or last.get("output") or fk))
+        except Exception as e:
+            errors.append(str(e))
+
+    if not stored_keys:
+        err = errors[0] if errors else "remember failed: nothing stored"
         return {
             "success": False,
             "status": "error",
-            "error": str(e),
-            "message": str(e),
-            "output": f"remember failed: {e}",
+            "error": err,
+            "message": err,
+            "output": f"remember failed: {err}",
         }
+
+    if last is None:
+        last = {"success": True, "status": "stored"}
+    else:
+        last = dict(last)
+    last["success"] = True
+    last["status"] = "stored"
+    last["stored_count"] = len(stored_keys)
+    last["keys"] = stored_keys
+    if len(stored_keys) > 1:
+        last["output"] = f"REMEMBERED:{len(stored_keys)} facts ({', '.join(stored_keys)})"
+    elif last.get("output") in (None, ""):
+        last["output"] = f"REMEMBERED:{facts_to_store[0][1]}"
+    return last
+
 
 
 def _forget_handler(key: str = "", **extra) -> Dict:

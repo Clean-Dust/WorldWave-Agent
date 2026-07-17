@@ -71,6 +71,50 @@ _SPIRAL_JSON_MARKERS = (
     "\"status\":\"completed\"",
 )
 
+# Gate 0.6: StateManager.summary() metrics must never become chat text
+_METRICS_MARKERS = (
+    "active_interrupts",
+    "interrupt_history",
+    "total_checkpoints",
+    "current_spiral",
+    "total_spirals",
+)
+
+
+def is_metrics_dump(text: Any) -> bool:
+    """True if value is (or stringifies as) a spiral state metrics dict."""
+    if isinstance(text, dict):
+        keys = set(text.keys())
+        if keys & {
+            "active_interrupts",
+            "interrupt_history",
+            "total_checkpoints",
+            "session_id",
+            "current_spiral",
+            "total_spirals",
+        }:
+            # Metrics-shaped dict (not a normal evaluation payload)
+            if "active_interrupts" in keys or "interrupt_history" in keys:
+                return True
+            if "total_checkpoints" in keys and "current_phase" in keys:
+                return True
+        return False
+    if not isinstance(text, str):
+        return False
+    s = text.strip()
+    if not s:
+        return False
+    lower = s.lower()
+    # Dict-like string from str(state.summary()) or json.dumps
+    hit = sum(1 for m in _METRICS_MARKERS if m in lower)
+    if hit >= 2:
+        return True
+    if "active_interrupts" in lower and "interrupt" in lower:
+        return True
+    if "rewind:" in lower and "phase" in lower and "repeated" in lower:
+        return True
+    return False
+
 
 def is_dump_like_text(text: Any) -> bool:
     """True if text looks like a raw memory/tool dump or spiral JSON, not chat.
@@ -79,12 +123,20 @@ def is_dump_like_text(text: Any) -> bool:
     - multi-line ``snake_key: value`` blocks (≥2 KV lines)
     - text that starts with a common fact key pattern and is mostly KV lines
     - JSON that looks like a full ``/ww/run`` result body
+    - StateManager metrics dumps (active_interrupts / interrupt_history)
     """
-    if not text or not isinstance(text, str):
+    if text is None:
+        return False
+    if isinstance(text, dict):
+        return is_metrics_dump(text)
+    if not isinstance(text, str):
         return False
     s = text.strip()
     if not s:
         return False
+
+    if is_metrics_dump(s):
+        return True
 
     lower = s.lower()
     # Full spiral / run result JSON
@@ -117,7 +169,11 @@ def is_dump_like_text(text: Any) -> bool:
 
 def is_internal_response_text(text: Any) -> bool:
     """True if text looks like an internal status leak, not user-facing content."""
-    if not text or not isinstance(text, str):
+    if text is None:
+        return True
+    if isinstance(text, dict):
+        return True  # never promote raw dicts (metrics / tool payloads)
+    if not isinstance(text, str):
         return True
     s = text.strip()
     if not s:
@@ -160,11 +216,16 @@ def collapse_multi_greeting(text: Any) -> str:
 
 
 def _clean(val: Any) -> str:
-    """Return stripped user-safe string, or empty if unusable/internal/dump."""
+    """Return stripped user-safe string, or empty if unusable/internal/dump.
+
+    Gate 0.6: dict metrics / non-string dumps never become user response.
+    """
+    if isinstance(val, dict):
+        return ""
     if not isinstance(val, str):
         return ""
     s = val.strip()
-    if not s or is_internal_response_text(s):
+    if not s or is_internal_response_text(s) or is_metrics_dump(s):
         return ""
     return collapse_multi_greeting(s)
 
@@ -202,13 +263,21 @@ def extract_user_response(result: Optional[Dict[str, Any]]) -> str:
         if got:
             return got
 
-    # 2. evaluation.response / evaluation.summary (skip internal)
+    # Reject top-level summary when it is a metrics dict (legacy poisoned runs)
+    top_summary = result.get("summary")
+    if is_metrics_dump(top_summary):
+        pass  # never promote
+
+    # 2. evaluation.response / evaluation.summary (skip internal / metrics)
     for r in _iter_spirals(result):
         ev = r.get("evaluation") or {}
         if not isinstance(ev, dict):
             continue
         for key in _EVAL_KEYS:
-            got = _clean(ev.get(key))
+            raw = ev.get(key)
+            if is_metrics_dump(raw):
+                continue
+            got = _clean(raw)
             if got:
                 return got
 

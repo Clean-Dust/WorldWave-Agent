@@ -629,11 +629,31 @@ class Worldwave:
     def _repair_remember_params(
         self, params: Optional[Dict[str, Any]], goal: str = ""
     ) -> Dict[str, Any]:
-        """If remember was called with empty key/value, try one extraction repair."""
+        """If remember was called with empty key/value, try one extraction repair.
+
+        Also accepts single free-text args (input/text/query) and fact blobs
+        stuffed into ``key`` alone — real users/BEAM will not always send
+        structured key=/value=.
+        """
         p = dict(params or {})
         key = str(p.get("key") or "").strip()
-        value = str(p.get("value") or p.get("content") or p.get("fact") or "").strip()
+        value = str(
+            p.get("value")
+            or p.get("content")
+            or p.get("fact")
+            or p.get("input")
+            or p.get("text")
+            or p.get("query")
+            or ""
+        ).strip()
         kind = str(p.get("kind") or "").strip()
+        # Whole fact in key only (or key is a long free sentence)
+        if key and not value and (
+            " " in key or "=" in key or ":" in key or len(key) > 48
+        ):
+            value = key
+            key = ""
+            p.pop("key", None)
         if key and value:
             p["key"] = key
             p["value"] = value
@@ -645,7 +665,7 @@ class Worldwave:
                 except Exception:
                     pass
             return p
-        utterance = goal or getattr(self, "_last_goal", "") or ""
+        utterance = goal or getattr(self, "_last_goal", "") or value or ""
         # Prefer the raw user request section if entity wrap is present
         if "[Current Request]" in utterance:
             utterance = utterance.split("[Current Request]", 1)[-1].strip()
@@ -673,6 +693,14 @@ class Worldwave:
                 p["kind"] = fkind
             elif not kind and default_kind_for_key is not None:
                 p["kind"] = default_kind_for_key(p.get("key") or fk)
+            # Stash multi-fact list for handler / internal path (best-effort)
+            if len(facts) > 1:
+                p["_extracted_facts"] = [
+                    {"key": a, "value": b, "kind": c} for a, b, c in facts
+                ]
+        elif value and not key:
+            p["key"] = "user_fact"
+            p["value"] = value
         return p
 
     def _reflex_synthesize_reply(
@@ -994,7 +1022,20 @@ class Worldwave:
         self.running = True
 
         # Per-user/chat conversation window (do not share default session across users)
-        conv_window = conversation_window or self.state.session_id
+        conv_window = conversation_window or ""
+        # Gate 0.6: clear poisoned interrupt state BEFORE any spiral work.
+        # Without this, a prior rewind leaves active_interrupts=1 and the next
+        # /ww/run (same or different window) exits with spirals_completed=0
+        # and empty response while summary is a metrics dict.
+        try:
+            if hasattr(self.state, "prepare_for_run"):
+                self.state.prepare_for_run(conv_window)
+            elif hasattr(self.state, "clear_interrupts"):
+                self.state.clear_interrupts()
+        except Exception as prep_err:
+            logger.debug("prepare_for_run skipped: %s", prep_err)
+        if not conv_window:
+            conv_window = self.state.session_id
 
         # Raw user goal (before entity wrap) — used for passive memory ingest + topic split
         user_goal_raw = goal
@@ -1578,20 +1619,24 @@ class Worldwave:
             self._log("## Audit failure (Non-critical): " + str(e))
         
         # ── Record entity interaction (P0: Entity continuity) ──
-        summary = self.state.summary()
+        state_metrics = self.state.summary()
         if self._current_entity_id:
-            summary_text = summary.get("result_summary", summary.get("final_response", "")) if isinstance(summary, dict) else str(summary)
+            summary_text = (
+                state_metrics.get("result_summary", state_metrics.get("final_response", ""))
+                if isinstance(state_metrics, dict)
+                else str(state_metrics)
+            )
             self._record_entity_interaction(summary_text)
 
         # ── Passive lossless: assistant/outcome turn into topic body ──
         try:
             if self.memory is not None and hasattr(self.memory, "ingest_turn"):
                 asst_text = ""
-                if isinstance(summary, dict):
+                if isinstance(state_metrics, dict):
                     asst_text = str(
-                        summary.get("final_response")
-                        or summary.get("result_summary")
-                        or summary.get("response")
+                        state_metrics.get("final_response")
+                        or state_metrics.get("result_summary")
+                        or state_metrics.get("response")
                         or ""
                     )
                 if not asst_text and results:
@@ -1608,27 +1653,75 @@ class Worldwave:
         except Exception as e:
             logger.debug("ingest_turn (assistant) skipped: %s", e)
 
+        last_cp = self.state.get_last_checkpoint()
+        is_true_interrupt = bool(
+            last_cp
+            and not (last_cp.interrupt_reason or "").startswith("rewind:")
+        )
+        # Human-readable summary only — never put metrics/interrupt JSON here
+        if results:
+            last = results[-1] if results else {}
+            ev = (last.get("evaluation") or {}) if isinstance(last, dict) else {}
+            summary_str = str(
+                ev.get("reason")
+                or ev.get("response")
+                or last.get("summary")
+                or f"Completed {len(results)} spiral(s)"
+            )
+        elif last_cp and (last_cp.interrupt_reason or "").startswith("rewind:"):
+            summary_str = (
+                "I hit an internal loop guard and stopped early. "
+                "Please restate your request and I will try a clean pass."
+            )
+        elif is_true_interrupt:
+            summary_str = (
+                "This task was interrupted. Please send your request again to continue."
+            )
+        else:
+            summary_str = "No spiral steps completed for this request."
+
         out = {
-            "status": "interrupted" if (self.state.get_last_checkpoint() and 
-                       not (self.state.get_last_checkpoint().interrupt_reason or "").startswith("rewind:")) 
-                       else "completed",
+            "status": "interrupted" if is_true_interrupt else "completed",
             "spirals_completed": len(results),
             "results": results,
             "session_id": self.state.session_id,
-            "summary": summary,
+            "summary": summary_str,
+            # Debug metrics stay under a non-user key (Gate 0.6)
+            "state_metrics": state_metrics if isinstance(state_metrics, dict) else {},
         }
-        # Gate 0.4: every successful spiral/reflex path with reply-tool text
-        # must expose a non-empty top-level ``response`` (server re-extracts too).
+        # Gate 0.4 / 0.6: reply-tool text → response; empty interrupted/rewound
+        # runs get a user-facing recovery message (never metrics dump).
+        recovery = (
+            "I couldn't finish that pass cleanly (internal guard). "
+            "Please try again — your memory and conversation are intact."
+        )
         try:
             from core.public_reply import extract_user_response
 
             filled = extract_user_response(out)
             if filled:
                 out["response"] = filled
-            elif "response" not in out:
+            elif not results:
+                # Empty spiral / stuck session recovery — never blank product reply
+                out["response"] = recovery if (last_cp or not results) else summary_str
+                # Also attach as synthetic reflex_text so extract_user_response
+                # clients that re-run extract still see clean natural language
+                out["results"] = [{
+                    "spiral": 0,
+                    "actions": [{
+                        "tool": "reflex_text",
+                        "result": {"success": True, "output": out["response"]},
+                    }],
+                    "evaluation": {
+                        "success": False,
+                        "reason": summary_str,
+                    },
+                    "success": False,
+                }]
+            else:
                 out["response"] = ""
         except Exception:
-            out.setdefault("response", "")
+            out.setdefault("response", recovery if not results else "")
         return out
 
     # ════════════════════════════════════════════════════════
