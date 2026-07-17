@@ -28,6 +28,18 @@ def test_abstention_score_refuses_unknown():
     assert ok is True
 
 
+def test_abstention_score_accepts_truly_know_adverb():
+    """Gate 0.3: middle adverb must not false-negative honest refuse."""
+    assert (
+        bmp.score_abstention("I don't truly know your blood type or passport number.")
+        is True
+    )
+    assert bmp.score_abstention("I do not truly know that.") is True
+    assert bmp.score_abstention("I never provided my blood type.") is True
+    assert bmp.score_abstention("I never saved a passport number.") is True
+    assert bmp.score_abstention("I can't answer that — not in memory.") is True
+
+
 def test_abstention_score_rejects_dump():
     dump = "home_city: ZetaCity\npet_name: ZetaPet"
     assert bmp.score_abstention(dump) is False
@@ -36,6 +48,27 @@ def test_abstention_score_rejects_dump():
 
 def test_abstention_score_rejects_empty():
     assert bmp.score_abstention("") is False
+
+
+def test_timeline_requires_order_cue_not_pure_echo():
+    """Markers alone (question echo) fail; first/then or before/after pass."""
+    ea, eb = "BeamEventA99", "BeamEventB99"
+    # Pure echo of both markers without order language
+    assert bmp.score_timeline(f"You asked about {ea} and {eb}.", ea, eb) is False
+    assert (
+        bmp.score_timeline(
+            f"I don't know the order of {ea} and {eb}; not in memory.",
+            ea,
+            eb,
+        )
+        is False
+    )
+    # Honest order language
+    assert (
+        bmp.score_timeline(f"First {ea}, then {eb}.", ea, eb) is True
+    )
+    assert bmp.score_timeline(f"{ea} before {eb}.", ea, eb) is True
+    assert bmp.score_timeline(f"{ea} → {eb}", ea, eb) is True
 
 
 def test_contradiction_requires_conflict_language():
@@ -96,6 +129,48 @@ def test_extract_beam_style_abstention_reply():
     got = extract_user_response(result)
     assert "blood type" in got.lower()
     assert "home_city:" not in got
+
+
+def test_extract_fills_when_top_level_response_empty():
+    """Gate 0.3: empty top-level response must still surface spiral reply text."""
+    result = {
+        "status": "completed",
+        "response": "",
+        "spirals_completed": 1,
+        "results": [{
+            "actions": [
+                {
+                    "tool": "recall_mine",
+                    "result": {
+                        "success": True,
+                        "output": "home_city: BeamCity1",
+                    },
+                },
+                {
+                    "tool": "reflex_text",
+                    "result": {
+                        "success": True,
+                        "output": "Your home city is BeamCity1.",
+                    },
+                },
+            ],
+        }],
+    }
+    got = extract_user_response(result)
+    assert got == "Your home city is BeamCity1."
+    assert "home_city:" not in got
+
+
+def test_extract_respond_tool_when_response_missing():
+    result = {
+        "results": [{
+            "actions": [{
+                "tool": "respond",
+                "result": {"success": True, "text": "pong from respond"},
+            }],
+        }],
+    }
+    assert extract_user_response(result) == "pong from respond"
 
 
 def test_foreign_secret_scoring_rejects_only_b_leak():

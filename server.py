@@ -613,9 +613,19 @@ class WorldwaveServer:
                         # Institutional E2: every /ww/run client can prefer ``response``
                         # without re-implementing leak filters. Debug fields (summary,
                         # evaluation.reason) may still say "Reflex arc" — OK if not chat.
-                        self._last_result["response"] = extract_user_response(
-                            self._last_result
-                        )
+                        # If extract yields empty but spiral has reply-tool text, extract
+                        # still fills top-level (Gate 0.3 empty-response guard).
+                        filled = extract_user_response(self._last_result)
+                        if not filled:
+                            # Second pass: strip any pre-set empty/internal response so
+                            # spiral tools are not masked by a blank top-level key.
+                            stale = self._last_result.get("response")
+                            if stale is not None and not (
+                                isinstance(stale, str) and stale.strip()
+                            ):
+                                self._last_result.pop("response", None)
+                                filled = extract_user_response(self._last_result)
+                        self._last_result["response"] = filled or ""
 
                     # Persist entity state after task (set_entity + record_interaction
                     # already save; re-save ensures dirty in-memory edits land on disk)

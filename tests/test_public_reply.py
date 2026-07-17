@@ -159,6 +159,45 @@ def test_extract_reflex_text_pong():
     assert extract_user_response(result) == "pong"
 
 
+def test_extract_empty_top_level_still_uses_spiral_reply():
+    """Gate 0.3 regression: empty response key must not hide usable spiral text."""
+    result = {
+        "response": "",
+        "status": "completed",
+        "results": [{
+            "actions": [
+                {
+                    "tool": "recall_mine",
+                    "result": {"success": True, "output": "home_city: X"},
+                },
+                {
+                    "tool": "reflex_text",
+                    "result": {"success": True, "output": "You live in X."},
+                },
+            ],
+        }],
+    }
+    assert extract_user_response(result) == "You live in X."
+
+
+def test_extract_prefers_later_synthesis_over_earlier_stub():
+    result = {
+        "results": [{
+            "actions": [
+                {
+                    "tool": "reflex_text",
+                    "result": {"success": True, "output": "stub"},
+                },
+                {
+                    "tool": "respond",
+                    "result": {"success": True, "output": "final synthesis reply"},
+                },
+            ],
+        }],
+    }
+    assert extract_user_response(result) == "final synthesis reply"
+
+
 def test_extract_only_recall_mine_success_returns_empty():
     """Gate 0: recall_mine success alone must never become the chat reply."""
     result = {

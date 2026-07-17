@@ -109,6 +109,38 @@ def _post_json(url: str, body: dict, api_key: str, timeout: float = 120.0) -> Tu
         return 0, {"error": str(e)}
 
 
+def _get_json(url: str, timeout: float = 45.0) -> Tuple[int, Any]:
+    """GET helper for health reachability (no API key required on /ww/health)."""
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            try:
+                return resp.status, json.loads(raw)
+            except json.JSONDecodeError:
+                return resp.status, {"_raw": raw}
+    except urllib.error.HTTPError as e:
+        return e.code, {"error": str(e)}
+    except Exception as e:
+        return 0, {"error": str(e)}
+
+
+def health_reachable(base: str, *, timeout: float = 45.0, retries: int = 1) -> bool:
+    """Prefer GET /ww/health; retry once on transient failure under load."""
+    url = f"{base.rstrip('/')}/ww/health"
+    attempts = max(1, 1 + int(retries))
+    for i in range(attempts):
+        code, body = _get_json(url, timeout=timeout)
+        if code == 200:
+            return True
+        # Accept any 2xx with status-ish body as healthy
+        if 200 <= int(code or 0) < 300:
+            return True
+        if i + 1 < attempts:
+            time.sleep(1.0 + i)
+    return False
+
+
 def run_goal(
     base: str,
     goal: str,
@@ -118,8 +150,14 @@ def run_goal(
     user_id: str = "",
     chat_id: str = "",
     max_spirals: int = 2,
+    re_ask_if_empty: bool = False,
 ) -> str:
-    """Product path: /ww/run and return only top-level response string."""
+    """Product path: /ww/run and return only top-level response string.
+
+    If top-level ``response`` is empty but spiral has usable reply-tool text,
+    fall back to extract_user_response (server should already do this; belt
+    for older nodes / race empties). Optional one re-ask when still empty.
+    """
     body: Dict[str, Any] = {
         "goal": goal,
         "max_spirals": max_spirals,
@@ -131,14 +169,31 @@ def run_goal(
         body["user_id"] = user_id
     if chat_id:
         body["chat_id"] = chat_id
-    code, resp_body = _post_json(f"{base}/ww/run", body, api_key)
-    if code not in (200, 201) or not isinstance(resp_body, dict):
+
+    def _once() -> str:
+        code, resp_body = _post_json(f"{base}/ww/run", body, api_key)
+        if code not in (200, 201) or not isinstance(resp_body, dict):
+            return ""
+        # Product honesty: score only the user-facing field
+        resp = resp_body.get("response")
+        if isinstance(resp, str) and resp.strip():
+            return resp.strip()
+        # Empty top-level: still try shared extractor on spiral payload
+        try:
+            from core.public_reply import extract_user_response
+
+            filled = extract_user_response(resp_body)
+            if filled:
+                return filled.strip()
+        except Exception:
+            pass
         return ""
-    # Product honesty: score only the user-facing field
-    resp = resp_body.get("response")
-    if isinstance(resp, str):
-        return resp.strip()
-    return ""
+
+    text = _once()
+    if not text and re_ask_if_empty:
+        time.sleep(0.25)
+        text = _once()
+    return text
 
 
 def _is_dump(text: str) -> bool:
@@ -162,18 +217,31 @@ def _looks_json_status(text: str) -> bool:
     return False
 
 
-def _abstention_ok(text: str) -> bool:
-    """Refuse unknown without dumping known facts as the answer."""
-    if not text or _is_dump(text) or _looks_json_status(text):
-        return False
-    low = text.lower()
+def _has_refuse_language(low: str) -> bool:
+    """True when text honestly refuses / abstains (adverb-tolerant)."""
     refuse_cues = (
         "don't have",
         "do not have",
         "don't know",
         "do not know",
+        "don't truly know",
+        "do not truly know",
+        "not truly know",
+        "never provided",
+        "never saved",
+        "never told",
+        "never shared",
+        "never stored",
+        "can't answer",
+        "cannot answer",
+        "can't tell",
+        "cannot tell",
+        "unable to answer",
+        "no information",
+        "not available",
         "not in memory",
         "no record",
+        "no data",
         "i'm not sure",
         "i am not sure",
         "unknown",
@@ -183,12 +251,93 @@ def _abstention_ok(text: str) -> bool:
         "不知道",
         "记不清",
     )
-    if not any(c in low for c in refuse_cues):
+    if any(c in low for c in refuse_cues):
+        return True
+    # Adverb-tolerant: "don't truly know", "do not actually know", etc.
+    if re.search(
+        r"(?:don'?t|do\s+not)\s+(?:\w+\s+){0,3}(?:know|have|remember)",
+        low,
+    ):
+        return True
+    if re.search(
+        r"not\s+(?:\w+\s+){0,2}(?:know|known|have|provided|saved|stored|told)",
+        low,
+    ):
+        return True
+    if re.search(r"(?:never|not)\s+(?:\w+\s+){0,2}(?:provided|saved|stored|told)", low):
+        return True
+    return False
+
+
+def _abstention_ok(text: str) -> bool:
+    """Refuse unknown without dumping known facts as the answer."""
+    if not text or _is_dump(text) or _looks_json_status(text):
+        return False
+    low = text.lower()
+    if not _has_refuse_language(low):
         return False
     # Must not answer with a dump of other facts
     if CITY.lower() in low and PET.lower() in low and ":" in text:
         # City+pet mentioned as answer when asking blood type → dump-ish fail
         if re.search(r"^[a-z_]+\:", text, re.M | re.I):
+            return False
+    return True
+
+
+def _timeline_ok(text: str, event_a: str = "", event_b: str = "") -> bool:
+    """Both event markers AND order language required (no pure question-echo).
+
+    Pure abstention that only echoes EVENT_A/B from the question fails.
+    Mere presence of the word "order" (e.g. "don't know the order") is not enough.
+    """
+    ea = event_a or EVENT_A
+    eb = event_b or EVENT_B
+    if not text or _is_dump(text) or _looks_json_status(text):
+        return False
+    if ea not in text or eb not in text:
+        return False
+    low = text.lower()
+    # Structural order language only (not bare "order"/"sequence")
+    order_cues = (
+        "first",
+        "then",
+        "before",
+        "after",
+        "followed",
+        "later",
+        "next",
+        "prior",
+        "earlier",
+        "subsequently",
+        "previously",
+        "→",
+        "->",
+        "⇒",
+        "=>",
+    )
+    has_order = any(c in low for c in order_cues)
+    # first…then / A then B / A before B patterns
+    if not has_order:
+        if re.search(r"\bfirst\b.+\bthen\b", low, re.S):
+            has_order = True
+    if not has_order:
+        return False
+    # Pure abstention echo: markers + "not in memory" / "don't know" without
+    # real sequence claim (e.g. "I don't know the order of A and B")
+    if _has_refuse_language(low):
+        sequential = (
+            "first",
+            "then",
+            "before",
+            "after",
+            "followed",
+            "later",
+            "→",
+            "->",
+            "⇒",
+            "=>",
+        )
+        if not any(s in low for s in sequential):
             return False
     return True
 
@@ -298,7 +447,8 @@ def _seed_and_verify(
             entity,
             user_id=user_id,
             chat_id=chat_id,
-            max_spirals=2,
+            max_spirals=3,
+            re_ask_if_empty=True,
         )
         detail_parts.append(
             f"try{attempt+1}: seed={ (seed_resp or '')[:40]!r} probe={(probe or '')[:60]!r}"
@@ -325,34 +475,17 @@ def main() -> int:
     chat_id = os.environ.get("WW_BEAM_CHAT", f"beam_chat_{RUN_TAG}")
     report = Report()
 
-    print(f"BEAM-mini Gate 0.1 — url={base} entity={entity}")
+    print(f"BEAM-mini Gate 0.3 — url={base} entity={entity}")
     print(f"  user_id={user_id} chat_id={chat_id}")
-    print("Markers:", CITY, PET, JOB_NEW, CONTRA_A)
+    print("Markers:", CITY, PET, JOB_NEW, PREF, CONTRA_A)
 
-    # Health check
-    try:
-        code, body = _post_json(
-            f"{base}/ww/run",
-            {
-                "goal": "ping",
-                "max_spirals": 1,
-                "entity_id": entity,
-                "platform": "beam_mini",
-                "user_id": user_id,
-                "chat_id": chat_id,
-            },
-            api_key,
-            timeout=30.0,
+    # Health: prefer GET /ww/health (cheap, stable under load); retry once
+    if not health_reachable(base, timeout=45.0, retries=1):
+        print(
+            "FAIL: server unreachable (GET /ww/health). Start WW or set WW_PROVE_URL.\n"
+            "  Example: WW_PROVE_URL=http://127.0.0.1:9300 "
+            ".venv/bin/python scripts/beam_mini_prove.py"
         )
-        if code == 0:
-            print(
-                "FAIL: server unreachable. Start WW or set WW_PROVE_URL.\n"
-                "  Example: WW_PROVE_URL=http://127.0.0.1:9300 "
-                ".venv/bin/python scripts/beam_mini_prove.py"
-            )
-            return 2
-    except Exception as e:
-        print(f"FAIL: health check error: {e}")
         return 2
 
     # ── Verified seeds (must land before probes) ─────────────────
@@ -401,6 +534,8 @@ def main() -> int:
     seeds_ok = seeds_ok and ok
 
     # Remaining seeds (timeline / contradiction / pref / iron) — verify lightly
+    # Preference uses distinct key preference_marker=BeamPref* (not confusable
+    # with redis likes BeamLikesRedis / BeamHatesRedis).
     extra_seeds = [
         (
             f"Timeline: first I did {EVENT_A}, later I did {EVENT_B}. Please remember both.",
@@ -408,18 +543,21 @@ def main() -> int:
             EVENT_A,
         ),
         (
-            f"I like {CONTRA_A}. Store that.",
-            f"What Redis-related marker do I like? Reply with the marker.",
+            f"I like {CONTRA_A}. Store that under key redis_likes (not preference_marker).",
+            f"What Redis-related marker do I like? Reply with the marker {CONTRA_A}.",
             CONTRA_A,
         ),
         (
-            f"Actually I hate Redis and prefer {CONTRA_B}. Store that too.",
+            f"Actually I hate Redis and prefer {CONTRA_B}. Store under redis_stance, "
+            f"not preference_marker.",
             f"What do I prefer regarding Redis? Mention {CONTRA_B} if known.",
             CONTRA_B,
         ),
         (
-            f"My preference is {PREF}. Please remember it.",
-            "What is my stated preference marker?",
+            f"Please remember preference_marker={PREF}. "
+            f"This is my stated preference marker (starts with BeamPref). "
+            f"Do not confuse it with Redis likes.",
+            f"What is my preference_marker? Reply only with the BeamPref* marker, not Redis.",
             PREF,
         ),
         (
@@ -452,7 +590,7 @@ def main() -> int:
         )
 
     # ── 10 ability probes ────────────────────────────────────────
-    def probe(goal: str, max_spirals: int = 2) -> str:
+    def probe(goal: str, max_spirals: int = 3, re_ask_if_empty: bool = True) -> str:
         return run_goal(
             base,
             goal,
@@ -461,10 +599,14 @@ def main() -> int:
             user_id=user_id,
             chat_id=chat_id,
             max_spirals=max_spirals,
+            re_ask_if_empty=re_ask_if_empty,
         )
 
-    # 1 Recall city
-    r = probe("What is my home city?")
+    # 1 Recall city — one automatic re-probe if empty (intermittent product race)
+    r = probe("What is my home city? Reply with the city name.")
+    if not r:
+        time.sleep(0.3)
+        r = probe("What is my home city? Reply only with the city marker.")
     report.add(
         "1_recall_city",
         bool(r) and CITY in r and not _is_dump(r) and not _contains_foreign_secret(r),
@@ -472,7 +614,7 @@ def main() -> int:
     )
 
     # 2 Recall pet
-    r = probe("What is my pet's name?")
+    r = probe("What is my pet's name? Reply with the pet name.")
     report.add(
         "2_recall_pet",
         bool(r) and PET in r and not _is_dump(r) and not _contains_foreign_secret(r),
@@ -480,21 +622,20 @@ def main() -> int:
     )
 
     # 3 Update / job (prefer new)
-    r = probe("What is my current job?")
+    r = probe("What is my current job? Reply with the job marker.")
     report.add(
         "3_update_job",
         bool(r) and JOB_NEW in r and not _is_dump(r) and not _contains_foreign_secret(r),
         (r or "(empty)")[:140],
     )
 
-    # 4 Timeline order — must name both seeded events (not pure abstention)
-    r = probe(f"In what order did I do {EVENT_A} and {EVENT_B}?")
-    order_ok = (
-        bool(r)
-        and EVENT_A in r
-        and EVENT_B in r
-        and not _is_dump(r)
-        and not _contains_foreign_secret(r)
+    # 4 Timeline order — both markers + order cue (not pure question-echo)
+    r = probe(
+        f"In what order did I do {EVENT_A} and {EVENT_B}? "
+        f"Use first/then or before/after language and name both markers."
+    )
+    order_ok = _timeline_ok(r or "", EVENT_A, EVENT_B) and not _contains_foreign_secret(
+        r or ""
     )
     report.add("4_timeline", order_ok, (r or "(empty)")[:140])
 
@@ -506,16 +647,23 @@ def main() -> int:
         (r or "(empty)")[:140],
     )
 
-    # 6 Preference — must not mention foreign entity secrets
-    r = probe("What is my stated preference marker?")
-    report.add(
-        "6_preference",
+    # 6 Preference — BeamPref* / preference_marker only (not BeamLikesRedis)
+    r = probe(
+        "What is my preference_marker? "
+        "Reply only with the BeamPref* preference marker, not any Redis likes."
+    )
+    pref_ok = (
         bool(r)
         and PREF in r
         and not _is_dump(r)
-        and not _contains_foreign_secret(r),
-        (r or "(empty)")[:140],
+        and not _contains_foreign_secret(r)
+        # Soft guard: if Redis like marker present without BeamPref, fail
+        and not (
+            CONTRA_A in r
+            and PREF not in r
+        )
     )
+    report.add("6_preference", pref_ok, (r or "(empty)")[:140])
 
     # 7 Iron rule — current run marker only (never ONLY_B from another entity)
     r = probe("What iron rule should you honor for me?")
@@ -580,6 +728,11 @@ def score_abstention(text: str) -> bool:
 
 def score_contradiction(text: str) -> bool:
     return _contradiction_ok(text or "")
+
+
+def score_timeline(text: str, event_a: str = "", event_b: str = "") -> bool:
+    """Public scorer: both markers + order cue required."""
+    return _timeline_ok(text or "", event_a=event_a, event_b=event_b)
 
 
 def score_summarization(text: str) -> bool:

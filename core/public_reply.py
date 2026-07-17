@@ -54,7 +54,7 @@ _GREETING_PARA_MAX = 100
 _TOP_LEVEL_KEYS = ("response", "reply", "output", "message")
 
 # Per-action result keys that can hold user text
-_RESULT_TEXT_KEYS = ("output", "text", "response")
+_RESULT_TEXT_KEYS = ("output", "text", "response", "content", "message", "reply")
 
 # evaluation keys (skip internal via is_internal_response_text)
 _EVAL_KEYS = ("response", "summary")
@@ -213,8 +213,12 @@ def extract_user_response(result: Optional[Dict[str, Any]]) -> str:
                 return got
 
     # 3. Only reflex_text / respond-style tools (never memory / arbitrary tools)
-    for r in _iter_spirals(result):
-        for a in (r.get("actions") or []):
+    # Walk spirals newest-first so a later synthesis wins over an earlier stub.
+    spiral_list = list(_iter_spirals(result))
+    for r in reversed(spiral_list):
+        actions = list(r.get("actions") or [])
+        # Prefer last reply-tool action (synthesis often appended after tools)
+        for a in reversed(actions):
             if not isinstance(a, dict):
                 continue
             tool = str(a.get("tool") or "").lower()
@@ -222,7 +226,13 @@ def extract_user_response(result: Optional[Dict[str, Any]]) -> str:
                 continue
             if tool in _MEMORY_TOOLS:
                 continue
-            res = a.get("result") or {}
+            res = a.get("result")
+            # Plain-string result (some adapters)
+            if isinstance(res, str):
+                got = _clean(res)
+                if got:
+                    return got
+                continue
             if not isinstance(res, dict):
                 continue
             if res.get("success") is False:
