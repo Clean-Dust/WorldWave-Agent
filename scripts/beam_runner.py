@@ -129,6 +129,154 @@ def entity_for(scale: str, chat_id: str, run_tag: str) -> str:
     return f"beam_{scale}_{chat_id}_{run_tag}"
 
 
+# /ww/run TaskRequest.goal max_length=2000; keep margin for safety.
+API_GOAL_MAX_CHARS = 2000
+GOAL_CHAR_BUDGET = 1800
+
+BATCH_INGEST_HEADER = (
+    "Ingest the following conversation turns into memory. "
+    "Use remember for durable user facts. Acknowledge briefly.\n\n"
+)
+ASSISTANT_NOTE_HEADER = (
+    "Note this prior assistant message for conversation continuity "
+    "(do not invent new user facts):\n"
+)
+
+
+def hard_split_goal(
+    header: str,
+    body: str,
+    budget: int = GOAL_CHAR_BUDGET,
+) -> List[str]:
+    """Build one or more goals under *budget*. Never silent-truncate body.
+
+    When header+body fits, returns a single goal. Otherwise splits *body* into
+    labeled parts: ``{header}[part N/M]\\n{chunk}`` (still product /ww/run).
+    """
+    header = header or ""
+    body = body if body is not None else ""
+    if not header and not body:
+        return []
+    if len(header) + len(body) <= budget:
+        return [header + body]
+    if len(header) >= budget - 12:
+        raise ValueError(
+            f"goal header ({len(header)} chars) leaves no room under budget {budget}"
+        )
+
+    def _goals_for_chunk_size(chunk_size: int) -> List[str]:
+        if chunk_size < 1:
+            return []
+        chunks = [body[i : i + chunk_size] for i in range(0, len(body), chunk_size)]
+        total = len(chunks)
+        return [
+            f"{header}[part {i}/{total}]\n{chunk}"
+            for i, chunk in enumerate(chunks, 1)
+        ]
+
+    lo, hi = 1, max(1, len(body))
+    best: Optional[List[str]] = None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate = _goals_for_chunk_size(mid)
+        if candidate and all(len(g) <= budget for g in candidate):
+            best = candidate
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    if best is None:
+        # Pathological: tiny room after header — still emit with minimal chunks.
+        room = max(1, budget - len(header) - len(f"[part 1/{max(1, len(body))}]\n"))
+        best = _goals_for_chunk_size(room)
+        for g in best:
+            if len(g) > budget:
+                raise ValueError(
+                    f"unable to hard-split goal under budget {budget} "
+                    f"(header={len(header)}, body={len(body)})"
+                )
+    return best
+
+
+def _batch_body_len(lines: Sequence[str]) -> int:
+    if not lines:
+        return 0
+    return sum(len(x) for x in lines) + (len(lines) - 1)
+
+
+def pack_ingest_goals(
+    turns: Sequence[Dict[str, Any]],
+    *,
+    ingest_mode: str = "turn",
+    batch_n: int = 5,
+    budget: int = GOAL_CHAR_BUDGET,
+) -> List[str]:
+    """Pack chat turns into /ww/run goals within *budget* (default 1800).
+
+    * ``batch_n``: flush on turn count **or** when adding the next turn would
+      exceed the character budget. Oversized single turns are hard-split.
+    * ``turn``: one message per goal (same budget); oversized content hard-split.
+    """
+    mode = (ingest_mode or "turn").strip().lower()
+    if mode == "batch_n":
+        return _pack_batch_n_goals(turns, batch_n=batch_n, budget=budget)
+    return _pack_turn_goals(turns, budget=budget)
+
+
+def _pack_turn_goals(
+    turns: Sequence[Dict[str, Any]],
+    *,
+    budget: int,
+) -> List[str]:
+    goals: List[str] = []
+    for t in turns:
+        role = str(t.get("role") or "user")
+        content = str(t.get("content") or "")
+        if role == "assistant":
+            goals.extend(hard_split_goal(ASSISTANT_NOTE_HEADER, content, budget))
+        else:
+            goals.extend(hard_split_goal("", content, budget))
+    return goals
+
+
+def _pack_batch_n_goals(
+    turns: Sequence[Dict[str, Any]],
+    *,
+    batch_n: int,
+    budget: int,
+) -> List[str]:
+    batch_n = max(1, int(batch_n))
+    header = BATCH_INGEST_HEADER
+    body_budget = budget - len(header)
+    if body_budget < 1:
+        raise ValueError(
+            f"batch ingest header ({len(header)} chars) exceeds budget {budget}"
+        )
+
+    goals: List[str] = []
+    buf: List[str] = []
+
+    def flush() -> None:
+        nonlocal buf
+        if not buf:
+            return
+        goals.extend(hard_split_goal(header, "\n".join(buf), budget))
+        buf = []
+
+    for t in turns:
+        line = f"{t.get('role', 'user')}: {t.get('content') or ''}"
+        # Single turn larger than body budget: flush then hard-split this line.
+        if len(line) > body_budget:
+            flush()
+            goals.extend(hard_split_goal(header, line, budget))
+            continue
+        trial = buf + [line]
+        if buf and (len(trial) > batch_n or _batch_body_len(trial) > body_budget):
+            flush()
+        buf.append(line)
+    flush()
+    return goals
+
+
 def ingest_ww(
     client: WWRunClient,
     chat: BeamChat,
@@ -139,76 +287,49 @@ def ingest_ww(
     max_turns: int = 0,
     dry_run: bool = False,
 ) -> Dict[str, Any]:
-    """Feed chat into real WW memory path turn-by-turn (not one giant prompt)."""
+    """Feed chat into real WW memory path turn-by-turn (not one giant prompt).
+
+    Goals are packed under :data:`GOAL_CHAR_BUDGET` (margin under API 2000).
+    Never silent-truncates facts; oversized content is hard-split with part labels.
+    """
     turns = chat.turns
     if max_turns > 0:
         turns = turns[:max_turns]
-    n = 0
     if dry_run:
-        return {"entity_id": entity_id, "turns": len(turns), "dry_run": True}
+        goals = pack_ingest_goals(
+            turns, ingest_mode=ingest_mode, batch_n=batch_n
+        )
+        return {
+            "entity_id": entity_id,
+            "turns": len(turns),
+            "goals": len(goals),
+            "dry_run": True,
+        }
 
     user_id = f"beam_u_{chat.chat_id}"
     chat_key = f"beam_c_{chat.chat_id}"
     mode = (ingest_mode or "turn").strip().lower()
+    goals = pack_ingest_goals(turns, ingest_mode=mode, batch_n=batch_n)
 
-    if mode == "batch_n":
-        batch_n = max(1, int(batch_n))
-        buf: List[str] = []
-        for t in turns:
-            buf.append(f"{t['role']}: {t['content']}")
-            if len(buf) >= batch_n:
-                goal = (
-                    "Ingest the following conversation turns into memory. "
-                    "Use remember for durable user facts. Acknowledge briefly.\n\n"
-                    + "\n".join(buf)
-                )
-                client.run(
-                    goal,
-                    entity_id=entity_id,
-                    platform="beam",
-                    user_id=user_id,
-                    chat_id=chat_key,
-                    max_spirals=3,
-                )
-                n += len(buf)
-                buf = []
-        if buf:
-            goal = (
-                "Ingest the following conversation turns into memory. "
-                "Use remember for durable user facts. Acknowledge briefly.\n\n"
-                + "\n".join(buf)
+    for goal in goals:
+        if len(goal) > API_GOAL_MAX_CHARS:
+            raise RuntimeError(
+                f"ingest goal exceeds API max ({len(goal)} > {API_GOAL_MAX_CHARS})"
             )
-            client.run(
-                goal,
-                entity_id=entity_id,
-                platform="beam",
-                user_id=user_id,
-                chat_id=chat_key,
-                max_spirals=3,
-            )
-            n += len(buf)
-    else:
-        for t in turns:
-            role = t["role"]
-            content = t["content"]
-            if role == "assistant":
-                # Store assistant side as context note (product path still via /ww/run)
-                goal = (
-                    "Note this prior assistant message for conversation continuity "
-                    f"(do not invent new user facts):\n{content[:2000]}"
-                )
-            else:
-                goal = content
-            client.run(
-                goal,
-                entity_id=entity_id,
-                platform="beam",
-                user_id=user_id,
-                chat_id=chat_key,
-                max_spirals=3,
-            )
-            n += 1
-    return {"entity_id": entity_id, "turns_ingested": n, "dry_run": False}
+        client.run(
+            goal,
+            entity_id=entity_id,
+            platform="beam",
+            user_id=user_id,
+            chat_id=chat_key,
+            max_spirals=3,
+        )
+    return {
+        "entity_id": entity_id,
+        "turns_ingested": len(turns),
+        "goals_sent": len(goals),
+        "dry_run": False,
+    }
 
 
 def probe_ww(

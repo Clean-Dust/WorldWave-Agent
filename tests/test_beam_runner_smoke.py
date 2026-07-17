@@ -112,6 +112,150 @@ def test_entity_path_isolation():
     assert a.startswith("beam_100K_1_")
 
 
+def test_goal_char_budget_constant():
+    import beam_runner as br
+
+    assert br.GOAL_CHAR_BUDGET <= 1800
+    assert br.GOAL_CHAR_BUDGET < br.API_GOAL_MAX_CHARS
+
+
+def test_pack_batch_n_flushes_on_char_budget():
+    """batch_n mode packs by character budget, not only turn count."""
+    import beam_runner as br
+
+    budget = 400
+    # Each turn ~120 chars of content; batch_n=10 would overfill budget.
+    turns = [
+        {"role": "user", "content": f"fact-{i:02d} " + ("x" * 100)}
+        for i in range(8)
+    ]
+    goals = br.pack_ingest_goals(
+        turns, ingest_mode="batch_n", batch_n=10, budget=budget
+    )
+    assert len(goals) >= 2  # must flush early due to chars
+    assert all(len(g) <= budget for g in goals)
+    # All facts preserved (no silent truncate)
+    blob = "\n".join(goals)
+    for i in range(8):
+        assert f"fact-{i:02d}" in blob
+
+
+def test_pack_batch_n_respects_turn_count():
+    import beam_runner as br
+
+    turns = [
+        {"role": "user", "content": f"short {i}"}
+        for i in range(7)
+    ]
+    goals = br.pack_ingest_goals(
+        turns, ingest_mode="batch_n", batch_n=3, budget=1800
+    )
+    # 7 turns / batch_n=3 => 3 goals (3+3+1)
+    assert len(goals) == 3
+    assert all(len(g) <= 1800 for g in goals)
+
+
+def test_pack_batch_n_hard_splits_oversized_turn():
+    import beam_runner as br
+
+    budget = 300
+    marker_a = "ALPHA_UNIQUE_TOKEN"
+    marker_b = "BETA_UNIQUE_TOKEN"
+    long = marker_a + ("Z" * 900) + marker_b
+    turns = [
+        {"role": "user", "content": "tiny"},
+        {"role": "user", "content": long},
+        {"role": "assistant", "content": "ok"},
+    ]
+    goals = br.pack_ingest_goals(
+        turns, ingest_mode="batch_n", batch_n=5, budget=budget
+    )
+    assert all(len(g) <= budget for g in goals)
+    split_goals = [g for g in goals if "[part " in g]
+    assert len(split_goals) >= 2
+    assert any("[part 1/" in g for g in split_goals)
+    blob = "\n".join(goals)
+    assert marker_a in blob
+    assert marker_b in blob
+    # Reconstruct body parts: every char of long line must appear
+    assert "Z" * 900 in blob.replace("\n", "") or blob.count("Z") >= 900
+
+
+def test_pack_turn_mode_hard_splits_and_no_silent_truncate():
+    import beam_runner as br
+
+    budget = 250
+    secret = "PASSPORT_NO_XY-999-SECRET"
+    body = ("prefix " * 20) + secret + (" suffix" * 30)
+    turns = [
+        {"role": "user", "content": body},
+        {"role": "assistant", "content": body},
+    ]
+    goals = br.pack_ingest_goals(turns, ingest_mode="turn", budget=budget)
+    assert len(goals) >= 2
+    assert all(len(g) <= budget for g in goals)
+    blob = "\n".join(goals)
+    assert secret in blob
+    assert any("[part " in g for g in goals)
+    # Assistant path keeps note header and still splits (no content[:2000])
+    assert any(br.ASSISTANT_NOTE_HEADER[:40] in g for g in goals)
+
+
+def test_hard_split_goal_preserves_full_body():
+    import beam_runner as br
+
+    header = "HDR:\n"
+    body = "".join(f"[{i:04d}]" for i in range(200))  # 1200 chars
+    budget = 200
+    parts = br.hard_split_goal(header, body, budget)
+    assert len(parts) > 1
+    assert all(len(p) <= budget for p in parts)
+    # Strip headers and part labels; concatenated chunks == original body
+    rebuilt = []
+    for p in parts:
+        assert p.startswith(header)
+        rest = p[len(header) :]
+        assert rest.startswith("[part ")
+        nl = rest.index("\n")
+        rebuilt.append(rest[nl + 1 :])
+    assert "".join(rebuilt) == body
+
+
+def test_ingest_ww_uses_packed_goals(tmp_path: Path):
+    """ingest_ww sends only budget-safe goals via client.run (no network)."""
+    import beam_runner as br
+    from beam.data import BeamChat
+
+    sent: list = []
+
+    class FakeClient:
+        def run(self, goal, **kwargs):
+            sent.append(goal)
+            return {"status": "ok"}
+
+    long = "FACT_KEEP_ME " + ("w" * 2500)
+    chat = BeamChat(
+        scale="100K",
+        chat_id="pack",
+        path=tmp_path,
+        turns=[{"role": "user", "content": long}],
+        probes=[],
+    )
+    out = br.ingest_ww(
+        FakeClient(),  # type: ignore[arg-type]
+        chat,
+        "beam_test_entity",
+        ingest_mode="batch_n",
+        batch_n=5,
+    )
+    assert out["goals_sent"] == len(sent)
+    assert out["turns_ingested"] == 1
+    assert sent
+    assert all(len(g) <= br.GOAL_CHAR_BUDGET for g in sent)
+    assert all(len(g) <= br.API_GOAL_MAX_CHARS for g in sent)
+    assert "FACT_KEEP_ME" in "\n".join(sent)
+
+
 def test_baselines_bm25_and_prompts():
     chunks = chunk_text("alpha beta gamma " * 50, chunk_chars=40, overlap=5)
     assert len(chunks) >= 2
