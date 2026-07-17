@@ -28,6 +28,35 @@ def test_abstention_score_refuses_unknown():
     assert ok is True
 
 
+def test_abstention_score_unicode_apostrophe():
+    """Gate 0.5: curly apostrophe in don't/can't must not false-negative."""
+    # ASCII control
+    assert bmp.score_abstention("I don't know your blood type...") is True
+    # U+2019 RIGHT SINGLE QUOTATION MARK (common in model output)
+    curly = "I don\u2019t have your blood type..."
+    assert "\u2019" in curly
+    assert bmp.score_abstention(curly) is True
+    assert bmp.score_abstention("I can\u2019t answer that — not in memory.") is True
+    # Other typographic forms
+    assert bmp.score_abstention("I don\u2018t know your passport number.") is True
+    assert bmp.score_abstention("I don\u02bbt know that fact.") is True
+
+
+def test_contradiction_score_unicode_apostrophe():
+    """Gate 0.5: contradiction cues still match after apostrophe normalize."""
+    assert (
+        bmp.score_contradiction(
+            "You said you like Redis and also that you hate it — which is true?"
+        )
+        is True
+    )
+    # Curly apostrophe in "don't" + both seeded markers + which-is-true cue
+    text = (
+        f"I don\u2019t know which is true: {bmp.CONTRA_A} vs {bmp.CONTRA_B}."
+    )
+    assert bmp.score_contradiction(text) is True
+
+
 def test_abstention_score_accepts_truly_know_adverb():
     """Gate 0.3: middle adverb must not false-negative honest refuse."""
     assert (

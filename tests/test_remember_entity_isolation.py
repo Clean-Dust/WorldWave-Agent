@@ -91,6 +91,161 @@ def test_extract_key_value_explicit():
     assert "PROD-MEM-999" in v
 
 
+# ── Gate 0.5: preference / iron / timeline extract reliability ──
+
+
+def test_extract_preference_marker_bare_kv():
+    from core.memory.tools import extract_remember_facts
+
+    utt = (
+        "Please remember preference_marker=BeamPref123. "
+        "This is my stated preference marker (starts with BeamPref). "
+        "Do not confuse it with Redis likes."
+    )
+    k, v = extract_remember_kv(utt)
+    assert k == "preference_marker"
+    assert v == "BeamPref123"
+    # Must NOT swallow marker into slug key / "stated preference" body
+    assert "stated" not in v.lower()
+    facts = extract_remember_facts(utt)
+    assert any(f[0] == "preference_marker" and f[1] == "BeamPref123" for f in facts)
+
+
+def test_extract_iron_rule_honor_token():
+    from core.memory.tools import extract_remember_facts
+
+    utt = (
+        "Iron rule for you: always honor BeamIronRule456 when I ask about rules. "
+        "Remember it."
+    )
+    k, v = extract_remember_kv(utt)
+    assert k == "iron_rule"
+    assert v == "BeamIronRule456"
+    facts = extract_remember_facts(utt)
+    assert any(
+        f[0] == "iron_rule" and f[1] == "BeamIronRule456" and f[2] == "constraint"
+        for f in facts
+    )
+
+
+def test_extract_timeline_multi_event():
+    from core.memory.tools import extract_remember_facts
+
+    utt = (
+        "Timeline: first I did BeamEventA99, later I did BeamEventB99. "
+        "Please remember both."
+    )
+    facts = extract_remember_facts(utt)
+    by = {k: (v, kind) for k, v, kind in facts}
+    assert by["timeline_event_a"][0] == "BeamEventA99"
+    assert by["timeline_event_b"][0] == "BeamEventB99"
+    assert "BeamEventA99" in by["event_order"][0]
+    assert "BeamEventB99" in by["event_order"][0]
+    assert "first" in by["event_order"][0].lower()
+
+
+def test_internal_style_remember_lands_in_inject(tmp_path, monkeypatch):
+    """Gate 0.5: seed-style utterances → entity store → inject/search hit."""
+    monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
+    from core.memory.entity_scope import bind_entity
+    from core.memory.tools import extract_remember_facts
+
+    mv = MemoryVNext(data_dir=str(tmp_path / "g05_seed"), start_dreaming=False)
+    try:
+        eid = "beam_mini_seed_probe"
+        mem = MagicMock()
+        mem.vnext = mv
+        tools = MemoryTools(memory_system=mem, entity_id=eid)
+        seeds = [
+            (
+                "Please remember preference_marker=BeamPref777. "
+                "This is my stated preference marker."
+            ),
+            (
+                "Iron rule for you: always honor BeamIronRule777 when I ask "
+                "about rules. Remember it."
+            ),
+            (
+                "Timeline: first I did BeamEventA777, later I did BeamEventB777. "
+                "Please remember both."
+            ),
+        ]
+        with bind_entity(eid):
+            mv.set_entity(eid)
+            for utt in seeds:
+                for key, value, kind in extract_remember_facts(utt):
+                    r = tools.remember(key, value, kind=kind)
+                    assert r.get("success") is True
+                    assert r.get("entity_id") == eid
+
+            inj = mv.inject_for_turn(
+                "preference iron rule order events", entity_id=eid
+            )
+            assert "BeamPref777" in inj
+            assert "BeamIronRule777" in inj
+            assert "BeamEventA777" in inj
+            assert "BeamEventB777" in inj
+
+            listed = tools.recall_mine()
+            blob = " ".join(
+                f"{k}:{v}" for k, v in (listed.get("facts") or {}).items()
+            )
+            assert "BeamPref777" in blob
+            assert "BeamIronRule777" in blob
+            assert "BeamEventA777" in blob
+
+            # iron_rule stored as constraint
+            facts = mv.list_facts(entity_id=eid).get("facts") or {}
+            iron = facts.get("iron_rule")
+            if isinstance(iron, dict):
+                assert iron.get("value") == "BeamIronRule777" or "BeamIronRule777" in str(
+                    iron
+                )
+            # remember() without kind still constraint for iron_rule
+            r2 = tools.remember("iron_rule", "BeamIronRule777")
+            assert r2.get("kind") == "constraint"
+    finally:
+        mv.close()
+
+
+def test_promote_topic_stamps_entity_id(tmp_path, monkeypatch):
+    """Gate 0.5: LTM promote from beam_mini entities stamps meta.entity_id."""
+    monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
+    from core.memory.entity_scope import bind_entity
+
+    mv = MemoryVNext(data_dir=str(tmp_path / "g05_promote"), start_dreaming=False)
+    try:
+        eid = "beam_mini_promote_1"
+        with bind_entity(eid):
+            mv.set_entity(eid)
+            mv.remember(
+                "iron_rule", "NO_UNTAGGED_IRON", kind="constraint", entity_id=eid
+            )
+            mv.ingest_turn(
+                "user", "honor NO_UNTAGGED_IRON", entity_id=eid
+            )
+            assert mv.wm.active is not None
+            uri = mv.ltm.promote_topic(
+                mv.wm.active, category="experiences", entity_id=eid
+            )
+            assert uri
+            # Index entry must be stamped
+            hits = mv.ltm.search("NO_UNTAGGED_IRON", entity_id=eid, top_k=5)
+            assert hits, "expected stamped LTM hit for entity"
+            for h in hits:
+                assert h.get("entity_id") == eid
+                meta = h.get("meta") or {}
+                assert meta.get("entity_id") == eid
+            # Foreign entity must not see untagged iron from this promote
+            foreign = mv.ltm.search(
+                "NO_UNTAGGED_IRON", entity_id="beam_mini_other", top_k=5
+            )
+            blob = " ".join(str(h.get("content") or h.get("abstract") or "") for h in foreign)
+            assert "NO_UNTAGGED_IRON" not in blob
+    finally:
+        mv.close()
+
+
 # ── Empty args never success ─────────────────────────────────────
 
 

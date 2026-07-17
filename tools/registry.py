@@ -1296,17 +1296,31 @@ def _remember_handler(
                 pass
         if utterance:
             try:
-                from core.memory.tools import extract_remember_kv
+                from core.memory.tools import (
+                    default_kind_for_key,
+                    extract_remember_facts,
+                )
 
-                repaired = extract_remember_kv(utterance)
+                facts = extract_remember_facts(utterance)
             except Exception:
-                repaired = None
-            if repaired:
-                rk, rv = repaired
+                facts = []
+                default_kind_for_key = None  # type: ignore
+            if facts:
+                pick = facts[0]
+                if key:
+                    for fk, fv, fkind in facts:
+                        if fk == key:
+                            pick = (fk, fv, fkind)
+                            break
+                rk, rv, rkind = pick
                 if not key:
                     key = rk
                 if not value:
                     value = rv
+                if not (kind or "").strip() and rkind:
+                    kind = rkind
+                elif not (kind or "").strip() and default_kind_for_key is not None:
+                    kind = default_kind_for_key(key)
 
     if not key or not value:
         return {
@@ -1320,6 +1334,14 @@ def _remember_handler(
                 "Example: remember(key='home_city', value='Tokyo')"
             ),
         }
+
+    if not (kind or "").strip():
+        try:
+            from core.memory.tools import default_kind_for_key
+
+            kind = default_kind_for_key(key)
+        except Exception:
+            kind = kind or ""
 
     if mt is None:
         return {

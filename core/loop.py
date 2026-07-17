@@ -559,6 +559,9 @@ class Worldwave:
 
         Only triggers on explicit remember/store intent. Uses MemoryTools for
         the current entity_id — same path as the remember tool (no dual inject).
+
+        Gate 0.5: stores *all* extracted facts (timeline multi-event, iron_rule
+        as constraint, preference_marker) so seed probes find values on inject.
         """
         text = (utterance or "").strip()
         if not text:
@@ -571,6 +574,7 @@ class Worldwave:
                 "remember",
                 "store that",
                 "store this",
+                "store under",
                 "please store",
                 "key=",
                 "call remember",
@@ -579,15 +583,12 @@ class Worldwave:
         ):
             return None
         try:
-            from core.memory.tools import extract_remember_kv
+            from core.memory.tools import extract_remember_facts
 
-            pair = extract_remember_kv(text)
+            facts = extract_remember_facts(text)
         except Exception:
-            pair = None
-        if not pair:
-            return None
-        key, value = pair
-        if not key or not value:
+            facts = []
+        if not facts:
             return None
         # Ensure tools bound to current entity
         if self._memory_tools is None and self.memory is not None:
@@ -602,15 +603,28 @@ class Worldwave:
             self._memory_tools.set_entity(self._current_entity_id)
         if self._memory_tools is None:
             return None
-        result = self._memory_tools.remember(key, value, kind="outcome")
-        if result.get("success") or result.get("status") == "stored":
-            self._log(
-                f"## Internal remember entity={self._current_entity_id[:12] if self._current_entity_id else '?'} "
-                f"{key}={value[:40]}"
+        last: Optional[Dict[str, Any]] = None
+        stored_n = 0
+        for key, value, kind in facts:
+            if not key or not value:
+                continue
+            result = self._memory_tools.remember(
+                key, value, kind=kind or "outcome"
             )
-            # Stash for diagnostics; product path still goes through tools/response
-            self._last_internal_remember = result
-        return result
+            if result.get("success") or result.get("status") == "stored":
+                stored_n += 1
+                last = result
+                self._log(
+                    f"## Internal remember entity="
+                    f"{self._current_entity_id[:12] if self._current_entity_id else '?'} "
+                    f"{key}={value[:40]} kind={kind or 'outcome'}"
+                )
+        if last is not None:
+            last = dict(last)
+            last["stored_count"] = stored_n
+            last["keys"] = [k for k, _, _ in facts]
+            self._last_internal_remember = last
+        return last
 
     def _repair_remember_params(
         self, params: Optional[Dict[str, Any]], goal: str = ""
@@ -619,25 +633,46 @@ class Worldwave:
         p = dict(params or {})
         key = str(p.get("key") or "").strip()
         value = str(p.get("value") or p.get("content") or p.get("fact") or "").strip()
+        kind = str(p.get("kind") or "").strip()
         if key and value:
             p["key"] = key
             p["value"] = value
+            if not kind:
+                try:
+                    from core.memory.tools import default_kind_for_key
+
+                    p["kind"] = default_kind_for_key(key)
+                except Exception:
+                    pass
             return p
         utterance = goal or getattr(self, "_last_goal", "") or ""
         # Prefer the raw user request section if entity wrap is present
         if "[Current Request]" in utterance:
             utterance = utterance.split("[Current Request]", 1)[-1].strip()
         try:
-            from core.memory.tools import extract_remember_kv
+            from core.memory.tools import default_kind_for_key, extract_remember_facts
 
-            pair = extract_remember_kv(utterance)
+            facts = extract_remember_facts(utterance)
         except Exception:
-            pair = None
-        if pair:
+            facts = []
+            default_kind_for_key = None  # type: ignore
+        if facts:
+            # Prefer matching incomplete key, else first priority fact
+            pick = facts[0]
+            if key:
+                for fk, fv, fkind in facts:
+                    if fk == key:
+                        pick = (fk, fv, fkind)
+                        break
+            fk, fv, fkind = pick
             if not key:
-                p["key"] = pair[0]
+                p["key"] = fk
             if not value:
-                p["value"] = pair[1]
+                p["value"] = fv
+            if not kind and fkind:
+                p["kind"] = fkind
+            elif not kind and default_kind_for_key is not None:
+                p["kind"] = default_kind_for_key(p.get("key") or fk)
         return p
 
     def _reflex_synthesize_reply(

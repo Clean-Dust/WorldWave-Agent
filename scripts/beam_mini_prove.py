@@ -217,8 +217,29 @@ def _looks_json_status(text: str) -> bool:
     return False
 
 
+def _normalize_apostrophes(text: str) -> str:
+    """Map curly/typographic apostrophes to ASCII so cue match is robust.
+
+    Gate 0.5: model replies often use U+2019 RIGHT SINGLE QUOTATION MARK in
+    "don't" / "can't"; scorers must not false-negative those.
+    """
+    if not text:
+        return text
+    # ’ ‘ ʻ ʼ ˈ ´ ` and common confusables → '
+    return (
+        text.replace("\u2019", "'")  # ’
+        .replace("\u2018", "'")  # ‘
+        .replace("\u02bb", "'")  # ʻ
+        .replace("\u02bc", "'")  # ʼ
+        .replace("\u02c8", "'")  # ˈ
+        .replace("\u00b4", "'")  # ´
+        .replace("\u0060", "'")  # `
+    )
+
+
 def _has_refuse_language(low: str) -> bool:
     """True when text honestly refuses / abstains (adverb-tolerant)."""
+    low = _normalize_apostrophes(low)
     refuse_cues = (
         "don't have",
         "do not have",
@@ -273,7 +294,7 @@ def _abstention_ok(text: str) -> bool:
     """Refuse unknown without dumping known facts as the answer."""
     if not text or _is_dump(text) or _looks_json_status(text):
         return False
-    low = text.lower()
+    low = _normalize_apostrophes(text).lower()
     if not _has_refuse_language(low):
         return False
     # Must not answer with a dump of other facts
@@ -358,7 +379,7 @@ def _contradiction_ok(text: str) -> bool:
     """
     if not text or _is_dump(text):
         return False
-    low = text.lower()
+    low = _normalize_apostrophes(text).lower()
     cues = (
         "conflict",
         "contradict",

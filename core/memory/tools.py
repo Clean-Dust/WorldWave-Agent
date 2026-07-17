@@ -34,7 +34,7 @@ from core.memory.entity_scope import (
 
 log = logging.getLogger("ww.memory.tools")
 
-# Natural-language remember patterns (Gate 0.1 reliability)
+# Natural-language remember patterns (Gate 0.1 / 0.5 reliability)
 _RE_KEY_VALUE = re.compile(
     r"(?:^|[\s,;])key\s*[=:]\s*['\"]?([A-Za-z0-9_.\-]+)['\"]?"
     r".*?"
@@ -45,6 +45,54 @@ _RE_KEY_VALUE_ALT = re.compile(
     r"key\s*[=:]\s*['\"]?([A-Za-z0-9_.\-]+)['\"]?"
     r"\s+"
     r"value\s*[=:]\s*['\"]?(.+?)['\"]?(?:\s|$)",
+    re.I | re.S,
+)
+# Bare known_key=value (preference_marker=BeamPref*, iron_rule=…) — Gate 0.5
+_KNOWN_FACT_KEYS = (
+    "preference_marker",
+    "iron_rule",
+    "home_city",
+    "pet_name",
+    "current_job",
+    "redis_likes",
+    "redis_stance",
+    "favorite_color",
+    "user_name",
+    "prove_product_code",
+    "event_order",
+    "timeline_event_a",
+    "timeline_event_b",
+)
+_RE_BARE_KNOWN_KV = re.compile(
+    r"\b("
+    + "|".join(re.escape(k) for k in _KNOWN_FACT_KEYS)
+    + r")\s*[=:]\s*['\"]?([A-Za-z0-9_.\-]{2,120})['\"]?",
+    re.I,
+)
+_RE_IRON_HONOR = re.compile(
+    r"(?:iron\s*rule|constraint).{0,100}?\b(?:honor|honour|follow|obey)\s+"
+    r"['\"]?([A-Za-z][A-Za-z0-9_.\-]{2,80})['\"]?",
+    re.I | re.S,
+)
+_RE_HONOR_ALWAYS = re.compile(
+    r"\balways\s+(?:honor|honour|follow|obey)\s+"
+    r"['\"]?([A-Za-z][A-Za-z0-9_.\-]{2,80})['\"]?",
+    re.I,
+)
+# Timeline: first I did EventA, later I did EventB
+_RE_TIMELINE_DID = re.compile(
+    r"\bfirst(?:\s+i)?\s+(?:did|do|completed|finished)\s+"
+    r"['\"]?([A-Za-z][A-Za-z0-9_.\-]{2,80})['\"]?"
+    r".{0,120}?"
+    r"\b(?:later|then|after(?:wards?)?|second)(?:\s+i)?\s+"
+    r"(?:did|do|completed|finished)\s+"
+    r"['\"]?([A-Za-z][A-Za-z0-9_.\-]{2,80})['\"]?",
+    re.I | re.S,
+)
+_RE_TIMELINE_EVENT_MARKERS = re.compile(
+    r"\bfirst\b.{0,40}?\b(BeamEventA[A-Za-z0-9_]*)\b"
+    r".{0,80}?"
+    r"\b(?:later|then|after)\b.{0,40}?\b(BeamEventB[A-Za-z0-9_]*)\b",
     re.I | re.S,
 )
 _RE_REMEMBER_IS = re.compile(
@@ -60,11 +108,21 @@ _RE_STORE_THAT = re.compile(
     r"^(?:i\s+)?(?:like|hate|prefer|use|work\s+as|live\s+in)\s+(.+?)(?:\.\s*store.*)?$",
     re.I,
 )
+_RE_STORE_UNDER_KEY_NAME = re.compile(
+    r"store\s+(?:that\s+)?under\s+(?:key\s+)?"
+    r"['\"]?([A-Za-z][A-Za-z0-9_.\-]{1,48})['\"]?",
+    re.I,
+)
+_RE_STANCE_VALUE = re.compile(
+    r"\b(?:like|hate|prefer)\s+['\"]?([A-Za-z][A-Za-z0-9_.\-]{2,80})['\"]?",
+    re.I,
+)
 
-# Map natural phrases → stable keys
+# Map natural phrases → stable keys (order: more specific first)
 _NL_KEY_MAP = (
+    (re.compile(r"\bpreference_marker\b", re.I), "preference_marker"),
     (re.compile(r"\bhome\s*city\b|\bcity\b|\blive\b", re.I), "home_city"),
-    (re.compile(r"\bpet(?:'s)?\s*name\b|\bpet\b", re.I), "pet_name"),
+    (re.compile(r"\bpet(?:'s|\u2019s)?\s*name\b|\bpet\b", re.I), "pet_name"),
     (re.compile(r"\b(?:current\s+)?job\b|\bwork(?:s|ing)?\b|\brole\b", re.I), "current_job"),
     (re.compile(r"\bpreference\b|\bprefer\b", re.I), "preference"),
     (re.compile(r"\biron\s*rule\b|\brule\b|\bconstraint\b", re.I), "iron_rule"),
@@ -80,78 +138,187 @@ def _slug_key(label: str, fallback: str = "fact") -> str:
     return s[:48]
 
 
-def extract_remember_kv(utterance: str) -> Optional[Tuple[str, str]]:
-    """Best-effort extract (key, value) from a natural remember utterance.
+def default_kind_for_key(key: str) -> str:
+    """Stable product kind for known keys (not free-text keyword guessing)."""
+    k = (key or "").strip().lower()
+    if k == "iron_rule":
+        return "constraint"
+    return "outcome"
 
-    Handles:
-      - key=foo value=bar
-      - Remember: my city is Tokyo
-      - Please remember: my pet's name is Luna
-      - My job is Engineer. Store that.
-    Returns None when extraction is unreliable.
+
+def _map_label_to_key(label: str, fallback: str = "fact") -> str:
+    for rx, mapped in _NL_KEY_MAP:
+        if rx.search(label):
+            return mapped
+    return _slug_key(label, fallback)
+
+
+def _clean_value(value: str) -> str:
+    v = (value or "").strip().strip(".'\"")
+    v = re.split(
+        r"\.\s*(?:store|using|call|do not|this is|not preference)\b",
+        v,
+        maxsplit=1,
+        flags=re.I,
+    )[0].strip()
+    return v.strip(".'\" \t")
+
+
+def extract_remember_facts(utterance: str) -> list:
+    """Best-effort extract one or more (key, value, kind) from a remember utterance.
+
+    Gate 0.5: preference_marker=…, iron_rule honor tokens, multi-event timeline
+    (EventA then EventB) must all land as durable entity-scoped facts.
+    Returns list of (key, value, kind) tuples; empty when unreliable.
     """
     text = (utterance or "").strip()
     if not text:
-        return None
+        return []
+
+    found: list = []
+    seen_keys: set = set()
+
+    def _add(key: str, value: str, kind: str = "") -> None:
+        k = (key or "").strip()
+        v = _clean_value(value)
+        if not k or not v or len(v) > 500:
+            return
+        # Prefer first high-quality value for a key
+        if k in seen_keys:
+            return
+        seen_keys.add(k)
+        resolved_kind = (kind or "").strip() or default_kind_for_key(k)
+        found.append((k, v, resolved_kind))
 
     # 1) Explicit key= / value=
     for pat in (_RE_KEY_VALUE, _RE_KEY_VALUE_ALT):
         m = pat.search(text)
         if m:
-            k, v = m.group(1).strip(), m.group(2).strip().strip("'\"")
-            if k and v:
-                return k, v
+            _add(m.group(1).strip(), m.group(2).strip().strip("'\""))
+            break
 
-    # 2) Remember: my X is Y
+    # 2) Bare known_key=value (all occurrences — preference_marker, iron_rule, …)
+    for m in _RE_BARE_KNOWN_KV.finditer(text):
+        _add(m.group(1).strip(), m.group(2).strip())
+
+    # 3) Iron rule: "always honor BeamIronRule…" / "Iron rule … honor X"
+    if "iron" in text.lower() or "honor" in text.lower() or "honour" in text.lower():
+        for pat in (_RE_IRON_HONOR, _RE_HONOR_ALWAYS):
+            m = pat.search(text)
+            if m:
+                token = m.group(1).strip().strip("'\".,;")
+                # Skip stop-words mistaken as tokens
+                if token.lower() not in {
+                    "when", "it", "this", "that", "the", "my", "your", "rules",
+                }:
+                    _add("iron_rule", token, "constraint")
+                    break
+
+    # 4) Timeline multi-event → durable ordered facts
+    ea = eb = ""
+    m = _RE_TIMELINE_DID.search(text)
+    if m:
+        ea, eb = m.group(1).strip(), m.group(2).strip()
+    if not ea:
+        m = _RE_TIMELINE_EVENT_MARKERS.search(text)
+        if m:
+            ea, eb = m.group(1).strip(), m.group(2).strip()
+    if ea and eb and ea.lower() != eb.lower():
+        _add("timeline_event_a", ea)
+        _add("timeline_event_b", eb)
+        _add("event_order", f"first {ea} then {eb}")
+
+    # 5) "I like X … store under key redis_likes" / "prefer Y. Store under redis_stance"
+    m_under = _RE_STORE_UNDER_KEY_NAME.search(text)
+    if m_under:
+        store_key = m_under.group(1).strip()
+        # Skip meta keys that are exclusions ("not preference_marker")
+        if store_key.lower() not in {"preference_marker", "not"}:
+            head = text[: m_under.start()]
+            vals = [v.strip() for v in _RE_STANCE_VALUE.findall(head)]
+            if vals:
+                # Prefer marker-like tokens (digits / CamelCase length) over bare "Redis"
+                def _val_score(v: str) -> tuple:
+                    return (
+                        1 if re.search(r"\d", v) else 0,
+                        1 if v[:1].isupper() and any(c.islower() for c in v[1:]) else 0,
+                        len(v),
+                    )
+
+                best = max(vals, key=_val_score)
+                _add(store_key, best)
+
+    # 6) Remember: my X is Y  (skip if label already captured as bare k=v)
     m = _RE_REMEMBER_IS.search(text)
     if m:
-        label, value = m.group(1).strip(), m.group(2).strip().strip(".'\"")
-        # Strip trailing instructions
-        value = re.split(r"\.\s*(?:store|using|call|do not)\b", value, maxsplit=1, flags=re.I)[0].strip()
-        if label and value and len(value) < 500:
-            key = "fact"
-            for rx, mapped in _NL_KEY_MAP:
-                if rx.search(label):
-                    key = mapped
-                    break
-            else:
-                key = _slug_key(label, "fact")
-            return key, value
+        label, value = m.group(1).strip(), m.group(2).strip()
+        # Reject labels that embed another key=value (false positive on
+        # "remember preference_marker=Pref. This is my stated…")
+        if not _RE_BARE_KNOWN_KV.search(label) and "=" not in label:
+            key = _map_label_to_key(label, "fact")
+            _add(key, value)
 
-    # 3) Remember: <free text> — store whole clause under a derived key
+    # 7) Remember: <free text>
     m = _RE_REMEMBER_COLON.search(text)
-    if m:
+    if m and not found:
         body = m.group(1).strip().strip(".'\"")
         if body and len(body) < 500:
-            # Try "my X is Y" inside body
             m2 = re.search(
                 r"(?:my\s+)?(.+?)\s+(?:is|are|=)\s+(.+)$", body, re.I
             )
-            if m2:
-                label, value = m2.group(1).strip(), m2.group(2).strip().strip(".'\"")
-                key = "fact"
+            if m2 and "=" not in m2.group(1):
+                label, value = m2.group(1).strip(), m2.group(2).strip()
+                _add(_map_label_to_key(label, "user_fact"), value)
+            else:
+                key = "user_fact"
                 for rx, mapped in _NL_KEY_MAP:
-                    if rx.search(label):
+                    if rx.search(body):
                         key = mapped
                         break
-                else:
-                    key = _slug_key(label, "user_fact")
-                return key, value
-            key = "user_fact"
-            for rx, mapped in _NL_KEY_MAP:
-                if rx.search(body):
-                    key = mapped
-                    break
-            return key, body
+                _add(key, body)
 
-    # 4) "I like X. Store that."
+    # 8) "I like X. Store that."
     low = text.lower()
-    if "store" in low or "remember" in low:
+    if not found and ("store" in low or "remember" in low):
         m = _RE_STORE_THAT.match(text.strip())
         if m:
-            return "preference", m.group(1).strip().strip(".'\"")
+            _add("preference", m.group(1).strip().strip(".'\""))
 
-    return None
+    return found
+
+
+def extract_remember_kv(utterance: str) -> Optional[Tuple[str, str]]:
+    """Best-effort extract (key, value) from a natural remember utterance.
+
+    Handles:
+      - key=foo value=bar
+      - preference_marker=BeamPref* / iron_rule honor tokens
+      - Remember: my city is Tokyo
+      - Timeline first EventA later EventB (returns first pair; use
+        extract_remember_facts for all)
+      - My job is Engineer. Store that.
+    Returns None when extraction is unreliable.
+    """
+    facts = extract_remember_facts(utterance)
+    if not facts:
+        return None
+    # Prefer identity / named keys over timeline side-effects when multiple
+    priority = (
+        "preference_marker",
+        "iron_rule",
+        "home_city",
+        "pet_name",
+        "current_job",
+        "event_order",
+        "timeline_event_a",
+        "timeline_event_b",
+    )
+    by_key = {k: (k, v) for k, v, _ in facts}
+    for pk in priority:
+        if pk in by_key:
+            return by_key[pk]
+    k, v, _ = facts[0]
+    return k, v
 
 # Product default: dual-write OFF. Emergency only: WW_ENTITY_WM_DUAL_WRITE=1.
 # EntityState remains for identity continuity + isolated unit fixtures.
@@ -337,7 +504,10 @@ class MemoryTools:
         eid = self._active_entity()
         self._bind_vnext_entity()
 
+        # Gate 0.5: known keys (iron_rule → constraint) when kind omitted
         kind_arg: Optional[str] = kind if (kind is not None and str(kind).strip()) else None
+        if kind_arg is None:
+            kind_arg = default_kind_for_key(key)
         resolved_kind = normalize_wm_kind(kind_arg)
         previous = None
         vnext = self._vnext()
