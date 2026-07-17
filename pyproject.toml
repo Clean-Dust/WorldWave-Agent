@@ -77,3 +77,11 @@ namespaces = false
 testpaths = ["tests"]
 python_files = ["test_*.py"]
 addopts = "-v --tb=short"
+# Do not collect sample apps under tests/fixtures (e.g. coding_repo demo tests)
+norecursedirs = [
+    ".git", ".hg", ".svn", "_darcs", "CVS", ".tox", ".nox",
+    ".venv", "venv", "env", "dist", "build", "*.egg",
+    "fixtures", "node_modules", "__pycache__",
+]
+# Belt-and-suspenders if a path is passed explicitly
+collect_ignore_glob = ["tests/fixtures/**"]
