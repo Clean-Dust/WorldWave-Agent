@@ -484,7 +484,7 @@ def create_planning_tools(config: AgentConfig, manager: PlanManager) -> List[Dic
         },
         {
             "name": "coding_mark_ticket_done",
-            "description": "Mark a ticket as completed.",
+            "description": "Mark a ticket as completed. When WW_CODING_REQUIRE_TEST=1 or the ticket is a test ticket, requires last coding_verify to be green.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -495,12 +495,9 @@ def create_planning_tools(config: AgentConfig, manager: PlanManager) -> List[Dic
                 },
                 "required": ["ticket_id"],
             },
-            "handler": lambda ticket_id: (
-                manager.active_plan.mark_done(ticket_id),
-                manager.save_plans_md(),
-                {"success": True, "ticket_id": ticket_id},
-            )[2],
+            "handler": lambda ticket_id: _mark_ticket_done_gated(manager, ticket_id),
             "category": "code_planning",
+            "permission": "safe",
         },
         {
             "name": "coding_save_plan",
@@ -517,6 +514,40 @@ def create_planning_tools(config: AgentConfig, manager: PlanManager) -> List[Dic
             "category": "code_planning",
         },
     ]
+
+
+def _mark_ticket_done_gated(manager, ticket_id: str) -> Dict:
+    """Gate mark_done on verify when required."""
+    ticket_dict = None
+    if manager.active_plan:
+        for t in getattr(manager.active_plan, "tickets", []) or []:
+            tid = t.get("id") if isinstance(t, dict) else getattr(t, "id", None)
+            if tid == ticket_id:
+                if isinstance(t, dict):
+                    ticket_dict = t
+                else:
+                    ticket_dict = {
+                        "id": tid,
+                        "title": getattr(t, "title", ""),
+                        "description": getattr(t, "description", ""),
+                    }
+                break
+    try:
+        from coding.policy import get_causal_state
+        gate = get_causal_state().check_mark_ticket_done_allowed(ticket_dict)
+        if not gate.get("allowed", True):
+            return {
+                "success": False,
+                "error": gate.get("reason", "Verify required before mark_ticket_done"),
+                "ticket_id": ticket_id,
+            }
+    except Exception:
+        pass
+    if not manager.active_plan:
+        return {"error": "No active plan", "ticket_id": ticket_id}
+    manager.active_plan.mark_done(ticket_id)
+    manager.save_plans_md()
+    return {"success": True, "ticket_id": ticket_id}
 
 
 def get_planning_tools() -> List[Dict]:

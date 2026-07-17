@@ -297,12 +297,30 @@ def get_shell() -> SentinelShell:
     return _shell
 
 
+def _safe_exec(shell: SentinelShell, command, session_id=None, timeout=None, workdir=None):
+    """Policy-gated shell exec with semantic denial reasons."""
+    try:
+        from coding.policy import check_command_allowed
+        gate = check_command_allowed(command)
+        if not gate.get("allowed", True):
+            return {
+                "success": False,
+                "denied": True,
+                "error": gate.get("reason", "Command denied by coding policy"),
+                "reason": gate.get("reason", "Command denied by coding policy"),
+                "command_preview": (command or "")[:200],
+            }
+    except Exception:
+        pass
+    return shell.exec(command, session_id, timeout, workdir)
+
+
 def create_shell_tools(shell: SentinelShell) -> List[Dict]:
     """Create tool definitions for shell execution."""
     return [
         {
             "name": "coding_exec",
-            "description": "Execute a command in a persistent shell session. Supports long-running processes, background services, and interactive tools. Uses sentinel markers for reliable completion detection.",
+            "description": "Execute a command in a persistent shell session. Supports long-running processes, background services, and interactive tools. Uses sentinel markers for reliable completion detection. Dangerous patterns are deny-first blocked.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -325,8 +343,11 @@ def create_shell_tools(shell: SentinelShell) -> List[Dict]:
                 },
                 "required": ["command"],
             },
-            "handler": lambda command, session_id=None, timeout=None, workdir=None: shell.exec(command, session_id, timeout, workdir),
+            "handler": lambda command, session_id=None, timeout=None, workdir=None: _safe_exec(
+                shell, command, session_id, timeout, workdir
+            ),
             "category": "code_aci",
+            "permission": "requires_approval",
         },
         {
             "name": "coding_shell_session_create",

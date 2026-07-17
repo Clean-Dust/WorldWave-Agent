@@ -13,6 +13,7 @@ Architecture:
 from __future__ import annotations
 import ast
 import os
+import re
 import subprocess
 import tempfile
 from typing import Dict, List
@@ -187,6 +188,19 @@ class DefensiveEditor:
         if not os.path.isfile(path):
             return {"success": False, "error": f"File not found: {path}"}
 
+        try:
+            from coding.policy import check_content_secrets
+            sec = check_content_secrets(new_content)
+            if not sec.get("allowed", True):
+                return {
+                    "success": False,
+                    "error": sec.get("reason", "Secret detected"),
+                    "rollback": True,
+                    "secret_blocked": True,
+                }
+        except Exception:
+            pass
+
         # Read original content
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             original_lines = f.readlines()
@@ -247,6 +261,19 @@ class DefensiveEditor:
     def write_file(self, path: str, content: str) -> Dict:
         """Safe write with syntax validation."""
         path = os.path.abspath(os.path.expanduser(path))
+
+        try:
+            from coding.policy import check_content_secrets
+            sec = check_content_secrets(content)
+            if not sec.get("allowed", True):
+                return {
+                    "success": False,
+                    "error": sec.get("reason", "Secret detected"),
+                    "rollback": True,
+                    "secret_blocked": True,
+                }
+        except Exception:
+            pass
 
         if self._lint_enabled:
             result = self._validate_syntax(path, content)
@@ -385,8 +412,504 @@ class DefensiveEditor:
 
         return "\n".join(diff_parts) if len(diff_parts) > 2 else "(no changes)"
 
+    def edit_symbol(self, path: str, symbol_name: str, new_body: str) -> Dict:
+        """Replace a function/class body by name via AST; syntax check + rollback.
+
+        *new_body* may be:
+        - full def/class statement including signature, or
+        - only the indented body lines (will replace interior of the symbol).
+        """
+        path = os.path.abspath(os.path.expanduser(path))
+        if not os.path.isfile(path):
+            return {"success": False, "error": f"File not found: {path}", "rollback": False}
+
+        # Circuit before edit
+        circuit_info = None
+        try:
+            from coding.circuit import get_breaker
+            circuit_info = get_breaker().before_edit(path)
+            if circuit_info.get("tripped"):
+                return {
+                    "success": False,
+                    "error": f"Circuit breaker tripped for {path}",
+                    "circuit": circuit_info,
+                    "rollback": False,
+                }
+        except Exception:
+            pass
+
+        # Secret scan on new body
+        try:
+            from coding.policy import check_content_secrets, record_coding_write, append_edit_log, find_project_root
+            sec = check_content_secrets(new_body)
+            if not sec.get("allowed", True):
+                return {"success": False, "error": sec["reason"], "rollback": True, "secret_blocked": True}
+        except Exception:
+            check_content_secrets = None  # type: ignore
+            record_coding_write = None  # type: ignore
+            append_edit_log = None  # type: ignore
+            find_project_root = None  # type: ignore
+
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            original = f.read()
+        original_lines = original.splitlines(keepends=True)
+
+        try:
+            tree = ast.parse(original)
+        except SyntaxError as e:
+            return {"success": False, "error": f"Cannot parse original file: {e}", "rollback": False}
+
+        target = None
+        bare = symbol_name.split(".")[-1]
+        # Prefer qualified match Class.method
+        if "." in symbol_name:
+            cls_name, meth = symbol_name.split(".", 1)
+            for node in tree.body:
+                if isinstance(node, ast.ClassDef) and node.name == cls_name:
+                    for child in node.body:
+                        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == meth:
+                            target = child
+                            break
+        if target is None:
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    if node.name == bare or node.name == symbol_name:
+                        target = node
+                        # Prefer top-level / exact
+                        if node.name == symbol_name:
+                            break
+
+        if target is None:
+            return {
+                "success": False,
+                "error": f"Symbol not found: {symbol_name}",
+                "rollback": False,
+            }
+
+        start = target.lineno  # 1-indexed
+        end = target.end_lineno or target.lineno
+        # Detect if new_body is a full replacement (starts with def/class/async)
+        stripped = new_body.lstrip()
+        is_full = stripped.startswith(("def ", "class ", "async def ", "@"))
+
+        if is_full:
+            # Replace entire symbol including signature
+            # Preserve original indentation of the def line
+            orig_indent = ""
+            if start - 1 < len(original_lines):
+                line = original_lines[start - 1]
+                orig_indent = line[: len(line) - len(line.lstrip())]
+            body_lines = new_body.splitlines(keepends=True)
+            if body_lines and not body_lines[0].startswith(orig_indent) and orig_indent:
+                # Re-indent relative to first line of new_body
+                first_indent = body_lines[0][: len(body_lines[0]) - len(body_lines[0].lstrip())]
+                reindented = []
+                for bl in body_lines:
+                    if bl.strip() == "":
+                        reindented.append("\n" if bl.endswith("\n") else "")
+                        continue
+                    if first_indent and bl.startswith(first_indent):
+                        bl = orig_indent + bl[len(first_indent):]
+                    else:
+                        bl = orig_indent + bl.lstrip() if not bl.startswith(orig_indent) else bl
+                    if not bl.endswith("\n"):
+                        bl += "\n"
+                    reindented.append(bl)
+                body_lines = reindented
+            else:
+                body_lines = [
+                    (bl if bl.endswith("\n") else bl + "\n") for bl in new_body.splitlines()
+                ] or ["pass\n"]
+            new_lines = original_lines[: start - 1] + body_lines + original_lines[end:]
+        else:
+            # Replace only interior body (keep signature line(s) through first line after colon)
+            # Find body start: first line after the def/class line that is more indented
+            sig_line = original_lines[start - 1]
+            base_indent = len(sig_line) - len(sig_line.lstrip())
+            body_start = start  # 0-index later
+            # Account for decorators: target.lineno is def line, but decorators are before
+            # For end we use end_lineno; for body interior skip decorator+sig
+            # Find first body line
+            i = start  # 1-indexed next line after def
+            while i <= end:
+                if i - 1 >= len(original_lines):
+                    break
+                ln = original_lines[i - 1]
+                if ln.strip() == "":
+                    i += 1
+                    continue
+                ind = len(ln) - len(ln.lstrip())
+                if ind > base_indent:
+                    body_start = i
+                    break
+                # multi-line signature
+                i += 1
+            else:
+                body_start = start + 1
+
+            # Indent new body to base_indent + 4
+            child_indent = " " * (base_indent + 4)
+            body_parts = []
+            for bl in new_body.splitlines():
+                if bl.strip() == "":
+                    body_parts.append("\n")
+                else:
+                    body_parts.append(child_indent + bl.lstrip() + "\n")
+            if not body_parts:
+                body_parts = [child_indent + "pass\n"]
+            new_lines = (
+                original_lines[: body_start - 1]
+                + body_parts
+                + original_lines[end:]
+            )
+
+        new_text = "".join(new_lines)
+
+        # Syntax validation
+        if self._lint_enabled:
+            result = self._validate_syntax(path, new_text)
+            if not result.valid:
+                try:
+                    from coding.circuit import get_breaker
+                    get_breaker().after_edit(
+                        path, False, error_text="\n".join(result.errors), diff=""
+                    )
+                except Exception:
+                    pass
+                return {
+                    "success": False,
+                    "error": "Syntax validation failed",
+                    "errors": result.errors,
+                    "rollback": True,
+                    "symbol": symbol_name,
+                }
+
+        # Ensure new AST still has the symbol when full replace
+        try:
+            new_tree = ast.parse(new_text)
+        except SyntaxError as e:
+            return {
+                "success": False,
+                "error": f"Syntax validation failed: {e}",
+                "errors": [str(e)],
+                "rollback": True,
+            }
+
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                dir=os.path.dirname(path) or ".", prefix=".ww_edit_", suffix=".tmp"
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(new_text)
+            os.replace(tmp_path, path)
+        except (IOError, OSError) as e:
+            return {"success": False, "error": f"Write failed: {e}", "rollback": True}
+
+        diff = self._simple_diff(original, new_text, path)
+        try:
+            from coding.circuit import get_breaker
+            get_breaker().after_edit(path, True, diff=diff)
+        except Exception:
+            pass
+        try:
+            from coding.policy import record_coding_write, append_edit_log, find_project_root
+            record_coding_write(path, "edit_symbol")
+            append_edit_log(find_project_root(path), {
+                "tool": "coding_edit_symbol",
+                "path": path,
+                "symbol": symbol_name,
+                "success": True,
+            })
+        except Exception:
+            pass
+
+        return {
+            "success": True,
+            "path": path,
+            "symbol": symbol_name,
+            "start_line": start,
+            "end_line": end,
+            "diff": diff,
+            "ast_ok": True,
+        }
+
+    def apply_patch(self, patch_text: str, reverse: bool = False) -> Dict:
+        """Apply a unified diff with syntax check + rollback on failure."""
+        if not patch_text or not patch_text.strip():
+            return {"success": False, "error": "Empty patch", "rollback": False}
+
+        try:
+            from coding.policy import check_content_secrets
+            sec = check_content_secrets(patch_text)
+            if not sec.get("allowed", True):
+                return {
+                    "success": False,
+                    "error": sec["reason"],
+                    "rollback": True,
+                    "secret_blocked": True,
+                }
+        except Exception:
+            pass
+
+        # Parse unified diff into file hunks
+        files = _parse_unified_diff(patch_text)
+        if not files:
+            return {"success": False, "error": "Could not parse unified diff", "rollback": False}
+
+        backups: Dict[str, str] = {}
+        applied: List[str] = []
+        try:
+            for fpath, hunks in files.items():
+                abs_path = os.path.abspath(os.path.expanduser(fpath))
+                # Circuit
+                try:
+                    from coding.circuit import get_breaker
+                    info = get_breaker().before_edit(abs_path)
+                    if info.get("tripped"):
+                        raise RuntimeError(f"Circuit breaker tripped for {abs_path}")
+                except RuntimeError:
+                    raise
+                except Exception:
+                    pass
+
+                if os.path.isfile(abs_path):
+                    with open(abs_path, "r", encoding="utf-8", errors="replace") as f:
+                        original = f.read()
+                else:
+                    original = ""
+                backups[abs_path] = original
+                new_content = _apply_hunks(original, hunks, reverse=reverse)
+
+                if abs_path.endswith(".py") or abs_path.endswith(".pyi"):
+                    if self._lint_enabled and new_content.strip():
+                        vr = self._validate_syntax(abs_path, new_content)
+                        if not vr.valid:
+                            raise SyntaxError("; ".join(vr.errors))
+
+                os.makedirs(os.path.dirname(abs_path) or ".", exist_ok=True)
+                fd, tmp_path = tempfile.mkstemp(
+                    dir=os.path.dirname(abs_path) or ".", prefix=".ww_patch_", suffix=".tmp"
+                )
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(new_content)
+                os.replace(tmp_path, abs_path)
+                applied.append(abs_path)
+                try:
+                    from coding.policy import record_coding_write, append_edit_log, find_project_root
+                    record_coding_write(abs_path, "apply_patch")
+                    append_edit_log(find_project_root(abs_path), {
+                        "tool": "coding_apply_patch",
+                        "path": abs_path,
+                        "success": True,
+                    })
+                except Exception:
+                    pass
+                try:
+                    from coding.circuit import get_breaker
+                    get_breaker().after_edit(abs_path, True)
+                except Exception:
+                    pass
+
+            return {
+                "success": True,
+                "files": applied,
+                "count": len(applied),
+            }
+        except Exception as e:
+            # Rollback all
+            for abs_path, content in backups.items():
+                try:
+                    if content == "" and not os.path.isfile(abs_path):
+                        continue
+                    if content == "" and os.path.isfile(abs_path):
+                        # was newly created — remove
+                        try:
+                            os.unlink(abs_path)
+                        except OSError:
+                            pass
+                    else:
+                        with open(abs_path, "w", encoding="utf-8") as f:
+                            f.write(content)
+                except OSError:
+                    pass
+            for abs_path in applied:
+                try:
+                    from coding.circuit import get_breaker
+                    get_breaker().after_edit(abs_path, False, error_text=str(e))
+                except Exception:
+                    pass
+            return {
+                "success": False,
+                "error": str(e),
+                "rollback": True,
+                "files_attempted": list(backups.keys()),
+            }
+
+
+def _parse_unified_diff(patch_text: str) -> Dict[str, List[Dict]]:
+    """Parse unified diff → {path: [hunks]}."""
+    files: Dict[str, List[Dict]] = {}
+    current_path = None
+    current_hunk = None
+    for line in patch_text.splitlines(keepends=True):
+        if line.startswith("--- "):
+            continue
+        if line.startswith("+++ "):
+            raw = line[4:].strip()
+            # strip a/ b/ prefixes
+            if raw.startswith("b/") or raw.startswith("a/"):
+                raw = raw[2:]
+            # strip timestamp tabs
+            raw = raw.split("\t")[0].strip()
+            current_path = raw
+            files.setdefault(current_path, [])
+            current_hunk = None
+            continue
+        if line.startswith("@@"):
+            # @@ -l,s +l,s @@
+            m = re.match(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@", line)
+            if not m or current_path is None:
+                continue
+            current_hunk = {
+                "old_start": int(m.group(1)),
+                "old_count": int(m.group(2) or "1"),
+                "new_start": int(m.group(3)),
+                "new_count": int(m.group(4) or "1"),
+                "lines": [],
+            }
+            files[current_path].append(current_hunk)
+            continue
+        if current_hunk is not None and (line.startswith(" ") or line.startswith("+") or line.startswith("-") or line.startswith("\\")):
+            current_hunk["lines"].append(line if line.endswith("\n") else line + "\n")
+    return files
+
+
+def _apply_hunks(original: str, hunks: List[Dict], reverse: bool = False) -> str:
+    """Apply hunks to original content. Simple sequential apply from bottom."""
+    if not hunks:
+        return original
+    lines = original.splitlines(keepends=True)
+    # Apply from bottom so line numbers stay valid
+    for hunk in sorted(hunks, key=lambda h: h["old_start"], reverse=True):
+        old_start = hunk["old_start"]
+        # unified diff is 1-indexed; empty file uses 0
+        idx = max(0, old_start - 1) if old_start > 0 else 0
+        old_lines = []
+        new_lines = []
+        for hl in hunk["lines"]:
+            if hl.startswith("\\"):
+                continue
+            tag = hl[0] if hl else " "
+            content = hl[1:] if len(hl) > 0 else "\n"
+            if not content.endswith("\n") and content != "":
+                content += "\n"
+            if reverse:
+                if tag == "+":
+                    old_lines.append(content)
+                elif tag == "-":
+                    new_lines.append(content)
+                else:
+                    old_lines.append(content)
+                    new_lines.append(content)
+            else:
+                if tag == "-":
+                    old_lines.append(content)
+                elif tag == "+":
+                    new_lines.append(content)
+                else:
+                    old_lines.append(content)
+                    new_lines.append(content)
+        # Verify context matches loosely
+        end = idx + len(old_lines)
+        if old_lines and lines[idx:end] != old_lines:
+            # Try to find nearby
+            found = False
+            for delta in range(0, 20):
+                for start in (idx + delta, idx - delta):
+                    if start < 0:
+                        continue
+                    if lines[start:start + len(old_lines)] == old_lines:
+                        idx = start
+                        end = idx + len(old_lines)
+                        found = True
+                        break
+                if found:
+                    break
+            if not found and old_lines:
+                raise ValueError(
+                    f"Hunk context mismatch at line {old_start}: "
+                    f"expected {old_lines[:2]!r} got {lines[idx:idx+2]!r}"
+                )
+        lines = lines[:idx] + new_lines + lines[end:]
+    return "".join(lines)
+
 
 # ── Tool definitions for WW registry ──────────────────────────────────
+
+def _wrap_edit_lines(editor: DefensiveEditor):
+    def handler(path, start_line, end_line, new_content):
+        try:
+            from coding.policy import check_content_secrets, record_coding_write, append_edit_log, find_project_root
+            sec = check_content_secrets(new_content)
+            if not sec.get("allowed", True):
+                return {"success": False, "error": sec["reason"], "rollback": True, "secret_blocked": True}
+        except Exception:
+            record_coding_write = None  # type: ignore
+            append_edit_log = None  # type: ignore
+            find_project_root = None  # type: ignore
+        try:
+            from coding.circuit import get_breaker
+            info = get_breaker().before_edit(path)
+            if info.get("tripped"):
+                return {"success": False, "error": f"Circuit breaker tripped for {path}", "circuit": info}
+        except Exception:
+            pass
+        result = editor.edit_lines(path, start_line, end_line, new_content)
+        try:
+            from coding.circuit import get_breaker
+            get_breaker().after_edit(
+                path,
+                bool(result.get("success")),
+                error_text=result.get("error", "") or "\n".join(result.get("errors") or []),
+                diff=result.get("diff", ""),
+            )
+        except Exception:
+            pass
+        if result.get("success"):
+            try:
+                from coding.policy import record_coding_write, append_edit_log, find_project_root
+                record_coding_write(path, "edit_lines")
+                append_edit_log(find_project_root(path), {
+                    "tool": "coding_edit_lines", "path": path, "success": True,
+                })
+            except Exception:
+                pass
+        return result
+    return handler
+
+
+def _wrap_write_file(editor: DefensiveEditor):
+    def handler(path, content):
+        try:
+            from coding.policy import check_content_secrets, record_coding_write, append_edit_log, find_project_root
+            sec = check_content_secrets(content)
+            if not sec.get("allowed", True):
+                return {"success": False, "error": sec["reason"], "rollback": True, "secret_blocked": True}
+        except Exception:
+            pass
+        result = editor.write_file(path, content)
+        if result.get("success"):
+            try:
+                from coding.policy import record_coding_write, append_edit_log, find_project_root
+                record_coding_write(path, "write_file")
+                append_edit_log(find_project_root(path), {
+                    "tool": "coding_write_file", "path": path, "success": True,
+                })
+            except Exception:
+                pass
+        return result
+    return handler
+
 
 def create_viewer_tools(viewer: WindowedFileViewer) -> List[Dict]:
     """Create tool definitions for the windowed file viewer."""
@@ -403,6 +926,7 @@ def create_viewer_tools(viewer: WindowedFileViewer) -> List[Dict]:
             },
             "handler": viewer.open,
             "category": "code_aci",
+            "permission": "safe",
         },
         {
             "name": "coding_scroll_down",
@@ -418,6 +942,7 @@ def create_viewer_tools(viewer: WindowedFileViewer) -> List[Dict]:
             },
             "handler": viewer.scroll_down,
             "category": "code_aci",
+            "permission": "safe",
         },
         {
             "name": "coding_scroll_up",
@@ -430,6 +955,7 @@ def create_viewer_tools(viewer: WindowedFileViewer) -> List[Dict]:
             },
             "handler": viewer.scroll_up,
             "category": "code_aci",
+            "permission": "safe",
         },
         {
             "name": "coding_goto",
@@ -446,6 +972,7 @@ def create_viewer_tools(viewer: WindowedFileViewer) -> List[Dict]:
             },
             "handler": viewer.goto,
             "category": "code_aci",
+            "permission": "safe",
         },
         {
             "name": "coding_close",
@@ -453,6 +980,7 @@ def create_viewer_tools(viewer: WindowedFileViewer) -> List[Dict]:
             "parameters": {"type": "object", "properties": {}},
             "handler": viewer.close,
             "category": "code_aci",
+            "permission": "safe",
         },
     ]
 
@@ -482,8 +1010,9 @@ def create_editor_tools(editor: DefensiveEditor) -> List[Dict]:
                 },
                 "required": ["path", "start_line", "end_line", "new_content"],
             },
-            "handler": editor.edit_lines,
+            "handler": _wrap_edit_lines(editor),
             "category": "code_aci",
+            "permission": "requires_approval",
         },
         {
             "name": "coding_write_file",
@@ -499,8 +1028,46 @@ def create_editor_tools(editor: DefensiveEditor) -> List[Dict]:
                 },
                 "required": ["path", "content"],
             },
-            "handler": editor.write_file,
+            "handler": _wrap_write_file(editor),
             "category": "code_aci",
+            "permission": "requires_approval",
+        },
+        {
+            "name": "coding_edit_symbol",
+            "description": "Replace a function or class body by name via AST. Syntax check + auto-rollback on failure.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Python file path"},
+                    "symbol_name": {
+                        "type": "string",
+                        "description": "Function/class name (or Class.method)",
+                    },
+                    "new_body": {
+                        "type": "string",
+                        "description": "New full def/class source or indented body only",
+                    },
+                },
+                "required": ["path", "symbol_name", "new_body"],
+            },
+            "handler": lambda path, symbol_name, new_body: editor.edit_symbol(path, symbol_name, new_body),
+            "category": "code_aci",
+            "permission": "requires_approval",
+        },
+        {
+            "name": "coding_apply_patch",
+            "description": "Apply a unified diff patch with syntax check and full rollback on failure. Secret scan blocks keys.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "patch_text": {"type": "string", "description": "Unified diff text"},
+                    "reverse": {"type": "boolean", "default": False},
+                },
+                "required": ["patch_text"],
+            },
+            "handler": lambda patch_text, reverse=False: editor.apply_patch(patch_text, reverse=reverse),
+            "category": "code_aci",
+            "permission": "requires_approval",
         },
     ]
 

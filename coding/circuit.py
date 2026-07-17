@@ -475,11 +475,22 @@ class CircuitBreaker:
             "is_repeated": self._tracker.is_repeated_error(error_text),
         }
 
-        # Check circuit breaker
-        if strikes >= self._max_strikes:
+        # Same fingerprint thrice also trips (even if under file strike budget)
+        same_fp = self._tracker.get_same_error_attempts(error_text)
+        result["same_fingerprint_count"] = same_fp
+
+        # Check circuit breaker: per-file strikes OR same fingerprint x3
+        if strikes >= self._max_strikes or same_fp >= self._max_strikes:
             trip_report = self._trip(filepath, error_text, diff)
             result["tripped"] = True
             result["trip_report"] = trip_report
+            if same_fp >= self._max_strikes:
+                result["trip_reason"] = "same_fingerprint"
+                trip_report["trip_reason"] = "same_fingerprint"
+                trip_report["recommendation"] = (
+                    f"Circuit breaker tripped: same error fingerprint seen "
+                    f"{same_fp} times on {filepath}. Stop thrashing; handoff report generated."
+                )
 
             # Auto-rollback
             if self._enable_rollback:

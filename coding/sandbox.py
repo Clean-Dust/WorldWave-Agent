@@ -73,6 +73,18 @@ class CapabilityMutex:
         "coding_code_": CAP_READ,
         "coding_class_": CAP_READ,
         "coding_glob": CAP_READ,
+        "coding_graph_": CAP_READ,
+        "coding_repo_map": CAP_READ,
+        "coding_grep": CAP_READ,
+        "coding_outline": CAP_READ,
+        "coding_explain_failure": CAP_READ,
+        "coding_edit_symbol": CAP_EDIT,
+        "coding_apply_patch": CAP_EDIT,
+        "coding_verify": CAP_EXEC,
+        "coding_sample_repair": CAP_READ,
+        "coding_adversarial_tests": CAP_EDIT,
+        "coding_replan": CAP_PLAN,
+        "coding_worktree_": CAP_EDIT,
         # AST rewrite — prefix: coding_ast_rewrite
         "coding_ast_rewrite": CAP_EDIT,
         # Code RAG — prefix: coding_rag_
@@ -105,7 +117,14 @@ class CapabilityMutex:
         "coding_mcp_": CAP_READ,
     }
 
-    def __init__(self, role: str = ROLE_CODER):
+    def __init__(self, role: str = None):
+        # Default role for coding tasks is coder (can edit); architect cannot edit.
+        if role is None:
+            try:
+                from coding.policy import default_coding_role
+                role = default_coding_role()
+            except Exception:
+                role = self.ROLE_CODER
         if role not in self.ROLE_CAPABILITIES:
             raise ValueError(f"Unknown role: {role}. Use: {list(self.ROLE_CAPABILITIES.keys())}")
         self._role = role
@@ -529,6 +548,22 @@ def get_manager() -> SandboxManager:
     return _manager
 
 
+def _safe_sandbox_exec(mgr: SandboxManager, sandbox_name, command, files=None):
+    try:
+        from coding.policy import check_command_allowed
+        gate = check_command_allowed(command)
+        if not gate.get("allowed", True):
+            return {
+                "success": False,
+                "denied": True,
+                "error": gate.get("reason", "Command denied by coding policy"),
+                "reason": gate.get("reason", "Command denied by coding policy"),
+            }
+    except Exception:
+        pass
+    return mgr.execute_in_sandbox(sandbox_name, command, files)
+
+
 def create_sandbox_tools(mgr: SandboxManager) -> List[Dict]:
     return [
         {
@@ -577,8 +612,11 @@ def create_sandbox_tools(mgr: SandboxManager) -> List[Dict]:
                 },
                 "required": ["sandbox_name", "command"],
             },
-            "handler": lambda sandbox_name, command, files=None: mgr.execute_in_sandbox(sandbox_name, command, files),
+            "handler": lambda sandbox_name, command, files=None: _safe_sandbox_exec(
+                mgr, sandbox_name, command, files
+            ),
             "category": "code_sandbox",
+            "permission": "requires_approval",
         },
         {
             "name": "coding_sandbox_cleanup",

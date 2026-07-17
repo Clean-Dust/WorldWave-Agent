@@ -821,12 +821,77 @@ def _git_diff_handler(path: str = ".", staged: bool = False) -> Dict:
 
 
 def _git_commit_handler(path: str = ".", message: str = "") -> Dict:
-    """Git add + commit. """
+    """Git add + commit. Causal gate + secret scan when coding policy is active."""
     try:
+        # Soft causal: block commit after coding writes until verify green
+        try:
+            from coding.policy import check_git_commit_allowed, check_content_secrets
+            gate = check_git_commit_allowed()
+            if not gate.get("allowed", True):
+                return {
+                    "success": False,
+                    "denied": True,
+                    "error": gate.get("reason", "Commit blocked by causal coding policy"),
+                    "reason": gate.get("reason", "Commit blocked by causal coding policy"),
+                    "causal": True,
+                }
+            # Secret scan on commit message
+            sec = check_content_secrets(message or "")
+            if not sec.get("allowed", True):
+                return {
+                    "success": False,
+                    "denied": True,
+                    "error": sec.get("reason", "Secret detected in commit message"),
+                    "secret_blocked": True,
+                }
+        except ImportError:
+            pass
         p = os.path.expanduser(path)
+        # Secret scan staged/diff content (best-effort)
+        try:
+            from coding.policy import check_content_secrets
+            diff_r = subprocess.run(
+                ["git", "diff", "--cached"],
+                capture_output=True, text=True, timeout=10, cwd=p,
+            )
+            # If nothing staged yet, also peek unstaged
+            diff_text = diff_r.stdout or ""
+            if not diff_text.strip():
+                diff_r2 = subprocess.run(
+                    ["git", "diff"],
+                    capture_output=True, text=True, timeout=10, cwd=p,
+                )
+                diff_text = diff_r2.stdout or ""
+            sec = check_content_secrets(diff_text)
+            if not sec.get("allowed", True):
+                return {
+                    "success": False,
+                    "denied": True,
+                    "error": sec.get("reason", "Secret detected in diff"),
+                    "secret_blocked": True,
+                }
+        except Exception:
+            pass
         add_r = subprocess.run(["git", "add", "-A"], capture_output=True, text=True, timeout=10, cwd=p)
         if add_r.returncode != 0:
             return {"success": False, "error": "git add failed: " + add_r.stderr}
+        # Re-scan after add
+        try:
+            from coding.policy import check_content_secrets
+            diff_r = subprocess.run(
+                ["git", "diff", "--cached"],
+                capture_output=True, text=True, timeout=10, cwd=p,
+            )
+            sec = check_content_secrets(diff_r.stdout or "")
+            if not sec.get("allowed", True):
+                return {
+                    "success": False,
+                    "denied": True,
+                    "error": sec.get("reason", "Secret detected in staged diff"),
+                    "secret_blocked": True,
+                }
+        except Exception:
+            pass
         r = subprocess.run(["git", "commit", "-m", message or "ww auto commit"],
                            capture_output=True, text=True, timeout=10, cwd=p)
         return {"success": r.returncode == 0, "output": (r.stdout or r.stderr)[:1000]}
