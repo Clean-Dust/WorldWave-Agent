@@ -1,10 +1,12 @@
-"""Same Timeline M1 E2 — zero user-facing leaks via shared public_reply.
+"""Gate 0 product honesty — public_reply never promotes memory dumps.
 
 Covers:
 - is_internal_response_text rejects Reflex arc / direct response / traceback
-- extract_user_response priority + never returns internal leaks
-- Synthetic reflex-only summary → empty (OK policy)
-- Synthetic reflex_text "pong" → "pong"
+- is_dump_like_text rejects multi-line key:value and spiral JSON
+- extract_user_response: only _REPLY_TOOLS; recall_mine alone → ""
+- Synthetic reflex_text real answer → answer
+- Top-level dump-like response cleaned to empty
+- Empty respond + raw status → not JSON dump
 - run_task wrapper attaches clean top-level ``response`` (mocked ww.run)
 """
 
@@ -17,6 +19,7 @@ import pytest
 from core.public_reply import (
     collapse_multi_greeting,
     extract_user_response,
+    is_dump_like_text,
     is_internal_response_text,
     public_reply,
 )
@@ -45,6 +48,9 @@ def test_internal_accepts_normal_text():
     assert is_internal_response_text("Hello, how can I help?") is False
     assert is_internal_response_text("pong") is False
     assert is_internal_response_text("Your marker is SECRET_XYZ") is False
+    assert is_internal_response_text(
+        "I don't have your blood type or passport in memory."
+    ) is False
 
 
 def test_internal_empty_is_internal():
@@ -52,6 +58,36 @@ def test_internal_empty_is_internal():
     assert is_internal_response_text("   ") is True
     assert is_internal_response_text(None) is True
     assert is_internal_response_text(42) is True
+
+
+# ── dump-like detection ──────────────────────────────────────────
+
+
+def test_dump_like_multiline_kv():
+    dump = "home_city: ZetaCity\npet_name: ZetaPet"
+    assert is_dump_like_text(dump) is True
+    assert is_internal_response_text(dump) is True
+
+
+def test_dump_like_single_snake_key():
+    assert is_dump_like_text("home_city: ZetaCity") is True
+    assert is_dump_like_text("marker: TIMELINE_E4_XYZ") is True
+
+
+def test_dump_like_spiral_json():
+    body = (
+        '{"status": "completed", "spirals_completed": 0, '
+        '"results": [{"actions": []}], "summary": "x"}'
+    )
+    assert is_dump_like_text(body) is True
+    assert is_internal_response_text(body) is True
+
+
+def test_dump_like_rejects_natural_prose():
+    assert is_dump_like_text("Your home city is ZetaCity and pet is ZetaPet.") is False
+    assert is_dump_like_text(
+        "I don't have your blood type or passport in memory."
+    ) is False
 
 
 # ── extract_user_response ────────────────────────────────────────
@@ -123,15 +159,18 @@ def test_extract_reflex_text_pong():
     assert extract_user_response(result) == "pong"
 
 
-def test_extract_any_action_output():
+def test_extract_only_recall_mine_success_returns_empty():
+    """Gate 0: recall_mine success alone must never become the chat reply."""
     result = {
         "summary": "Reflex arc: 1 tool calls, success",
         "results": [{
             "actions": [{
-                "tool": "uuid",
+                "tool": "recall_mine",
                 "result": {
                     "success": True,
-                    "output": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                    "facts": {"home_city": "ZetaCity", "pet_name": "ZetaPet"},
+                    "total": 2,
+                    "output": "home_city: ZetaCity\npet_name: ZetaPet",
                 },
             }],
             "evaluation": {
@@ -140,10 +179,11 @@ def test_extract_any_action_output():
             },
         }],
     }
-    assert "a1b2c3d4" in extract_user_response(result)
+    assert extract_user_response(result) == ""
 
 
-def test_extract_recall_mine_facts_output():
+def test_extract_recall_mine_facts_output_never_promoted():
+    """Former priority-4 path: raw fact dump must not surface."""
     result = {
         "summary": "Reflex arc: 1 tool calls, success",
         "results": [{
@@ -162,16 +202,85 @@ def test_extract_recall_mine_facts_output():
             },
         }],
     }
-    got = extract_user_response(result)
-    assert "TIMELINE_E4_XYZ" in got
-    assert "Reflex arc" not in got
+    assert extract_user_response(result) == ""
+
+
+def test_extract_non_reply_tool_output_not_promoted():
+    """Priority 4 removed: uuid/shell alone is not user chat text."""
+    result = {
+        "summary": "Reflex arc: 1 tool calls, success",
+        "results": [{
+            "actions": [{
+                "tool": "uuid",
+                "result": {
+                    "success": True,
+                    "output": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                },
+            }],
+            "evaluation": {
+                "success": True,
+                "reason": "Reflex arc: all actions succeeded",
+            },
+        }],
+    }
+    assert extract_user_response(result) == ""
+
+
+def test_extract_top_level_dump_like_cleaned_to_empty():
+    result = {
+        "response": "home_city: ZetaCity\npet_name: ZetaPet",
+        "results": [],
+    }
+    assert extract_user_response(result) == ""
+
+
+def test_extract_empty_respond_plus_status_not_json_dump():
+    """Empty respond output + raw status body must not become JSON reply."""
+    result = {
+        "status": "completed",
+        "spirals_completed": 1,
+        "summary": "Direct response generated",
+        "results": [{
+            "actions": [{
+                "tool": "respond",
+                "result": {"success": True, "output": ""},
+            }],
+            "evaluation": {
+                "success": True,
+                "reason": "Direct response generated",
+                "response": "",
+            },
+        }],
+    }
+    assert extract_user_response(result) == ""
+    # Even if someone stuffed the whole result into response
+    result2 = dict(result)
+    result2["response"] = (
+        '{"status": "completed", "spirals_completed": 1, "results": []}'
+    )
+    assert extract_user_response(result2) == ""
+
+
+def test_extract_respond_with_real_answer():
+    result = {
+        "results": [{
+            "actions": [{
+                "tool": "respond",
+                "result": {
+                    "success": True,
+                    "output": "I don't have your blood type in memory.",
+                },
+            }],
+        }],
+    }
+    assert "blood type" in extract_user_response(result)
 
 
 def test_extract_skips_failed_actions():
     result = {
         "results": [{
             "actions": [{
-                "tool": "shell",
+                "tool": "respond",
                 "result": {
                     "success": False,
                     "output": "should not surface",
@@ -237,6 +346,12 @@ def test_public_reply_strips_internal():
     # With empty fallback, internal → empty
     assert public_reply("Reflex arc: x", fallback="") == ""
     assert public_reply("hello world", fallback="Done.") == "hello world"
+
+
+def test_public_reply_strips_memory_dump():
+    dump = "home_city: ZetaCity\npet_name: ZetaPet"
+    assert public_reply(dump, fallback="Done.") == "Done."
+    assert public_reply(dump, fallback="") == ""
 
 
 # ── run_task attaches response ───────────────────────────────────
@@ -310,7 +425,12 @@ def test_run_task_response_empty_when_only_internal_summary():
         "results": [{
             "actions": [{
                 "tool": "recall_mine",
-                "result": {"success": True, "facts": {}, "total": 0},
+                "result": {
+                    "success": True,
+                    "facts": {"home_city": "ZetaCity"},
+                    "total": 1,
+                    "output": "home_city: ZetaCity",
+                },
             }],
             "evaluation": {
                 "success": True,
@@ -326,7 +446,7 @@ def test_run_task_response_empty_when_only_internal_summary():
     srv.ww = mock_ww
     srv.config = {}
 
-    out = WorldwaveServer.run_task(srv, "what do you know?", max_spirals=1)
+    out = WorldwaveServer.run_task(srv, "what is my blood type?", max_spirals=1)
     assert out["response"] == ""
 
 
@@ -338,7 +458,7 @@ def test_cli_reexports_shared_extractor():
     assert cli_extract is core_extract
 
 
-# ── recall_mine human-readable output (E4 support) ───────────────
+# ── recall_mine human-readable output (internal tool still has output) ──
 
 
 def test_recall_mine_includes_output(tmp_path, monkeypatch):
@@ -348,7 +468,6 @@ def test_recall_mine_includes_output(tmp_path, monkeypatch):
 
     cfg = MagicMock()
     cfg.get = MagicMock(return_value="")
-    # EntityStateManager needs a config with data dir
     monkeypatch.setenv("WW_CONFIG", str(tmp_path / "cfg"))
     esm = EntityStateManager(config=cfg, data_dir=str(tmp_path / "entities"))
     esm.set_working_memory("ent_test", "marker", "TIMELINE_E4_XYZ")
@@ -361,7 +480,7 @@ def test_recall_mine_includes_output(tmp_path, monkeypatch):
 
 
 def test_reflex_fallthrough_when_no_user_visible():
-    """Tool-only reflex with empty outputs returns None (fall through to spiral)."""
+    """Tool-only reflex with empty synthesis falls through (returns None)."""
     from tests.test_loop import make_minimal_ww, make_mock_response
 
     ww = make_minimal_ww()
@@ -385,6 +504,53 @@ def test_reflex_fallthrough_when_no_user_visible():
     ww.tools.to_openai_tools.return_value = []
     ww.tools.prompt_block.return_value = ""
     ww.tools.tool_names.return_value = ["recall_mine"]
+    # Synthesis also empty (clear side_effect so return_value wins)
+    ww.llm.chat.side_effect = None
+    ww.llm.chat.return_value = ""
 
     result = ww._reflex_arc_execute("what is missing?")
     assert result is None
+
+
+def test_reflex_synthesizes_after_recall_mine():
+    """After recall_mine, reflex must append reflex_text synthesis (not dump)."""
+    from tests.test_loop import make_minimal_ww, make_mock_response
+
+    ww = make_minimal_ww()
+    ww.llm._call.side_effect = None
+    ww.llm._call.return_value = make_mock_response(
+        tool_calls=[{
+            "function": {
+                "name": "recall_mine",
+                "arguments": "{}",
+            }
+        }]
+    )
+    ww.tools = MagicMock()
+    ww.tools.call.return_value = {
+        "success": True,
+        "facts": {"home_city": "ZetaCity", "pet_name": "ZetaPet"},
+        "total": 2,
+        "output": "home_city: ZetaCity\npet_name: ZetaPet",
+    }
+    ww.tools.to_openai_tools.return_value = []
+    ww.tools.prompt_block.return_value = ""
+    ww.tools.tool_names.return_value = ["recall_mine"]
+    ww.llm.chat.side_effect = None
+    ww.llm.chat.return_value = (
+        "I don't have your blood type or passport in memory."
+    )
+
+    result = ww._reflex_arc_execute(
+        "What is my blood type and passport number?"
+    )
+    assert result is not None
+    actions = result["results"][0]["actions"]
+    tools = [a.get("tool") for a in actions]
+    assert "recall_mine" in tools
+    assert "reflex_text" in tools
+    from core.public_reply import extract_user_response
+    reply = extract_user_response(result)
+    assert "blood type" in reply.lower() or "don't have" in reply.lower() or "do not" in reply.lower()
+    assert "home_city:" not in reply
+    assert "pet_name:" not in reply

@@ -4,6 +4,12 @@ Single source of truth for stripping internal mechanism strings
 (Reflex arc, direct response, traceback, bare error prefixes) and
 picking the best user-visible text from a /ww/run result dict.
 
+Product law (Gate 0 honesty):
+- Only tools in ``_REPLY_TOOLS`` may supply the chat reply.
+- Memory / store tool dumps must never become the user-facing response.
+- Dump-like ``key: value`` blocks and spiral JSON bodies are rejected.
+- Empty string is preferred over a raw inject/tool dump.
+
 Used by:
 - server.run_task (always attaches clean top-level ``response``)
 - ww_cli (terminal chat display)
@@ -22,6 +28,25 @@ from typing import Any, Dict, Mapping, Optional
 # Tools that intentionally produce user-facing chat text
 _REPLY_TOOLS = frozenset({"reflex_text", "respond", "reply", "final_answer"})
 
+# Memory / store tools — their outputs are internal data, never chat replies
+_MEMORY_TOOLS = frozenset({
+    "recall_mine",
+    "remember",
+    "forget",
+    "memory_search",
+    "memory_store",
+    "memory_recall",
+    "recall",
+    "search",
+    "switch_topic",
+    "memory_get",
+    "memory_list",
+    "hippo_search",
+    "hippo_promote",
+    "atom_search",
+    "ltm_search",
+})
+
 # Short multi-paragraph greets (each para under this length) collapse to first
 _GREETING_PARA_MAX = 100
 
@@ -33,6 +58,61 @@ _RESULT_TEXT_KEYS = ("output", "text", "response")
 
 # evaluation keys (skip internal via is_internal_response_text)
 _EVAL_KEYS = ("response", "summary")
+
+# Multi-line snake_key: value memory dumps
+_KV_LINE_RE = re.compile(r"^[A-Za-z_][\w]*:\s*\S.*$", re.MULTILINE)
+
+# Markers that look like a full /ww/run JSON body pasted as chat
+_SPIRAL_JSON_MARKERS = (
+    "spirals_completed",
+    '"results":',
+    '"results" :',
+    "\"status\": \"completed\"",
+    "\"status\":\"completed\"",
+)
+
+
+def is_dump_like_text(text: Any) -> bool:
+    """True if text looks like a raw memory/tool dump or spiral JSON, not chat.
+
+    Detects:
+    - multi-line ``snake_key: value`` blocks (≥2 KV lines)
+    - text that starts with a common fact key pattern and is mostly KV lines
+    - JSON that looks like a full ``/ww/run`` result body
+    """
+    if not text or not isinstance(text, str):
+        return False
+    s = text.strip()
+    if not s:
+        return False
+
+    lower = s.lower()
+    # Full spiral / run result JSON
+    if s.startswith("{") and any(m in s or m in lower for m in _SPIRAL_JSON_MARKERS):
+        return True
+    if any(m in s for m in ("spirals_completed", '"results":', '"results" :')):
+        # JSON-ish body even without leading brace (truncated paste)
+        if '"actions"' in s or '"evaluation"' in s or "spirals_completed" in s:
+            return True
+
+    non_empty = [ln.strip() for ln in s.splitlines() if ln.strip()]
+    kv_lines = [ln for ln in non_empty if _KV_LINE_RE.match(ln)]
+
+    if len(kv_lines) >= 2:
+        # Mostly dump: ≥2 KV lines and little free-form prose between them
+        kv_ratio = len(kv_lines) / max(len(non_empty), 1)
+        if kv_ratio >= 0.5:
+            return True
+        # First few lines are pure key: value → dump
+        head = non_empty[: min(4, len(non_empty))]
+        if head and all(_KV_LINE_RE.match(ln) for ln in head):
+            return True
+
+    # Single-line pure inject style (home_city: ZetaCity) is dump-like as whole reply
+    if len(non_empty) == 1 and re.match(r"^[a-z][a-z0-9_]*:\s+\S", non_empty[0]):
+        return True
+
+    return False
 
 
 def is_internal_response_text(text: Any) -> bool:
@@ -50,6 +130,8 @@ def is_internal_response_text(text: Any) -> bool:
     if lower.startswith("error:"):
         return True
     if "traceback" in lower:
+        return True
+    if is_dump_like_text(s):
         return True
     return False
 
@@ -78,7 +160,7 @@ def collapse_multi_greeting(text: Any) -> str:
 
 
 def _clean(val: Any) -> str:
-    """Return stripped user-safe string, or empty if unusable/internal."""
+    """Return stripped user-safe string, or empty if unusable/internal/dump."""
     if not isinstance(val, str):
         return ""
     s = val.strip()
@@ -100,14 +182,16 @@ def extract_user_response(result: Optional[Dict[str, Any]]) -> str:
     """Best user-facing reply text from a /ww/run result dict.
 
     Priority:
-      1. Top-level response/reply/output/message
+      1. Top-level response/reply/output/message (if clean, non-dump)
       2. evaluation.response / evaluation.summary (if not internal)
-      3. reflex_text / respond action result.output|text|response
-      4. Any successful action result with output/text/response
+      3. Only ``_REPLY_TOOLS`` action result.output|text|response
 
-    Never returns internal leaks (Reflex arc, direct response, traceback, …).
-    Empty string is OK when no real user content exists (e.g. tool-only
-    reflex whose summary is only "Reflex arc: …").
+    Memory tools (``recall_mine``, ``remember``, ``search``, …) never supply
+    the chat reply by themselves. Priority-4 “any action output” is removed.
+
+    Never returns internal leaks (Reflex arc, direct response, traceback,
+    memory dumps, spiral JSON). Empty string is OK when no real user content
+    exists — callers may fall back to “Done.”
     """
     if not isinstance(result, dict):
         return ""
@@ -128,7 +212,7 @@ def extract_user_response(result: Optional[Dict[str, Any]]) -> str:
             if got:
                 return got
 
-    # 3. Prefer reflex_text / respond-style tools
+    # 3. Only reflex_text / respond-style tools (never memory / arbitrary tools)
     for r in _iter_spirals(result):
         for a in (r.get("actions") or []):
             if not isinstance(a, dict):
@@ -136,18 +220,7 @@ def extract_user_response(result: Optional[Dict[str, Any]]) -> str:
             tool = str(a.get("tool") or "").lower()
             if tool not in _REPLY_TOOLS:
                 continue
-            res = a.get("result") or {}
-            if not isinstance(res, dict):
-                continue
-            for key in _RESULT_TEXT_KEYS:
-                got = _clean(res.get(key))
-                if got:
-                    return got
-
-    # 4. Walk any successful action for output/text/response
-    for r in _iter_spirals(result):
-        for a in (r.get("actions") or []):
-            if not isinstance(a, dict):
+            if tool in _MEMORY_TOOLS:
                 continue
             res = a.get("result") or {}
             if not isinstance(res, dict):
@@ -159,14 +232,17 @@ def extract_user_response(result: Optional[Dict[str, Any]]) -> str:
                 if got:
                     return got
 
+    # Priority 4 removed: never promote arbitrary / memory tool dumps as chat.
+
     return ""
 
 
 def public_reply(text: Any, fallback: str = "") -> str:
     """Sanitize a single reply string for chat surfaces.
 
-    Strips internal mechanism prefixes and stack traces. Returns
-    ``fallback`` (or empty) when the text is not safe to show.
+    Strips internal mechanism prefixes, stack traces, and dump-like
+    memory blocks. Returns ``fallback`` (or empty) when the text is not
+    safe to show.
     """
     if not text:
         return fallback

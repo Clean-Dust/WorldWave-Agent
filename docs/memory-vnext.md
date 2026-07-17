@@ -20,8 +20,22 @@ Design contract: `core/memory/{topic,topic_stm,atom_nets,ltm_vfs,dreaming,labele
 | 7 | Prove harness: mechanism / product / narrative; `--telegram` / `--restart` | **Closed** (env-gated) |
 | 8 | Docs + env table + deprecations | **This file** |
 | 9 | Repo systemd user unit + optional deploy enable | **`deploy/ww.user.service`** |
+| 10 | Gate 0 product honesty: never promote memory dumps as chat; BEAM-mini | **`core/public_reply.py` + `scripts/beam_mini_prove.py`** |
 
 Out of scope: auto-rewrite system prompt; Neo4j / commercial graph; printing secrets; Banana deploy.
+
+### Gate 0 / BEAM-mini (honesty only — not official 100K)
+
+User-facing replies go only through `core/public_reply.extract_user_response`
+(`reflex_text` / `respond` / `reply` / `final_answer`). Memory tools never
+become the chat reply. Dump-like `key: value` blocks and spiral JSON are rejected.
+
+Live mini prove (server required):
+
+```bash
+.venv/bin/python scripts/beam_mini_prove.py
+# or: WW_PROVE_URL=http://127.0.0.1:8765 .venv/bin/python scripts/beam_mini_prove.py
+```
 
 ## Flow
 

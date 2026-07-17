@@ -78,7 +78,12 @@ PHASE_PROMPTS = {
         "6. CRITICAL: When asked about your own configuration, backend model, or environment,\n"
         "   plan shell_exec or file_read steps to INSPECT THE ACTUAL SYSTEM before any respond step.\n"
         "   NEVER plan a direct respond for self-inspection questions.\n"
-        "7. Output ONLY a valid JSON object. No explanation text before or after the JSON.\n"
+        "7. After memory tools (recall_mine/remember/search), ALWAYS plan a final respond step\n"
+        "   that answers in natural language. Never treat tool dumps as the user reply.\n"
+        "8. ABSTENTION: if memory has no answer for the asked fact, respond must refuse in\n"
+        "   natural language (do not invent; do not paste multi-line key: value dumps).\n"
+        "   If facts conflict, acknowledge conflict and ask which is correct.\n"
+        "9. Output ONLY a valid JSON object. No explanation text before or after the JSON.\n"
         "Format: {\"goal\": \"...\", \"strategy\": \"...\", \"steps\": [{\"tool\": \"...\", \"params\": {...}, \"description\": \"...\"}], \"success_criteria\": \"...\", \"max_attempts\": 3}"
     ),
     "act": (

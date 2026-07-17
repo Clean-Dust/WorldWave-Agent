@@ -413,8 +413,9 @@ class TestReflexArc:
         assert result is not None
         assert result["reflex"] is True
         actions = result["results"][0]["actions"]
-        assert len(actions) == 1
+        # Tool ran first; synthesis may append reflex_text for user-facing reply
         assert actions[0]["tool"] == "uuid"
+        assert any(a.get("tool") == "uuid" for a in actions)
 
     def test_reflex_arc_llm_failure_returns_none(self):
         ww = make_minimal_ww()

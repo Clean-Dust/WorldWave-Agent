@@ -517,11 +517,90 @@ class Worldwave:
                structural_score * 0.25 + line_edit_score)
         return max(0.0, min(1.0, raw))
 
+    # Tools whose raw output must never be the chat reply (product honesty Gate 0)
+    _MEMORY_TOOL_NAMES = frozenset({
+        "recall_mine", "remember", "forget", "memory_search", "memory_store",
+        "memory_recall", "recall", "search", "switch_topic", "memory_get",
+        "memory_list", "hippo_search", "hippo_promote", "atom_search", "ltm_search",
+    })
+
+    def _reflex_synthesize_reply(
+        self,
+        goal: str,
+        actions: List[Dict[str, Any]],
+    ) -> str:
+        """Turn tool outputs into one clean chat answer (never a raw dump).
+
+        Enforces ABSTENTION: unknown facts → natural-language refuse;
+        conflicting facts → acknowledge conflict; never paste multi-line
+        ``key: value`` store dumps as the reply.
+        """
+        from core.public_reply import is_dump_like_text, is_internal_response_text
+
+        tool_blocks: List[str] = []
+        for a in actions:
+            tool = str(a.get("tool") or "")
+            res = a.get("result") or {}
+            if not isinstance(res, dict):
+                continue
+            out = res.get("output")
+            if out is None:
+                facts = res.get("facts")
+                if isinstance(facts, dict) and facts:
+                    out = "\n".join(f"{k}: {v}" for k, v in facts.items())
+                else:
+                    out = res.get("error") or ""
+            out_s = str(out or "").strip()
+            if out_s:
+                tool_blocks.append(f"[{tool}] {out_s[:1200]}")
+
+        tool_data = "\n".join(tool_blocks) if tool_blocks else "(no tool data)"
+        system = (
+            "You are Worldwave. Answer the user's question in natural language.\n"
+            "ABSTENTION RULES (mandatory):\n"
+            "1. If tools returned facts that do NOT answer the question, say you do not "
+            "have that information. Example: asked blood type, only city/pet stored → "
+            "\"I don't have your blood type or passport in memory.\"\n"
+            "2. NEVER invent facts. NEVER paste raw memory stores.\n"
+            "3. NEVER reply with multi-line key: value dumps (home_city: … / pet_name: …).\n"
+            "4. If two facts conflict, acknowledge the conflict and ask which is correct "
+            "(or reconcile clearly). Do not dump both as bare key-value lines.\n"
+            "5. If tools returned the exact answer needed, restate it in one clean sentence.\n"
+            "6. Stay in the user's language. One to three sentences unless detail is required."
+        )
+        user = (
+            f"User question:\n{goal}\n\n"
+            f"Tool results (internal — synthesize, do not dump):\n{tool_data}\n\n"
+            "Write the user-facing reply only."
+        )
+        try:
+            text = self.llm.chat(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                json_mode=False,
+                max_tokens=512,
+            )
+        except Exception as e:
+            self._log(f"## Reflex synthesis LLM failed: {e}")
+            return ""
+
+        if not isinstance(text, str):
+            return ""
+        text = text.strip()
+        if not text or is_internal_response_text(text) or is_dump_like_text(text):
+            return ""
+        return text
+
     def _reflex_arc_execute(self, goal: str) -> Optional[Dict[str, Any]]:
         """Fast path: direct LLM → tool execution, bypassing full spiral.
 
         Only for trivially simple tasks. Returns None if reflex arc
         cannot handle this task (falls through to full spiral).
+
+        After memory tools (or any tools with no reply-tool text), runs a
+        text synthesis step so tool dumps never short-circuit as the chat reply.
         """
         # Build a direct system prompt for single-turn tool calling
         tools_json = self.tools.to_openai_tools() if hasattr(self.tools, 'to_openai_tools') else None
@@ -540,7 +619,12 @@ class Worldwave:
             "5. If you're unsure, reply with text rather than calling a tool.\n"
             "6. Greetings: ONE short sentence only. Never two greetings / two bubbles.\n"
             "   Do not call telegram_send (or any send tool) for chat replies — the\n"
-            "   gateway delivers your text. Never send the same reply twice.\n\n"
+            "   gateway delivers your text. Never send the same reply twice.\n"
+            "7. ABSTENTION: If you do not know a fact (blood type, passport, etc.), say so\n"
+            "   in natural language. NEVER invent. NEVER paste raw memory dumps\n"
+            "   (multi-line key: value lists). If facts conflict, acknowledge conflict.\n"
+            "8. After calling memory tools (recall_mine / remember / search), you must still\n"
+            "   produce a natural-language answer — tool output alone is not a user reply.\n\n"
             "Available tools (use ONLY when user explicitly requests an action):\n" + tool_descriptions
         )
         
@@ -584,7 +668,12 @@ class Worldwave:
             for tname in self.tools.tool_names():
                 if tname in goal_lower:
                     return None  # Tool needed but LLM didn't call — let full spiral handle
-            # LLM returned text only — use as direct response
+            # LLM returned text only — reject dump-like / empty as non-reply
+            from core.public_reply import is_dump_like_text, is_internal_response_text
+            content = (resp.content or "").strip() if resp.content else ""
+            if not content or is_internal_response_text(content) or is_dump_like_text(content):
+                self._log("## Reflex arc: empty or dump-like text — fall through")
+                return None
             return {
                 "status": "completed",
                 "spirals_completed": 0,
@@ -593,7 +682,7 @@ class Worldwave:
                     "goal": goal[:80],
                     "actions": [{"tool": "reflex_text", "result": {
                         "success": True,
-                        "output": resp.content,
+                        "output": content,
                     }}],
                     "evaluation": {"success": True, "reason": "Reflex arc direct response"},
                     "success": True,
@@ -632,6 +721,10 @@ class Worldwave:
             a.get("result", {}).get("success", False) for a in actions
         )
 
+        # Synthesis: if no reply-tool text yet, turn tool outputs into clean chat.
+        # Memory tools alone must never short-circuit as the user response.
+        from core.public_reply import extract_user_response
+
         draft = {
             "status": "completed",
             "spirals_completed": 0,
@@ -651,11 +744,27 @@ class Worldwave:
             "reflex": True,
         }
 
-        # E4: tool-only reflex with no user-visible text (e.g. empty recall_mine)
-        # must not return a "Reflex arc: …" shell as the product reply.
-        # Fall through to full spiral so the agent can answer from entity context.
+        if not extract_user_response(draft):
+            # Always synthesize when no reply-tool text (memory dumps never short-circuit)
+            self._log("## Reflex arc: synthesizing user reply from tool results")
+            synth = self._reflex_synthesize_reply(goal, actions)
+            if synth:
+                actions = list(actions) + [{
+                    "tool": "reflex_text",
+                    "params": {},
+                    "result": {"success": True, "output": synth},
+                }]
+                draft["results"][0]["actions"] = actions
+                draft["summary"] = (
+                    f"Reflex arc: {len(tool_calls)} tool calls + synthesis, "
+                    f"{'success' if success else 'partial failure'}"
+                )
+            else:
+                self._log("## Reflex arc: synthesis empty — fall through to spiral")
+                return None
+
+        # Final gate: still no clean user text → fall through
         try:
-            from core.public_reply import extract_user_response
             if not extract_user_response(draft):
                 self._log("## Reflex arc: tools ran but no user-visible reply — fall through")
                 return None
@@ -961,11 +1070,19 @@ class Worldwave:
                         latency=r.get("latency", 0.0),
                     )
 
-                # Check respond Whether the action was successful (Plain text response, No tools needed) 
-                respond_outputs = [a for a in spiral.actions
-                                   if a.get("tool") == "respond" and a.get("result", {}).get("success")]
+                # Check respond: must succeed with non-empty clean user text
+                respond_outputs = []
+                for a in spiral.actions:
+                    if a.get("tool") != "respond":
+                        continue
+                    r = a.get("result") or {}
+                    if not r.get("success"):
+                        continue
+                    out = r.get("output")
+                    if isinstance(out, str) and out.strip():
+                        respond_outputs.append(a)
                 if respond_outputs:
-                    output = respond_outputs[0]["result"]["output"]
+                    output = str(respond_outputs[0]["result"]["output"]).strip()
                     self._log("  => Text response: " + output[:120])
                     # respond Success = Goal achieved
                     spiral.evaluation = {
@@ -1664,63 +1781,113 @@ class Worldwave:
                             context_lines.append(out)
                     if context_lines:
                         tool_data = "\n".join(context_lines)
-                
-                try:
+
+                _respond_system_with_tools = (
+                    "You are Worldwave. Answer like a human, not a spec sheet. "
+                    "Use your identity block for self-questions — NOT raw tool outputs. "
+                    "Stay concise. ABSTENTION: if tool data does not answer the question, "
+                    "say you do not know in natural language. NEVER invent. NEVER paste "
+                    "multi-line key: value memory dumps. If facts conflict, acknowledge "
+                    "the conflict and ask which is correct."
+                )
+                _respond_system_plain = (
+                    "Answer concisely. One sentence for simple questions. "
+                    "Be human, not a bot. "
+                    "Greetings: ONE short sentence only. "
+                    "Never two greetings / two bubbles. "
+                    "ABSTENTION: if you do not know, say so clearly. Never invent. "
+                    "Never paste raw memory key: value dumps."
+                )
+
+                def _one_shot_respond(strict: bool = False) -> str:
+                    self_desc = getattr(self, "self_model", None)
+                    identity_block = ""
+                    if self_desc:
+                        identity_block = self_desc.describe() + "\n\n"
+                    strict_suffix = (
+                        "\n\nCRITICAL: Produce a non-empty user-facing reply now. "
+                        "One to three sentences of clean chat text. No JSON, no tool names."
+                        if strict
+                        else ""
+                    )
                     if tool_data:
-                        # Tool outputs exist — inject self-model + concise constraint
-                        self_desc = getattr(self, 'self_model', None)
-                        identity_block = ""
-                        if self_desc:
-                            identity_block = self_desc.describe() + "\n\n"
                         full_prompt = (
-                            identity_block +
-                            f"Original goal: {goal}\n\n"
-                            f"Tool outputs:\n{tool_data}\n\n"
-                            f"Synthesize a concise answer from the data above. "
-                            f"For questions about yourself, prefer the identity block. "
-                            f"Be brief — one to three sentences unless asked for detail. "
-                            f"Never dump system diagnostics."
+                            identity_block
+                            + f"Original goal: {goal}\n\n"
+                            + f"Tool outputs:\n{tool_data}\n\n"
+                            + "Synthesize a concise answer from the data above. "
+                            + "For questions about yourself, prefer the identity block. "
+                            + "Be brief — one to three sentences unless asked for detail. "
+                            + "Never dump system diagnostics."
+                            + strict_suffix
                         )
-                        response_text = self.llm.chat(
-                            messages=[
-                                {"role": "system", "content": "You are Worldwave. Answer like a human, not a spec sheet. Use your identity block for self-questions — NOT raw tool outputs. Stay concise."},
-                                {"role": "user", "content": full_prompt},
-                            ],
-                            json_mode=False,
-                            max_tokens=1024,
-                        )
+                        sys_content = _respond_system_with_tools
                     else:
-                        # No tool outputs — simple conversational respond
-                        self_desc = getattr(self, 'self_model', None)
-                        identity_block = ""
-                        if self_desc:
-                            identity_block = self_desc.describe() + "\n\n"
                         full_prompt = (
-                            identity_block +
-                            f"Original goal: {goal}\n\nResponse instruction: {prompt}"
+                            identity_block
+                            + f"Original goal: {goal}\n\nResponse instruction: {prompt}"
+                            + strict_suffix
                         )
-                        response_text = self.llm.chat(
-                            messages=[
-                                {
-                                    "role": "system",
-                                    "content": (
-                                        "Answer concisely. One sentence for simple questions. "
-                                        "Be human, not a bot. "
-                                        "Greetings: ONE short sentence only. "
-                                        "Never two greetings / two bubbles."
-                                    ),
-                                },
-                                {"role": "user", "content": full_prompt},
-                            ],
-                            json_mode=False,
-                            max_tokens=1024,
+                        sys_content = _respond_system_plain
+                    return self.llm.chat(
+                        messages=[
+                            {"role": "system", "content": sys_content},
+                            {"role": "user", "content": full_prompt},
+                        ],
+                        json_mode=False,
+                        max_tokens=1024,
+                    )
+
+                try:
+                    from core.public_reply import is_dump_like_text, is_internal_response_text
+
+                    response_text = _one_shot_respond(strict=False)
+                    if not isinstance(response_text, str):
+                        response_text = ""
+                    response_text = response_text.strip()
+
+                    # Empty or dump-like succeed-with-empty is a product failure —
+                    # retry once with a stricter "produce user text" prompt.
+                    if (
+                        not response_text
+                        or is_internal_response_text(response_text)
+                        or is_dump_like_text(response_text)
+                    ):
+                        self._log(
+                            "## respond produced empty/dump text — retrying once"
                         )
-                    step_result = {
-                        "step": i,
-                        "tool": "respond",
-                        "description": desc,
-                        "result": {"success": True, "output": response_text},
-                    }
+                        retry = _one_shot_respond(strict=True)
+                        if isinstance(retry, str):
+                            retry = retry.strip()
+                        else:
+                            retry = ""
+                        if (
+                            retry
+                            and not is_internal_response_text(retry)
+                            and not is_dump_like_text(retry)
+                        ):
+                            response_text = retry
+                        else:
+                            response_text = ""
+
+                    if response_text:
+                        step_result = {
+                            "step": i,
+                            "tool": "respond",
+                            "description": desc,
+                            "result": {"success": True, "output": response_text},
+                        }
+                    else:
+                        step_result = {
+                            "step": i,
+                            "tool": "respond",
+                            "description": desc,
+                            "result": {
+                                "success": False,
+                                "output": "",
+                                "error": "respond produced empty or dump-like output",
+                            },
+                        }
                 except Exception as e:
                     step_result = {
                         "step": i,
