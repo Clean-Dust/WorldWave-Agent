@@ -1,4 +1,4 @@
-"""tests/test_coding_upgrade.py — WW-PM 0.8 coding capability upgrade tests."""
+"""tests/test_coding_upgrade.py — WW-PM 0.9 coding capability upgrade tests."""
 
 from __future__ import annotations
 
@@ -243,7 +243,7 @@ class TestHarnessReplan:
 class TestRegistration:
     def test_pm_version(self):
         from coding import PM_VERSION, get_status
-        assert PM_VERSION == "0.8.0"
+        assert PM_VERSION == "0.9.0"
         st = get_status()
         assert "code_graph" in st["modules"]
         assert "microcompact" in st["modules"]

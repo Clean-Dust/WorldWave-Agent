@@ -32,6 +32,9 @@ kanban_*.json
 # Config directory
 .ww/
 
+# Generated coding scale fixture (regenerate via scripts/coding_scale_fixture.py)
+tests/fixtures/coding_scale/
+
 # OS files
 .DS_Store
 Thumbs.db

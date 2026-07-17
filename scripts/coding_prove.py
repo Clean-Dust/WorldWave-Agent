@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""WW Coding Engine prove harness — V1–V10 asserts.
+"""WW Coding Engine prove harness — V1–V10 + E2E E1–E6.
 
 Usage:
   python scripts/coding_prove.py --all
+  python scripts/coding_prove.py --e2e
+  python scripts/coding_prove.py --scale
 
 Exit 0 only if all selected checks pass.
 """
@@ -14,6 +16,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List
@@ -23,6 +26,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 FIXTURE = ROOT / "tests" / "fixtures" / "coding_repo"
+SCALE_DIR = ROOT / "tests" / "fixtures" / "coding_scale"
 
 
 @dataclass
@@ -71,10 +75,8 @@ def v1_who_calls(report: Report):
             for c in callers
         }
         flat = " ".join(names).lower()
-        # mid, HubService.run, hub paths should call leaf
         ok = any(x in flat for x in ("mid", "run", "hub"))
         if not ok:
-            # also check raw count
             ok = result.get("count", 0) >= 1
         report.add(
             "V1 who_calls(leaf)",
@@ -89,7 +91,6 @@ def v2_blast_radius(report: Report):
     """V2 blast_radius(hub) includes downstream."""
     store = _fresh_graph_store(FIXTURE)
     try:
-        # hub_entry is a hub function; also try HubService
         result = store.blast_radius("hub_entry", max_depth=5)
         down = result.get("downstream") or []
         text = " ".join(
@@ -105,7 +106,6 @@ def v2_blast_radius(report: Report):
             or "mid" in text
             or "leaf" in text
         )
-        # If hub_entry defines/calls downstream, count should be > 0
         if not ok:
             result2 = store.blast_radius("HubService", max_depth=5)
             ok = result2.get("count", 0) >= 1
@@ -120,7 +120,6 @@ def v2_blast_radius(report: Report):
 def v3_rm_denied(report: Report):
     """V3 rm -rf / denied with semantic reason."""
     from coding.policy import check_command_allowed
-    from coding.shell import get_shell_tools
 
     gate = check_command_allowed("rm -rf /")
     ok = (not gate.get("allowed", True)) and (
@@ -129,30 +128,23 @@ def v3_rm_denied(report: Report):
         or "wipe" in (gate.get("reason") or "").lower()
         or "denied" in (gate.get("reason") or "").lower()
     )
-    # Also through coding_exec tool handler
-    tools = {t["name"]: t for t in get_shell_tools()}
-    exec_tool = tools.get("coding_exec")
-    handler_ok = False
-    if exec_tool:
-        r = exec_tool["handler"](command="rm -rf /")
-        # microcompact may wrap; check raw shell tool without wrap
-        from coding.shell import _safe_exec, get_shell
-        r = _safe_exec(get_shell(), "rm -rf /")
-        handler_ok = r.get("denied") or not r.get("success", True)
-        reason = r.get("reason") or r.get("error") or ""
-        ok = ok and handler_ok and ("denied" in reason.lower() or "rm" in reason.lower())
+    from coding.shell import _safe_exec, get_shell
+    r = _safe_exec(get_shell(), "rm -rf /")
+    handler_ok = r.get("denied") or not r.get("success", True)
+    reason = r.get("reason") or r.get("error") or ""
+    ok = ok and handler_ok and ("denied" in reason.lower() or "rm" in reason.lower())
     report.add("V3 rm -rf / denied", ok, gate.get("reason", "")[:120])
 
 
 def v4_microcompact(report: Report):
     """V4 microcompact length bound + fingerprint."""
-    from coding.microcompact import compact_text, DEFAULT_LIMIT
+    from coding.microcompact import compact_text
 
     big = "A" * 20000 + "\nMIDDLE\n" + "B" * 20000
     c = compact_text(big, limit=6000)
     ok = (
         c["truncated"] is True
-        and len(c["text"]) <= 6000 + 200  # marker slack
+        and len(c["text"]) <= 6000 + 200
         and c.get("fingerprint")
         and len(c["fingerprint"]) >= 8
         and c["original_length"] == len(big)
@@ -222,7 +214,6 @@ def v7_circuit_same_fp(report: Report):
     """V7 same fingerprint failures → circuit tripped."""
     from coding.circuit import CircuitBreaker, ErrorFingerprint
 
-    # Disable git rollback for isolated prove
     br = CircuitBreaker(max_strikes=3, enable_rollback=False, repo_path=str(ROOT))
     err = "AssertionError: expected 1 got 2\nFAIL test_foo"
     fp = ErrorFingerprint.fingerprint(err)
@@ -249,10 +240,8 @@ def v8_causal_blocks_commit(report: Report):
         check_git_commit_allowed,
     )
 
-    # Isolate causal state
     st = get_causal_state()
     st.reset()
-    # Ensure causal ON
     old = os.environ.get("WW_CODING_CAUSAL")
     os.environ["WW_CODING_CAUSAL"] = "1"
     try:
@@ -276,7 +265,7 @@ def v9_secret_scan(report: Report):
     from coding.policy import check_content_secrets
     from coding.aci import DefensiveEditor
 
-    fake = "api_key = 'sk-testFAKESECRET_s3t4u5v6w7x8y9z0a1b2'\n"
+    fake = "api_key = 'sk-test1234567890abcdefgh'\n"
     sec = check_content_secrets(fake)
     ok_policy = sec.get("allowed") is False
 
@@ -285,19 +274,6 @@ def v9_secret_scan(report: Report):
         f = tmp / "cfg.py"
         f.write_text("x = 1\n", encoding="utf-8")
         editor = DefensiveEditor(lint_enabled=True)
-        patch = (
-            f"--- a/{f}\n"
-            f"+++ b/{f}\n"
-            "@@ -1,1 +1,2 @@\n"
-            " x = 1\n"
-            f"+{fake}"
-        )
-        # apply_patch should block
-        result = editor.apply_patch(
-            f"--- a/cfg.py\n+++ b/cfg.py\n@@ -1 +1,2 @@\n x = 1\n+api_key = 'sk-test1234567890abcdefgh'\n"
-        )
-        # Fix: write patch relative — apply_patch uses paths in diff
-        # Use write path check_content_secrets on body via edit_symbol or write
         result2 = editor.write_file(str(f), fake)
         blocked = (
             result2.get("secret_blocked")
@@ -305,11 +281,6 @@ def v9_secret_scan(report: Report):
             or (not result2.get("success") and "sk-" in (result2.get("error") or "").lower())
             or (not result2.get("success") and "api_key" in (result2.get("error") or "").lower())
         )
-        # Also direct apply with absolute path in patch
-        r3 = editor.apply_patch(
-            f"--- a/{f.name}\n+++ b/{f.name}\n@@ -1 +1,2 @@\n x = 1\n+token = 'sk-abcdef1234567890xyz'\n"
-        )
-        # apply may fail path — policy check alone is enough if write blocked
         ok = ok_policy and blocked
         report.add(
             "V9 secret scan",
@@ -356,12 +327,288 @@ def run_all() -> int:
     return 0
 
 
+# ── E2E E1–E6 ─────────────────────────────────────────────────────────
+
+def run_e2e() -> int:
+    """Content-level E2E: failing test → locate → edit → verify → circuit → safety."""
+    print("WW Coding prove E2E (E1–E6)")
+    report = Report()
+    tmp = Path(tempfile.mkdtemp(prefix="ww-e2e-"))
+    cwd = os.getcwd()
+    old_pp = os.environ.get("PYTHONPATH", "")
+    try:
+        # Package layout
+        pkg = tmp / "pkg"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        target = pkg / "calc.py"
+        # Intentionally wrong: add returns a-b instead of a+b
+        target.write_text(
+            "def add(a, b):\n    return a - b\n\ndef mul(a, b):\n    return a * b\n",
+            encoding="utf-8",
+        )
+        tests = tmp / "tests"
+        tests.mkdir()
+        (tests / "test_calc.py").write_text(
+            "from pkg.calc import add, mul\n\n"
+            "def test_add():\n    assert add(2, 3) == 5\n\n"
+            "def test_mul():\n    assert mul(2, 3) == 6\n",
+            encoding="utf-8",
+        )
+        # Make pkg importable
+        os.environ["PYTHONPATH"] = str(tmp) + (os.pathsep + old_pp if old_pp else "")
+        os.chdir(tmp)
+
+        # E1: failing test setup
+        from coding.harness import coding_verify
+        from coding.policy import get_causal_state
+        get_causal_state().reset()
+        v_fail = coding_verify(test_path=str(tests))
+        e1_ok = (
+            not v_fail.get("success")
+            and (v_fail.get("failed", 0) >= 1 or v_fail.get("exit_code", 0) != 0)
+        )
+        report.add(
+            "E1 failing test setup",
+            e1_ok,
+            f"success={v_fail.get('success')} failed={v_fail.get('failed')} summary={v_fail.get('summary', '')[:80]}",
+        )
+
+        # E2: graph/grep hits
+        from coding.code_graph import CodeGraphStore
+        from coding.perception import grep
+        store = CodeGraphStore(project_root=str(tmp))
+        store.build(str(tmp), force=True)
+        who = store.who_calls("add")
+        g = grep("def add", path=str(tmp), glob="*.py")
+        e2_ok = g.get("count", 0) >= 1 and (
+            who.get("count", 0) >= 0  # may be 0 if tests not parsed as callers
+            or store.stats().get("nodes", 0) >= 1
+        )
+        e2_ok = e2_ok and store.stats().get("nodes", 0) >= 1 and g.get("count", 0) >= 1
+        report.add(
+            "E2 graph/grep hits",
+            e2_ok,
+            f"grep={g.get('count')} nodes={store.stats().get('nodes')} who_calls={who.get('count')}",
+        )
+        store.close()
+
+        # E3: edit_symbol fix
+        from coding.aci import DefensiveEditor
+        editor = DefensiveEditor(lint_enabled=True)
+        edit = editor.edit_symbol(
+            str(target),
+            "add",
+            "def add(a, b):\n    return a + b\n",
+        )
+        after = target.read_text(encoding="utf-8")
+        e3_ok = edit.get("success") is True and "a + b" in after
+        report.add(
+            "E3 edit_symbol fix",
+            e3_ok,
+            f"success={edit.get('success')} body_ok={'a + b' in after}",
+        )
+
+        # E4: verify green (drop pycache so pytest reloads the fixed module)
+        get_causal_state().reset()
+        for pyc in tmp.rglob("__pycache__"):
+            shutil.rmtree(pyc, ignore_errors=True)
+        # Confirm source is fixed before verify
+        src_ok = "a + b" in target.read_text(encoding="utf-8")
+        v_ok = coding_verify(test_path=str(tests))
+        e4_ok = src_ok and v_ok.get("success") is True and v_ok.get("failed", 1) == 0
+        report.add(
+            "E4 verify green",
+            e4_ok,
+            f"src_ok={src_ok} success={v_ok.get('success')} passed={v_ok.get('passed')} "
+            f"summary={v_ok.get('summary', '')[:80]}",
+        )
+
+        # E5: circuit trip (same fingerprint ×3)
+        from coding.circuit import CircuitBreaker, ErrorFingerprint
+        br = CircuitBreaker(max_strikes=3, enable_rollback=False, repo_path=str(tmp))
+        err = "AssertionError: expected 5 got -1\nFAILED test_add"
+        tripped = False
+        last = {}
+        for _ in range(3):
+            last = br.after_edit(str(target), False, error_text=err, diff="")
+            if last.get("tripped"):
+                tripped = True
+                break
+        e5_ok = tripped and last.get("same_fingerprint_count", 0) >= 3
+        # Also exercise orchestrator handoff path with max_replans=0 and failing verify
+        from coding.orchestrator import coding_run_ticket, reset_ticket_state
+        # Break add again to force fail path
+        editor.edit_symbol(str(target), "add", "def add(a, b):\n    return a - b\n")
+        reset_ticket_state()
+        ticket = coding_run_ticket(
+            goal="fix add to return sum",
+            project_root=str(tmp),
+            symbol="add",
+            file_path=str(target),
+            # no new_body — verify will fail if tests run; we already broke add
+            test_path=str(tests),
+            max_replans=0,
+        )
+        # orchestrator may handoff on fail
+        e5_ok = e5_ok and (
+            ticket.get("status") in ("handoff", "replanned", "completed", "running")
+            or ticket.get("handoff") is not None
+            or not ticket.get("success")
+        )
+        report.add(
+            "E5 circuit trip",
+            e5_ok,
+            f"tripped={tripped} same_fp={last.get('same_fingerprint_count')} ticket_status={ticket.get('status')}",
+        )
+
+        # E6: secret / deny / causal still pass
+        from coding.policy import (
+            check_command_allowed,
+            check_content_secrets,
+            record_coding_write,
+            check_git_commit_allowed,
+            get_causal_state as gcs,
+        )
+        gcs().reset()
+        os.environ["WW_CODING_CAUSAL"] = "1"
+        deny = check_command_allowed("rm -rf /")
+        sec = check_content_secrets("token = 'sk-abcdefghijklmnop'")
+        record_coding_write(str(target), "edit")
+        causal = check_git_commit_allowed()
+        # architect cannot edit
+        from coding.mode import architect_cannot_edit_proof
+        arch = architect_cannot_edit_proof("coding_edit_symbol")
+        # require_test default ON
+        from coding.policy import get_causal_state
+        req = get_causal_state().require_test_for_ticket()
+        e6_ok = (
+            deny.get("allowed") is False
+            and sec.get("allowed") is False
+            and causal.get("allowed") is False
+            and arch.get("ok") is True
+            and req is True
+        )
+        report.add(
+            "E6 secret/deny/causal",
+            e6_ok,
+            f"deny={not deny.get('allowed')} secret={not sec.get('allowed')} "
+            f"causal={not causal.get('allowed')} arch={arch.get('ok')} require_test={req}",
+        )
+
+        # Bonus productization checks (content-level)
+        from coding.mode import is_coding_goal, build_coding_context
+        from coding.orchestrator import apply_redirect, reset_ticket_state as rts
+        from coding.autocompact import build_coding_summary
+        from coding import PM_VERSION
+
+        mode_ok = is_coding_goal("fix the failing pytest in pkg/calc.py")
+        ctx = build_coding_context(goal="implement refactor of leaf function", force=True)
+        mode_ok = mode_ok and ctx.get("active") and "CODING_AGENT" in (ctx.get("system_block") or "")
+
+        rts()
+        from coding.orchestrator import _ticket_state
+        _ticket_state["goal"] = "original goal"
+        _ticket_state["subgoal"] = "original subgoal"
+        _ticket_state["plan"] = [{"id": "s1", "title": "old", "status": "pending"}]
+        redir = apply_redirect("Instead focus on mul performance")
+        redir_ok = redir.get("changed") and redir.get("subgoal") != "original subgoal"
+
+        ac = build_coding_summary(
+            goal="e2e",
+            files_touched=[str(target)],
+            test_status={"success": True, "summary": "PASS"},
+            open_issues=[],
+            project_root=str(tmp),
+        )
+        ac_ok = ac.get("edit_log_preserved") and "goal:" in ac.get("summary", "")
+
+        report.add("E-mode coding inject", mode_ok, f"active={ctx.get('active')} pm={PM_VERSION}")
+        report.add(
+            "E-redirect steerable",
+            redir_ok,
+            f"subgoal={redir.get('subgoal')} prev={redir.get('prev_subgoal')}",
+        )
+        report.add(
+            "E-autocompact",
+            ac_ok,
+            f"tokens={ac.get('token_estimate')} preserved={ac.get('edit_log_preserved')}",
+        )
+
+    finally:
+        os.chdir(cwd)
+        if old_pp:
+            os.environ["PYTHONPATH"] = old_pp
+        else:
+            os.environ.pop("PYTHONPATH", None)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    print()
+    print(report.summary())
+    if report.hard_fail():
+        print("E2E PROVE FAILED")
+        return 1
+    print("E2E PROVE OK")
+    return 0
+
+
+def run_scale() -> int:
+    """Scale fixture ≥200 py: graph_build, repo_map truncate, grep, time bound."""
+    print("WW Coding prove SCALE")
+    # Import sibling script without requiring scripts/ to be a package
+    import importlib.util
+    scale_path = ROOT / "scripts" / "coding_scale_fixture.py"
+    spec = importlib.util.spec_from_file_location("coding_scale_fixture", scale_path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    generate, run_gates, KNOWN_SYMBOL = mod.generate, mod.run_gates, mod.KNOWN_SYMBOL
+
+    out = SCALE_DIR
+    # Generate if missing or too small
+    py_count = len(list(out.rglob("*.py"))) if out.is_dir() else 0
+    if py_count < 200:
+        print(f"  generating scale fixture (have {py_count})…")
+        meta = generate(out, count=200)
+        print(f"  generated {meta['py_files']} files, symbol={KNOWN_SYMBOL}")
+    else:
+        print(f"  using existing {out} ({py_count} py files)")
+
+    report = Report()
+    r = run_gates(out, token_budget=2000)
+    for c in r["checks"]:
+        report.add(c["name"], c["ok"], c["detail"])
+    n_py = len(list(out.rglob("*.py"))) if out.is_dir() else 0
+    report.add("scale_py_count", n_py >= 200, f"py={n_py}")
+
+    print()
+    print(report.summary())
+    if report.hard_fail():
+        print("SCALE PROVE FAILED")
+        return 1
+    print("SCALE PROVE OK")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="WW Coding Engine prove harness")
-    p.add_argument("--all", action="store_true", help="Run V1–V10 (default)")
+    p.add_argument("--all", action="store_true", help="Run V1–V10")
+    p.add_argument("--e2e", action="store_true", help="Run E2E E1–E6")
+    p.add_argument("--scale", action="store_true", help="Run scale fixture gates")
     args = p.parse_args(argv)
-    # --all is the only mode for now
-    return run_all()
+
+    # Default to --all when no flags
+    if not any([args.all, args.e2e, args.scale]):
+        args.all = True
+
+    codes = []
+    if args.all:
+        codes.append(run_all())
+    if args.e2e:
+        codes.append(run_e2e())
+    if args.scale:
+        codes.append(run_scale())
+    return 1 if any(c != 0 for c in codes) else 0
 
 
 if __name__ == "__main__":

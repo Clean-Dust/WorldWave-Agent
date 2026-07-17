@@ -883,7 +883,7 @@ class TestPMIntegration:
 
     def test_module_version(self):
         import coding
-        assert coding.PM_VERSION == "0.8.0"
+        assert coding.PM_VERSION == "0.9.0"
 
     def test_get_all_tools_returns_60(self):
         import coding
@@ -897,7 +897,7 @@ class TestPMIntegration:
     def test_get_status(self):
         import coding
         status = coding.get_status()
-        assert status["version"] == "0.8.0"
+        assert status["version"] == "0.9.0"
         assert status["tools_available"] >= 60
         assert len(status["modules"]) >= 14
         assert "code_graph" in status["modules"]
