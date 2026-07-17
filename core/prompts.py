@@ -149,6 +149,23 @@ class PromptAssembler:
             if ctx:
                 parts.append(ctx)
 
+        # Coding mode: if role is coder or coding path is active, inject essence hint
+        try:
+            from coding.mode import load_coding_agent_essence, tool_search_hint, ensure_coder_role
+            role = (overrides.get("role") if overrides else None) or self._role
+            if role in ("coder", "autonomous", "expert") or os.environ.get("WW_CODING_MODE", "").lower() in (
+                "1", "true", "yes", "on", "always"
+            ):
+                ensure_coder_role()
+                essence = load_coding_agent_essence(max_chars=1200)
+                if essence:
+                    parts.append("## CODING_AGENT essence\n" + essence)
+                hint = tool_search_hint()
+                if hint:
+                    parts.append(hint)
+        except Exception:
+            pass
+
         if self._tools_enabled:
             parts.append(self._cached_tools_summary())
 

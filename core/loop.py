@@ -1043,6 +1043,21 @@ class Worldwave:
         self._last_goal = user_goal_raw
         self._current_goal = user_goal_raw
 
+        # ── Coding mode auto (PM 0.9): CODING_AGENT essence + AGENTS.md + role=coder ──
+        try:
+            from coding.mode import is_coding_goal, build_coding_context
+            if is_coding_goal(user_goal_raw):
+                coding_ctx = build_coding_context(goal=user_goal_raw, force=True)
+                self._coding_mode = coding_ctx
+                self._log(
+                    f"## Coding mode ON role={coding_ctx.get('role', {}).get('role', 'coder')}"
+                )
+            else:
+                self._coding_mode = {"active": False}
+        except Exception as e:
+            logger.debug("coding mode inject skipped: %s", e)
+            self._coding_mode = {"active": False}
+
         # ── Passive lossless track + auto topic split (single memory system) ──
         # Detect independent topic (markers / gap / lexical); park current to STM.
         try:

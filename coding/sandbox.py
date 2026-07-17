@@ -84,6 +84,10 @@ class CapabilityMutex:
         "coding_sample_repair": CAP_READ,
         "coding_adversarial_tests": CAP_EDIT,
         "coding_replan": CAP_PLAN,
+        "coding_run_ticket": CAP_EDIT,  # orchestrated path may edit
+        "coding_redirect": CAP_PLAN,
+        "coding_ticket_status": CAP_READ,
+        "coding_autocompact": CAP_READ,
         "coding_worktree_": CAP_EDIT,
         # AST rewrite — prefix: coding_ast_rewrite
         "coding_ast_rewrite": CAP_EDIT,

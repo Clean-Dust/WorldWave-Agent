@@ -1,15 +1,15 @@
 """ww/coding/__init__.py — WorldWave Programming Module (WW-PM)
 
-Default engineering harness:
-  perception (grep/glob/AST RAG/code graph) + ACI edits + execution-grounded
-  verify + microcompact + deny-first policy + replan + prove.
+Default engineering harness (productized path PM 0.9):
+  coding mode auto → orchestrator (map/grep/graph → edit → verify → circuit)
+  → steerable redirect → autocompact → require-test default ON.
 """
 
 from __future__ import annotations
 from typing import Dict, List, Optional
 
 # Version
-PM_VERSION = "0.8.0"
+PM_VERSION = "0.9.0"
 
 
 # ── Lazy-init module singletons ───────────────────────────────────────
@@ -29,6 +29,8 @@ _debug_tools: List[Dict] = None
 _graph_tools: List[Dict] = None
 _perception_tools: List[Dict] = None
 _harness_tools: List[Dict] = None
+_orchestrator_tools: List[Dict] = None
+_autocompact_tools: List[Dict] = None
 _retriever_populated: bool = False
 
 
@@ -62,6 +64,7 @@ def get_all_tools() -> List[Dict]:
     global _aci_tools, _shell_tools, _planning_tools, _search_tools, _rag_tools, _lsp_tools, _circuit_tools, _sandbox_tools
     global _tool_retrieval_tools, _dense_tools, _retriever_populated
     global _allure_tools, _debug_tools, _graph_tools, _perception_tools, _harness_tools
+    global _orchestrator_tools, _autocompact_tools
 
     tools = []
 
@@ -119,6 +122,16 @@ def get_all_tools() -> List[Dict]:
         from coding.harness import get_harness_tools
         _harness_tools = get_harness_tools()
     tools.extend(_harness_tools)
+
+    if _orchestrator_tools is None:
+        from coding.orchestrator import get_orchestrator_tools
+        _orchestrator_tools = get_orchestrator_tools()
+    tools.extend(_orchestrator_tools)
+
+    if _autocompact_tools is None:
+        from coding.autocompact import get_autocompact_tools
+        _autocompact_tools = get_autocompact_tools()
+    tools.extend(_autocompact_tools)
 
     # Tool retrieval and dense vector depend on the full tool list
     # Populate retriever with all tools after they're collected
@@ -182,5 +195,13 @@ def get_status() -> Dict:
             "policy",
             "perception",
             "harness",
+            "mode",
+            "orchestrator",
+            "autocompact",
         ],
+        "defaults": {
+            "require_test": True,
+            "samples": 0,
+            "role": "coder",
+        },
     }

@@ -379,7 +379,7 @@ class LLMClient:
         )
 
     def _inject_phase_prompt(self, messages: List[Dict], phase: str) -> List[Dict]:
-        """Inject spiral phase system prompt + AGENTS.md project context"""
+        """Inject spiral phase system prompt + AGENTS.md + coding-mode essence"""
         msgs = list(messages)
         
         # Build system prompt — identity + runtime context + phase instruction + project context
@@ -394,6 +394,21 @@ class LLMClient:
             agents_md = _load_agents_md()
             if agents_md:
                 system_parts.append(agents_md)
+        except Exception:
+            pass
+
+        # Coding mode auto: CODING_AGENT essence + role=coder when goal looks like coding
+        try:
+            from coding.mode import build_coding_context, is_coding_goal
+            goal = ""
+            for m in reversed(msgs):
+                if m.get("role") == "user":
+                    goal = str(m.get("content") or "")
+                    break
+            if is_coding_goal(goal):
+                ctx = build_coding_context(goal=goal, force=False)
+                if ctx.get("system_block"):
+                    system_parts.append(ctx["system_block"])
         except Exception:
             pass
         

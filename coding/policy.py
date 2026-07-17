@@ -195,7 +195,8 @@ class CausalState:
         }
 
     def require_test_for_ticket(self) -> bool:
-        val = os.environ.get("WW_CODING_REQUIRE_TEST", "0").strip().lower()
+        # PM 0.9 default ON — require green verify before mark_ticket_done
+        val = os.environ.get("WW_CODING_REQUIRE_TEST", "1").strip().lower()
         return val in ("1", "true", "yes", "on")
 
     def check_mark_ticket_done_allowed(self, ticket: Optional[Dict] = None) -> Dict:
