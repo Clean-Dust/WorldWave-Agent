@@ -31,10 +31,10 @@ def _arena_mod():
     return mod
 
 
-def test_tasks_dir_has_at_least_20():
+def test_tasks_dir_has_at_least_30():
     assert TASKS.is_dir(), f"missing {TASKS}"
     ids = [p.name for p in TASKS.iterdir() if p.is_dir() and (p / "task.json").is_file()]
-    assert len(ids) >= 20, f"want ≥20 tasks, got {len(ids)}: {ids}"
+    assert len(ids) >= 30, f"want ≥30 tasks, got {len(ids)}: {ids}"
 
 
 def test_each_task_has_scaffold_and_hidden_tests():
@@ -51,7 +51,7 @@ def test_each_task_has_scaffold_and_hidden_tests():
 
 
 def test_adversarial_and_redirect_counts():
-    adv = redir = samples = inspired = 0
+    adv = redir = samples = inspired = samples_hard = realrepo = 0
     for child in TASKS.iterdir():
         if not (child / "task.json").is_file():
             continue
@@ -62,12 +62,19 @@ def test_adversarial_and_redirect_counts():
             redir += 1
         if int(meta.get("samples") or 0) >= 2:
             samples += 1
+            if meta.get("hard"):
+                samples_hard += 1
         if meta.get("inspired_by"):
             inspired += 1
-    assert adv >= 5, adv
+        tags = meta.get("tags") or []
+        if meta.get("realrepo") or "realrepo" in tags:
+            realrepo += 1
+    assert adv >= 8, adv
     assert redir >= 3, redir
     assert samples >= 1, samples
+    assert samples_hard >= 3, samples_hard
     assert inspired >= 5, inspired
+    assert realrepo >= 3, realrepo
 
 
 def test_load_tasks_smoke_and_full():
@@ -77,7 +84,7 @@ def test_load_tasks_smoke_and_full():
     smoke = arena.load_tasks(root, smoke=True)
     assert 1 <= len(smoke) <= 3
     full = arena.load_tasks(root, smoke=False)
-    assert len(full) >= 20
+    assert len(full) >= 30
 
     for t in smoke:
         prompt = arena.build_agent_prompt(t)
@@ -98,6 +105,10 @@ def test_hidden_tests_not_in_scaffold():
         for p in (child / "scaffold").rglob("*"):
             assert "hidden_tests" not in p.parts
             if p.is_file() and p.suffix == ".py":
+                # Agent-visible stub tests under scaffold/tests/ are allowed (TDD tasks).
+                # Hidden suite must never live in scaffold.
+                if "tests" in p.parts and p.name.startswith("test_"):
+                    continue
                 text = p.read_text(encoding="utf-8", errors="replace")
                 assert "def test_" not in text or "test_" not in p.name
 
@@ -142,12 +153,50 @@ def test_arena_smoke_subprocess():
         assert row.get("require_test") is True
 
 
-def test_pm_version_0_12():
+def test_pm_version_0_13_endpoint():
     from coding import PM_VERSION, get_status
 
-    assert PM_VERSION == "0.12.0"
-    assert get_status()["version"] == "0.12.0"
+    assert PM_VERSION == "0.13.0-endpoint"
+    assert get_status()["version"] == "0.13.0-endpoint"
     assert "index_facade" in get_status()["modules"]
+
+
+def test_sb1_baseline_kind_and_summary_fields():
+    arena = _arena_mod()
+    assert arena.baseline_kind() == "strong_react"
+    # summarize exposes F1 machine-readable fields
+    from scripts import coding_arena as _  # noqa: F401 — may fail if not package
+    ww = [
+        arena.AgentRunResult(
+            agent="ww", task_id="t1", pass_at_1=True, wall_time_s=1.0,
+            require_test=True, gold_applied=False, mode="mock",
+        ),
+        arena.AgentRunResult(
+            agent="ww", task_id="t2", pass_at_1=False, wall_time_s=1.0,
+            require_test=True, gold_applied=False, mode="mock",
+            failure_taxonomy="thrash",
+        ),
+    ]
+    base = [
+        arena.AgentRunResult(
+            agent="baseline", task_id="t1", pass_at_1=False, wall_time_s=0.5,
+            metrics={"baseline_kind": "strong_react"},
+        ),
+        arena.AgentRunResult(
+            agent="baseline", task_id="t2", pass_at_1=False, wall_time_s=0.5,
+            metrics={"baseline_kind": "strong_react"},
+        ),
+    ]
+    s = arena.summarize(ww, base)
+    assert s["baseline_kind"] == "strong_react"
+    assert "ww_pass_rate" in s
+    assert "baseline_pass_rate" in s
+    assert "delta_pass_rate" in s
+    assert "thrash_rate" in s
+    assert "gold_applied_any" in s
+    assert "f1_pass_ok" in s
+    assert "f1_delta_ok" in s
+    assert s["thrash_rate"] == 0.5
 
 
 def test_llm_path_never_applies_gold():

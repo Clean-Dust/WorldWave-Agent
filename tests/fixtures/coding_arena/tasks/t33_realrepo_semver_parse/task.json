@@ -1,0 +1,28 @@
+{
+  "name": "Parse simple semver (realrepo)",
+  "goal": "`pkg/semver.py::parse` parses `MAJOR.MINOR.PATCH` into a tuple of ints; ignore pre-release suffix after `-`. `pkg/compat.py` uses parse. Tagged realrepo.",
+  "difficulty": "hard",
+  "tags": [
+    "realrepo",
+    "parse",
+    "hard",
+    "adversarial"
+  ],
+  "adversarial": true,
+  "supports_redirect": false,
+  "samples": 2,
+  "timeout_s": 60,
+  "hard": true,
+  "smoke": false,
+  "realrepo": true,
+  "inspired_by": "Pattern: packaging version parse (synthetic; not vendored).",
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/semver.py",
+    "symbol": "parse",
+    "new_body": "def parse(s):\n    s = (s or \"\").strip()\n    if \"-\" in s:\n        s = s.split(\"-\", 1)[0]\n    parts = s.split(\".\")\n    if len(parts) != 3:\n        raise ValueError(\"bad version\")\n    return tuple(int(p) for p in parts)\n"
+  },
+  "id": "t33_realrepo_semver_parse",
+  "baseline_strategy": "naive",
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

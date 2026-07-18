@@ -1,0 +1,26 @@
+{
+  "name": "Default arg mutation trap",
+  "goal": "`pkg/bag.py::add_item` must not share a mutable default list across calls. `pkg/store.py` wraps it. Adversarial edge case.",
+  "difficulty": "hard",
+  "tags": [
+    "adversarial",
+    "defaults",
+    "hard"
+  ],
+  "adversarial": true,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 60,
+  "hard": true,
+  "smoke": false,
+  "inspired_by": "Pattern: mutable default argument (classic Python footgun).",
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/bag.py",
+    "symbol": "add_item",
+    "new_body": "def add_item(item, bag=None):\n    if bag is None:\n        bag = []\n    bag.append(item)\n    return bag\n"
+  },
+  "id": "t30_adversarial_default_mut",
+  "baseline_strategy": "naive",
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

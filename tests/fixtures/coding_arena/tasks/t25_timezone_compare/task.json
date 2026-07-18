@@ -1,0 +1,27 @@
+{
+  "name": "Aware/naive datetime compare",
+  "goal": "`pkg/schedule.py::is_due` should treat naive `now` as UTC when comparing to aware `deadline`. Multi-file with `pkg/jobs.py`.",
+  "difficulty": "hard",
+  "tags": [
+    "time",
+    "timezone",
+    "hard",
+    "adversarial"
+  ],
+  "adversarial": true,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 90,
+  "hard": true,
+  "smoke": false,
+  "inspired_by": null,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/schedule.py",
+    "symbol": "is_due",
+    "new_body": "def is_due(now, deadline):\n    from datetime import timezone\n    if now.tzinfo is None:\n        now = now.replace(tzinfo=timezone.utc)\n    if deadline.tzinfo is None:\n        deadline = deadline.replace(tzinfo=timezone.utc)\n    return now >= deadline\n"
+  },
+  "id": "t25_timezone_compare",
+  "baseline_strategy": "naive",
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

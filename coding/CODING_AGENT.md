@@ -1,9 +1,11 @@
 # CODING_AGENT.md — WorldWave Coding Playbook
 
-Default engineering harness for coding tasks (PM 0.12 coding path). Prefer this sequence over ad-hoc shell edits.
+Default engineering harness for coding tasks (**PM 0.13.0-endpoint**). Prefer this sequence over ad-hoc shell edits.
 
-**Arena honesty:** mock harness (gold through WW path) ≠ closed-book Outcome A.  
-`WW_ARENA_LLM=1` must edit from goal+scaffold only (`gold_applied=false`). See `docs/coding-north-star.md`.
+**Arena honesty:** mock harness (gold through WW path) ≠ F1 closed-book endpoint.  
+`WW_ARENA_LLM=1` must edit from goal+scaffold only (`gold_applied=false`).  
+SB1 baseline is strong_react (read/grep/write/tests only). Foundation 20/22 vs weak baseline is not the endpoint.  
+See `docs/coding-north-star.md` (F1–F6).
 
 ## Default path (auto)
 

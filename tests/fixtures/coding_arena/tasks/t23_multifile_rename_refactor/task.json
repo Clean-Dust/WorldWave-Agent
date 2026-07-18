@@ -1,0 +1,26 @@
+{
+  "id": "t23_multifile_rename_refactor",
+  "name": "Multi-file discount stacking",
+  "goal": "`pkg/pricing.py::apply_discount` should apply percent discount correctly: `price * (1 - pct/100)`. Callers in `pkg/cart.py` and `pkg/checkout.py` must keep working. Multi-file refactor-style locate.",
+  "difficulty": "hard",
+  "tags": [
+    "refactor",
+    "multi-file",
+    "hard"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 90,
+  "hard": true,
+  "smoke": false,
+  "inspired_by": "Pattern: multi-file business logic fix across call graph.",
+  "baseline_strategy": "naive",
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/.",
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/pricing.py",
+    "symbol": "apply_discount",
+    "new_body": "def apply_discount(price, pct):\n    return price * (1 - pct / 100.0)\n"
+  }
+}

@@ -336,30 +336,170 @@ class WWMCPServer:
         self._tools_cache: Optional[List[Dict]] = None
         
     def _get_ww_tools(self) -> List[Dict]:
-        """Get all WW tools as MCP-compatible schemas."""
+        """Get all WW tools as MCP-compatible schemas.
+
+        Ensures coding tools (repo_map / grep / edit / verify …) are registered
+        even when the process has not bootstrapped the full server registry.
+        """
         if self._tools_cache is not None:
             return self._tools_cache
-            
+
         tools = []
         try:
             from tools.registry import ToolRegistry
             reg = ToolRegistry()
-            for tool in reg.list_all():
+            listed = []
+            if hasattr(reg, "list_tools"):
+                listed = list(reg.list_tools() or [])
+            elif hasattr(reg, "list_all"):
+                listed = list(reg.list_all() or [])
+            # Bootstrap coding tools when registry is empty (stdio / smoke path)
+            if len(listed) < 3:
+                try:
+                    from coding import register_tools
+                    register_tools(reg)
+                    if hasattr(reg, "list_tools"):
+                        listed = list(reg.list_tools() or [])
+                    elif hasattr(reg, "list_all"):
+                        listed = list(reg.list_all() or [])
+                except Exception as e:
+                    logger.warning("MCP coding tool bootstrap failed: %s", e)
+            # Prefer core coding surface if list is huge
+            coding_names = {
+                "coding_repo_map",
+                "coding_grep",
+                "coding_edit_symbol",
+                "coding_verify",
+                "coding_outline",
+                "coding_graph_who_calls",
+                "coding_graph_blast_radius",
+                "coding_apply_patch",
+            }
+            for tool in listed:
                 tools.append({
                     "name": tool.name,
                     "description": tool.description,
                     "inputSchema": {
                         "type": "object",
                         "properties": tool.parameters or {},
-                        "required": tool.required_params if hasattr(tool, 'required_params') else [],
+                        "required": (
+                            tool.required_params
+                            if hasattr(tool, "required_params")
+                            else []
+                        ),
                     },
                 })
-        except Exception:
-            pass
-            
+            # If still empty, expose a minimal offline coding surface directly
+            if len(tools) < 3:
+                tools = self._fallback_coding_mcp_tools()
+            else:
+                # Ensure the three required coding tools are always present
+                have = {t["name"] for t in tools}
+                if len(have & coding_names) < 3:
+                    for extra in self._fallback_coding_mcp_tools():
+                        if extra["name"] not in have:
+                            tools.append(extra)
+                            have.add(extra["name"])
+        except Exception as e:
+            logger.warning("MCP _get_ww_tools failed: %s", e)
+            tools = self._fallback_coding_mcp_tools()
+
         self._tools_cache = tools
         return tools
+
+    def _fallback_coding_mcp_tools(self) -> List[Dict]:
+        """Minimal MCP tool schemas when ToolRegistry is unavailable."""
+        return [
+            {
+                "name": "coding_repo_map",
+                "description": "Signature-level repository map (token budgeted).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "token_budget": {"type": "integer", "default": 3000},
+                        "root_dir": {"type": "string"},
+                    },
+                },
+            },
+            {
+                "name": "coding_grep",
+                "description": "Project text search (ripgrep or fallback).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string"},
+                        "path": {"type": "string"},
+                        "glob": {"type": "string", "default": "*.py"},
+                    },
+                    "required": ["pattern"],
+                },
+            },
+            {
+                "name": "coding_edit_symbol",
+                "description": "AST edit a function/class by name with syntax check.",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "symbol_name": {"type": "string"},
+                        "new_body": {"type": "string"},
+                    },
+                    "required": ["path", "symbol_name", "new_body"],
+                },
+            },
+            {
+                "name": "coding_verify",
+                "description": "Run project tests (agent-visible suite).",
+                "inputSchema": {
+                    "type": "object",
+                    "properties": {
+                        "test_path": {"type": "string"},
+                    },
+                },
+            },
+        ]
         
+    def _dispatch_coding_tool_offline(self, tool_name: str, arguments: Dict) -> Any:
+        """Offline handlers for core coding tools (stdio / smoke without full server)."""
+        arguments = arguments or {}
+        root = str(arguments.get("root_dir") or arguments.get("path") or ".")
+        if tool_name in ("coding_repo_map", "repo_map"):
+            from coding.index_facade import IndexFacade
+            fac = IndexFacade(project_root=root)
+            fac.build(force=False)
+            q = fac.query(
+                "map",
+                token_budget=int(arguments.get("token_budget") or 3000),
+                force_graph=True,
+            )
+            try:
+                fac.close()
+            except Exception:
+                pass
+            return q
+        if tool_name in ("coding_grep", "grep"):
+            from coding.perception import grep
+            pattern = str(arguments.get("pattern") or "")
+            return grep(
+                pattern,
+                path=str(arguments.get("path") or root),
+                glob=str(arguments.get("glob") or "*.py"),
+                max_matches=int(arguments.get("max_matches") or 20),
+            )
+        if tool_name == "coding_edit_symbol":
+            from coding.aci import DefensiveEditor
+            path = str(arguments.get("path") or "")
+            sym = str(arguments.get("symbol_name") or arguments.get("symbol") or "")
+            body = str(arguments.get("new_body") or "")
+            return DefensiveEditor(lint_enabled=True).edit_symbol(path, sym, body)
+        if tool_name == "coding_verify":
+            from coding.harness import coding_verify
+            return coding_verify(test_path=arguments.get("test_path"))
+        if tool_name == "coding_outline":
+            from coding.perception import outline
+            return outline(str(arguments.get("path") or ""))
+        raise RuntimeError(f"unknown or unregistered tool: {tool_name}")
+
     async def run_stdio(self):
         """Run MCP server over stdio (for IDE integration)."""
         logger.info("WW MCP server starting over stdio...")
@@ -413,23 +553,47 @@ class WWMCPServer:
             }
         elif method == "tools/call":
             tool_name = params.get("name")
-            arguments = params.get("arguments", {})
-            
+            arguments = params.get("arguments", {}) or {}
+
             try:
                 from tools.registry import ToolRegistry
                 reg = ToolRegistry()
-                result = reg.call(tool_name, arguments)
+                # Ensure tools exist (same bootstrap as tools/list)
+                listed = []
+                if hasattr(reg, "list_tools"):
+                    listed = list(reg.list_tools() or [])
+                if len(listed) < 3:
+                    try:
+                        from coding import register_tools
+                        register_tools(reg)
+                    except Exception:
+                        pass
+                if reg.get(tool_name) is not None and hasattr(reg, "call"):
+                    result = reg.call(tool_name, arguments)
+                else:
+                    result = self._dispatch_coding_tool_offline(tool_name, arguments)
                 return {
                     "jsonrpc": JSONRPC_VERSION,
                     "id": req_id,
                     "result": {"content": [{"type": "text", "text": str(result)}]},
                 }
             except Exception as e:
-                return {
-                    "jsonrpc": JSONRPC_VERSION,
-                    "id": req_id,
-                    "result": {"content": [{"type": "text", "text": f"Error: {e}"}], "isError": True},
-                }
+                try:
+                    result = self._dispatch_coding_tool_offline(tool_name, arguments)
+                    return {
+                        "jsonrpc": JSONRPC_VERSION,
+                        "id": req_id,
+                        "result": {"content": [{"type": "text", "text": str(result)}]},
+                    }
+                except Exception as e2:
+                    return {
+                        "jsonrpc": JSONRPC_VERSION,
+                        "id": req_id,
+                        "result": {
+                            "content": [{"type": "text", "text": f"Error: {e2}"}],
+                            "isError": True,
+                        },
+                    }
         elif method == "notifications/initialized":
             return None  # No response needed
             

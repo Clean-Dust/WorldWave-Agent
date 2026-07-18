@@ -1,17 +1,17 @@
 """ww/coding/__init__.py — WorldWave Programming Module (WW-PM)
 
-Default engineering harness (productized path PM 0.12):
+Default engineering harness (productized path PM 0.13.0-endpoint):
   coding mode auto → orchestrator (index facade map/grep/graph → edit → verify → circuit)
   → steerable redirect → autocompact → require-test default ON.
-  Live multi-turn, corpus stress, model route, CodingMetrics, loop bridge.
-  Coding arena closed-book LLM path (gold forbidden) + mock CI path.
+  Hard Arena v2 (≥30), SB1 strong baseline, large-repo --real, MCP/ACP ≥3 tools.
+  Closed-book LLM path (gold forbidden) + mock CI path.
 """
 
 from __future__ import annotations
 from typing import Dict, List, Optional
 
 # Version
-PM_VERSION = "0.12.0"
+PM_VERSION = "0.13.0-endpoint"
 
 
 # ── Lazy-init module singletons ───────────────────────────────────────

@@ -1,0 +1,27 @@
+{
+  "name": "URL join trailing slash (realrepo)",
+  "goal": "`pkg/urls.py::join_url` joins base+path without double slashes; base without trailing slash still works. Synthetic task tagged realrepo (inspired by urllib patterns, not vendored).",
+  "difficulty": "hard",
+  "tags": [
+    "realrepo",
+    "url",
+    "hard"
+  ],
+  "adversarial": true,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 60,
+  "hard": true,
+  "smoke": false,
+  "realrepo": true,
+  "inspired_by": "Pattern: urllib-style join hygiene (synthetic; not a third-party commit).",
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/urls.py",
+    "symbol": "join_url",
+    "new_body": "def join_url(base, path):\n    base = (base or \"\").rstrip(\"/\")\n    path = (path or \"\").lstrip(\"/\")\n    if not path:\n        return base + \"/\" if base else \"\"\n    return f\"{base}/{path}\"\n"
+  },
+  "id": "t31_realrepo_urljoin",
+  "baseline_strategy": "naive",
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

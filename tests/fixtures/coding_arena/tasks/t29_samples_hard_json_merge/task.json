@@ -1,0 +1,27 @@
+{
+  "name": "Deep merge JSON configs (samples path)",
+  "goal": "`pkg/jmerge.py::merge_json` deep-merges dicts (override wins leaf); lists are replaced not concatenated. Multi-file with `pkg/loader.py`. Hard samples path.",
+  "difficulty": "hard",
+  "tags": [
+    "json",
+    "merge",
+    "samples",
+    "hard"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 3,
+  "timeout_s": 90,
+  "hard": true,
+  "smoke": false,
+  "inspired_by": null,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/jmerge.py",
+    "symbol": "merge_json",
+    "new_body": "def merge_json(base, override):\n    if not isinstance(base, dict) or not isinstance(override, dict):\n        return override if override is not None else base\n    out = dict(base)\n    for k, v in (override or {}).items():\n        if k in out and isinstance(out[k], dict) and isinstance(v, dict):\n            out[k] = merge_json(out[k], v)\n        else:\n            out[k] = v\n    return out\n"
+  },
+  "id": "t29_samples_hard_json_merge",
+  "baseline_strategy": "naive",
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

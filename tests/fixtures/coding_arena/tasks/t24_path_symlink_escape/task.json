@@ -1,0 +1,27 @@
+{
+  "name": "Path resolve must block abs + ..",
+  "goal": "`pkg/paths.py::resolve_under` must keep results under root: reject absolute second parts and `..` segments. `pkg/assets.py` uses it.",
+  "difficulty": "hard",
+  "tags": [
+    "security",
+    "path",
+    "adversarial",
+    "hard"
+  ],
+  "adversarial": true,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 90,
+  "hard": true,
+  "smoke": false,
+  "inspired_by": "Pattern: path traversal via absolute join / .. (static servers).",
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/paths.py",
+    "symbol": "resolve_under",
+    "new_body": "def resolve_under(root, *parts):\n    import os\n    root = os.path.abspath(root)\n    for p in parts:\n        if not isinstance(p, str):\n            raise ValueError(\"invalid part\")\n        if os.path.isabs(p):\n            raise ValueError(\"absolute path not allowed\")\n        for seg in p.replace(\"\\\\\", \"/\").split(\"/\"):\n            if seg == \"..\":\n                raise ValueError(\"path escapes root\")\n    candidate = os.path.abspath(os.path.join(root, *parts))\n    if not (candidate == root or candidate.startswith(root + os.sep)):\n        raise ValueError(\"path escapes root\")\n    return candidate\n"
+  },
+  "id": "t24_path_symlink_escape",
+  "baseline_strategy": "naive",
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

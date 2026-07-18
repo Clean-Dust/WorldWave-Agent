@@ -1,0 +1,25 @@
+{
+  "name": "Normalize multi-space via util",
+  "goal": "`pkg/textutil.py::normalize` should collapse internal whitespace runs to a single space and strip ends. `pkg/pipeline.py` and `pkg/render.py` call it.",
+  "difficulty": "medium",
+  "tags": [
+    "string",
+    "multi-file"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 60,
+  "hard": true,
+  "smoke": false,
+  "inspired_by": null,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/textutil.py",
+    "symbol": "normalize",
+    "new_body": "def normalize(s):\n    import re\n    return re.sub(r\"\\s+\", \" \", (s or \"\").strip())\n"
+  },
+  "id": "t27_normalize_whitespace",
+  "baseline_strategy": "naive",
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

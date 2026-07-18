@@ -1,0 +1,34 @@
+{
+  "name": "Redirect-capable div fix",
+  "goal": "Initial goal: fix `pkg/ops.py::sub`. Mid-task redirect may focus on `div` (integer division). Both should be correct. Supports redirect injection.",
+  "difficulty": "medium",
+  "tags": [
+    "redirect",
+    "multi-symbol"
+  ],
+  "adversarial": false,
+  "supports_redirect": true,
+  "samples": 0,
+  "timeout_s": 60,
+  "hard": false,
+  "smoke": false,
+  "inspired_by": null,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/ops.py",
+    "symbol": "sub",
+    "new_body": "def sub(a, b):\n    return a - b\n",
+    "extra_fixes": [
+      {
+        "method": "edit_symbol",
+        "file": "pkg/ops.py",
+        "symbol": "div",
+        "new_body": "def div(a, b):\n    if b == 0:\n        raise ZeroDivisionError(\"div by zero\")\n    return a // b\n"
+      }
+    ],
+    "redirect_message": "Also fix div for integer division and zero"
+  },
+  "id": "t28_redirect_div_focus",
+  "baseline_strategy": "naive",
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

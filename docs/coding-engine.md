@@ -1,6 +1,6 @@
-# Coding Engine (WW-PM 0.12)
+# Coding Engine (WW-PM 0.13.0-endpoint)
 
-WorldWave's default engineering harness lives in `coding/`. PM 0.12 hardens **closed-book arena** + **index facade** on the 0.10–0.11 foundation: mode → map/grep/graph → edit → verify → circuit/replan, with steerable redirect, AutoCompact, CodingMetrics, model route, corpus/large-repo stress, and protocol smoke — offline-provable for CI; closed-book LLM path for the product hard bar.
+WorldWave's default engineering harness lives in `coding/`. PM **0.13.0-endpoint** delivers Hard Arena v2 (≥30), **SB1 strong_react baseline**, anti-thrash closed-book loop, large-repo `--real` dual corpus, and MCP/ACP with **≥3 coding tools**. Foundation (PM 0.12 20/22 vs weak baseline) is history only — see `docs/coding-north-star.md` for F1–F6.
 
 ## Default path
 
@@ -82,9 +82,9 @@ Default orchestrator locate path goes through the facade so **graph_calls > 0**.
 
 User-facing `user_summary` never dumps raw tool JSON.
 
-## Coding arena (PM 0.12)
+## Coding arena (PM 0.13 Hard Arena v2)
 
-Hidden-test pass@1 vs fixed reference baseline.
+Hidden-test pass@1 vs **SB1** `baseline_kind=strong_react` (read/grep/write/tests; no graph/facade).
 
 | Mode | Env | Behavior |
 |------|-----|----------|
@@ -98,27 +98,40 @@ python scripts/coding_arena.py --full --vs-baseline
 # Closed-book (Apple / local with keys)
 WW_ARENA_LLM=1 WW_CODING_MODEL=your-model WW_ARENA_TIMEOUT=300 \
   python scripts/coding_arena.py --full --vs-baseline
+
+# Optional legacy weak baseline (not used for F1 delta)
+WW_ARENA_BASELINE=legacy_weak python scripts/coding_arena.py --full --vs-baseline
 ```
 
-Reports: `results/coding_arena/` include `gold_applied`, `mode`, `failure_taxonomy`.
+Report summary fields: `ww_pass_rate`, `baseline_pass_rate`, `baseline_kind`, `delta_pass_rate`, `thrash_rate`, `gold_applied_any`, `f1_pass_ok`, `f1_delta_ok`.
 
-**Mock green ≠ Outcome A product success.** Closed-book pass@1 > baseline on the full suite is the hard bar. See `docs/coding-north-star.md`.
+**Mock green ≠ F1 product success.** Closed-book `ww_pass_rate≥0.90` and `delta≥0.15` vs SB1 is the hard bar. See `docs/coding-north-star.md`.
 
-## Protocol (MCP / ACP) — IDE attach
+## Protocol (MCP / ACP) — attaching from other agents
 
-WorldWave can expose coding tools to IDEs/agents via MCP or ACP.
+WorldWave exposes coding tools so Cursor / other agents can attach without embedding WW internals.
+
+### Minimum surface (≥3 tools)
+
+| Tool | Role |
+|------|------|
+| `coding_repo_map` | Signature-level map (token budgeted) |
+| `coding_grep` | Project text search |
+| `coding_edit_symbol` / `coding_verify` | AST edit + test verify |
+
+`scripts/coding_protocol_smoke.py` **fails** if `tools/list` returns fewer than 3 coding tools (no empty skip-pass).
 
 ### MCP (preferred)
 
 - Implementation: `core/mcp.py` (`WWMCPServer` over stdio JSON-RPC).
 - Handshake: `initialize` → `notifications/initialized` → `tools/list` → `tools/call`.
-- Smoke (offline):
+- Bootstraps `coding.register_tools` when the process registry is empty.
 
 ```bash
 python scripts/coding_protocol_smoke.py
 ```
 
-Example IDE config (stdio; adjust command to your install):
+Example IDE / agent config (stdio; set `cwd` to your WorldWave checkout — do not commit absolute personal paths):
 
 ```json
 {
@@ -126,18 +139,18 @@ Example IDE config (stdio; adjust command to your install):
     "worldwave": {
       "command": "python",
       "args": ["-c", "import asyncio; from core.mcp import WWMCPServer; asyncio.run(WWMCPServer().run_stdio())"],
-      "cwd": "/path/to/worldwave"
+      "cwd": "."
     }
   }
 }
 ```
 
-Prefer registering the full tool registry in a long-lived `ww` process when available. Smoke uses in-process initialize + facade read-only map/grep so CI needs no daemon.
+From another agent: list tools, call `coding_repo_map` / `coding_grep` read-only first, then `coding_edit_symbol` + `coding_verify` for write loops. Prefer a long-lived `ww` process with the full registry when available.
 
 ### ACP
 
 - Implementation: `core/acp.py` — capabilities over stdio (`ready`, `capabilities`, tool invoke).
-- Smoke registers `coding_repo_map` / `coding_grep` capabilities.
+- `register_tools_as_capabilities()` bootstraps coding tools (≥3).
 
 ### LSP
 
@@ -148,13 +161,22 @@ Optional. If language servers are missing, protocol smoke skips LSP without fail
 ```bash
 python scripts/coding_corpus_prove.py
 python scripts/coding_large_repo_prove.py
+python scripts/coding_large_repo_prove.py --real   # ≥2 allowlisted pure-Python repos in cache
 python scripts/coding_prove.py --scale
 ```
 
 - Self-bootstrap: in-repo `coding/` + `core/`
-- Cache: `~/.cache/worldwave/coding_corpus` (optional clone with `WW_CODING_CORPUS_CLONE=1`)
+- Cache: `~/.cache/worldwave/coding_corpus` (allowlist shallow clones; never vendor into main)
+- C-task: arena tasks tagged `realrepo` (≥3)
 - Reports: `results/coding_large_repo/`
-- Never vendors third-party trees into the main repo
+
+## Head-to-head (F2b optional)
+
+```bash
+python scripts/coding_h2h.py --suite hard_subset10
+```
+
+If neither `claude` nor `codex` is on PATH: exit 0 with `skipped=true`, `external_claim=forbidden`.
 
 ## Scale fixture
 

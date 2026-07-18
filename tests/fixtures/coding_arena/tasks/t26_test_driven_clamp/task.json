@@ -1,0 +1,27 @@
+{
+  "name": "Clamp score with multi-file",
+  "goal": "`pkg/score.py::clamp` must return values in [0, 100]. `pkg/report.py` formats clamped scores. Agent-visible stub tests under scaffold tests/ drive TDD.",
+  "difficulty": "hard",
+  "tags": [
+    "tdd",
+    "boundary",
+    "hard",
+    "samples"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 2,
+  "timeout_s": 90,
+  "hard": true,
+  "smoke": false,
+  "inspired_by": null,
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/score.py",
+    "symbol": "clamp",
+    "new_body": "def clamp(x):\n    if x is None:\n        return 0\n    if x < 0:\n        return 0\n    if x > 100:\n        return 100\n    return x\n"
+  },
+  "id": "t26_test_driven_clamp",
+  "baseline_strategy": "naive",
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}

@@ -178,9 +178,9 @@ class TestDefaults:
 
     def test_pm_version_0_10(self):
         from coding import PM_VERSION, get_status
-        assert PM_VERSION == "0.12.0"
+        assert PM_VERSION == "0.13.0-endpoint"
         st = get_status()
-        assert st["version"] == "0.12.0"
+        assert st["version"] == "0.13.0-endpoint"
         assert "orchestrator" in st["modules"]
         assert "mode" in st["modules"]
         assert "autocompact" in st["modules"]

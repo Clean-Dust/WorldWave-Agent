@@ -7,7 +7,7 @@
     "time",
     "timezone"
   ],
-  "adversarial": false,
+  "adversarial": true,
   "supports_redirect": false,
   "samples": 0,
   "timeout_s": 90,

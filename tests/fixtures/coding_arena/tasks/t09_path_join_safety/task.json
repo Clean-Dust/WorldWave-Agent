@@ -20,7 +20,7 @@
   },
   "baseline_strategy": "naive",
   "inspired_by": "Pattern: path traversal via unsanitized join (common in static file servers; e.g. historical issues in simple HTTP servers / Flask send_file misuse). Documented pattern only \u2014 no third-party commit.",
-  "hard": false,
+  "hard": true,
   "smoke": false,
   "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
 }

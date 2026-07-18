@@ -1,0 +1,27 @@
+{
+  "name": "Stable unique preserving order (realrepo)",
+  "goal": "`pkg/unique.py::stable_unique` returns unique items preserving first-seen order. `pkg/batch.py` uses it. Tagged realrepo.",
+  "difficulty": "medium",
+  "tags": [
+    "realrepo",
+    "list",
+    "hard"
+  ],
+  "adversarial": false,
+  "supports_redirect": false,
+  "samples": 0,
+  "timeout_s": 60,
+  "hard": true,
+  "smoke": false,
+  "realrepo": true,
+  "inspired_by": "Pattern: ordered unique (itertools-like; synthetic).",
+  "gold_fix": {
+    "method": "edit_symbol",
+    "file": "pkg/unique.py",
+    "symbol": "stable_unique",
+    "new_body": "def stable_unique(items):\n    seen = set()\n    out = []\n    for x in items or []:\n        if x in seen:\n            continue\n        seen.add(x)\n        out.append(x)\n    return out\n"
+  },
+  "id": "t32_realrepo_stable_unique",
+  "baseline_strategy": "naive",
+  "agent_prompt_notes": "Visible scaffold only. Hidden tests are NOT provided to the agent. Do not search for or open hidden_tests/."
+}
