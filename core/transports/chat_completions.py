@@ -169,17 +169,32 @@ class ChatCompletionsTransport(ProviderTransport):
         choice = choices[0]
         message = choice.get("message", {})
 
-        # Extract content
+        # Extract content (do not drop when empty — tool-only turns are valid)
         content = message.get("content", "") or ""
 
-        # Extract tool calls
+        # DeepSeek thinking mode: reasoning_content must round-trip on multi-turn.
+        # Some providers use "reasoning" instead of "reasoning_content".
+        reasoning_content = (
+            message.get("reasoning_content")
+            or message.get("reasoning")
+            or ""
+        )
+        if not isinstance(reasoning_content, str):
+            reasoning_content = str(reasoning_content) if reasoning_content else ""
+
+        # Extract tool calls (keep parsed args as dict for callers; message
+        # builders must re-serialize arguments to JSON strings for the API).
         tool_calls = []
         for tc in message.get("tool_calls", []):
             fn = tc.get("function", {})
-            try:
-                args = json.loads(fn.get("arguments", "{}"))
-            except json.JSONDecodeError:
-                args = {"raw": fn.get("arguments", "")}
+            raw_args = fn.get("arguments", "{}")
+            if isinstance(raw_args, dict):
+                args = raw_args
+            else:
+                try:
+                    args = json.loads(raw_args or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    args = {"raw": raw_args if isinstance(raw_args, str) else str(raw_args)}
             tool_calls.append({
                 "id": tc.get("id", ""),
                 "type": "function",
@@ -189,7 +204,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 }
             })
 
-        # Clean markdown from content
+        # Clean markdown from content only (never touch reasoning_content)
         content = self._clean_markdown(content)
 
         # Usage
@@ -205,6 +220,7 @@ class ChatCompletionsTransport(ProviderTransport):
             model=api_model,
             provider=self._name,
             cached=usage.get("prompt_cache_hit_tokens", 0) > 0,
+            reasoning_content=reasoning_content,
         )
 
     def _resolve_model(self, model: str) -> str:

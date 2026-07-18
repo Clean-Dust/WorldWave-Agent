@@ -227,6 +227,70 @@ def test_llm_path_never_applies_gold():
         arena._apply_gold_fix = original_gold  # type: ignore
 
 
+def test_assistant_message_includes_reasoning_content():
+    """DeepSeek thinking mode: closed-book loop must echo reasoning_content."""
+    from core.transports.base import NormalizedResponse
+
+    arena = _arena_mod()
+    resp = NormalizedResponse(
+        content="",
+        tool_calls=[{
+            "id": "call_1",
+            "type": "function",
+            "function": {
+                "name": "coding_grep",
+                "arguments": {"pattern": "bug", "path": "src"},
+            },
+        }],
+        reasoning_content="Search the scaffold for the failing symbol first.",
+        finish_reason="tool_calls",
+    )
+    rc = arena._extract_reasoning_content(resp)
+    assert rc == "Search the scaffold for the failing symbol first."
+
+    # Simulate the closed-book builder path used after chat_with_tools
+    name, args, tc_id = arena._normalize_tool_call(resp.tool_calls[0])
+    openai_tcs = [{
+        "id": tc_id or "call_1",
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": arena._tool_args_as_json_string(args),
+        },
+    }]
+    msg = arena._build_assistant_message(
+        content=resp.content,
+        tool_calls_openai=openai_tcs,
+        reasoning_content=rc,
+    )
+    assert msg["role"] == "assistant"
+    assert msg["reasoning_content"] == rc
+    assert msg["content"] is None  # tool-only turn
+    assert len(msg["tool_calls"]) == 1
+    # OpenAI protocol: arguments must be a JSON *string*, not a dict
+    raw_args = msg["tool_calls"][0]["function"]["arguments"]
+    assert isinstance(raw_args, str)
+    parsed = json.loads(raw_args)
+    assert parsed["pattern"] == "bug"
+
+
+def test_tool_args_as_json_string_never_sends_dict():
+    arena = _arena_mod()
+    s = arena._tool_args_as_json_string({"a": 1})
+    assert isinstance(s, str)
+    assert json.loads(s) == {"a": 1}
+    assert arena._tool_args_as_json_string('{"x": true}') == '{"x": true}'
+    assert arena._tool_args_as_json_string(None) == "{}"
+    assert arena._tool_args_as_json_string("") == "{}"
+
+
+def test_build_assistant_message_omits_empty_reasoning():
+    arena = _arena_mod()
+    msg = arena._build_assistant_message(content="hello", reasoning_content="")
+    assert "reasoning_content" not in msg
+    assert msg["content"] == "hello"
+
+
 def test_llm_path_honest_fail_without_api():
     """Without API key and without hook: mode=llm, gold_applied=false, not mock."""
     arena = _arena_mod()

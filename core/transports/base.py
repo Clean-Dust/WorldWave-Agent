@@ -45,6 +45,7 @@ class NormalizedResponse:
         provider: str = "",
         cached: bool = False,
         streaming: bool = False,
+        reasoning_content: str = "",
     ):
         self.content = content or ""
         self.tool_calls = tool_calls or []
@@ -54,6 +55,9 @@ class NormalizedResponse:
         self.provider = provider
         self.cached = cached
         self.streaming = streaming
+        # DeepSeek thinking / reasoner models return reasoning_content that
+        # MUST be echoed back on subsequent assistant messages in tool loops.
+        self.reasoning_content = reasoning_content or ""
 
     def to_dict(self) -> Dict:
         return {
@@ -65,6 +69,7 @@ class NormalizedResponse:
             "provider": self.provider,
             "cached": self.cached,
             "streaming": self.streaming,
+            "reasoning_content": self.reasoning_content,
         }
 
 

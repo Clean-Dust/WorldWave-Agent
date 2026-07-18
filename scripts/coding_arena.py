@@ -1189,44 +1189,59 @@ def _run_closed_book_loop(
 
             content = getattr(resp, "content", None) or ""
             tool_calls = list(getattr(resp, "tool_calls", None) or [])
-            if content:
-                messages.append({"role": "assistant", "content": content})
+            reasoning_content = _extract_reasoning_content(resp)
+
             if not tool_calls:
                 # Try parse JSON tool intent from content as fallback
                 parsed = _parse_tool_intent_from_text(content)
                 if parsed:
                     tool_calls = [parsed]
                 else:
-                    # No tool calls → stop
+                    # No tool calls → still echo assistant turn (incl. reasoning)
+                    asst = _build_assistant_message(
+                        content=content,
+                        tool_calls_openai=None,
+                        reasoning_content=reasoning_content,
+                    )
+                    if asst.get("content") or asst.get("reasoning_content") or asst.get("tool_calls"):
+                        messages.append(asst)
                     if state["edited"]:
                         state["done"] = True
                     break
 
-            # Normalize tool_calls to list of {name, arguments, id}
-            for tc in tool_calls:
+            # Normalize ALL tool_calls first, then ONE assistant message for the turn.
+            # DeepSeek thinking mode requires reasoning_content on that same message.
+            openai_tcs: List[Dict[str, Any]] = []
+            normalized: List[Tuple[str, Dict[str, Any], str]] = []
+            for i, tc in enumerate(tool_calls):
+                name, args, tc_id = _normalize_tool_call(tc)
+                call_id = tc_id or f"call_{rounds}_{i}"
+                openai_tcs.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "arguments": _tool_args_as_json_string(args),
+                    },
+                })
+                normalized.append((name, args, call_id))
+
+            messages.append(_build_assistant_message(
+                content=content,
+                tool_calls_openai=openai_tcs,
+                reasoning_content=reasoning_content,
+            ))
+
+            for name, args, tc_id in normalized:
                 if time.time() >= deadline:
                     state["timed_out"] = True
                     break
-                name, args, tc_id = _normalize_tool_call(tc)
                 metrics.record_tool()
                 result = _dispatch_coding_tool(name, args, workdir, facade, metrics, state)
                 state["tool_trace"].append({"tool": name, "ok": result.get("ok")})
-                # Append tool result message (OpenAI-style)
-                messages.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "id": tc_id or f"call_{rounds}",
-                        "type": "function",
-                        "function": {
-                            "name": name,
-                            "arguments": json.dumps(args),
-                        },
-                    }],
-                })
                 messages.append({
                     "role": "tool",
-                    "tool_call_id": tc_id or f"call_{rounds}",
+                    "tool_call_id": tc_id,
                     "content": json.dumps(result)[:4000],
                 })
                 if name == "coding_done" or state.get("done"):
@@ -1290,6 +1305,87 @@ def _run_closed_book_loop(
         },
         "deadline_exceeded": state["timed_out"],
     }
+
+
+def _extract_reasoning_content(resp: Any) -> str:
+    """Pull reasoning_content from NormalizedResponse / dict / to_dict()."""
+    if resp is None:
+        return ""
+    rc = getattr(resp, "reasoning_content", None)
+    if isinstance(rc, str) and rc:
+        return rc
+    if isinstance(resp, dict):
+        for key in ("reasoning_content", "reasoning"):
+            val = resp.get(key)
+            if isinstance(val, str) and val:
+                return val
+    to_dict = getattr(resp, "to_dict", None)
+    if callable(to_dict):
+        try:
+            d = to_dict() or {}
+            for key in ("reasoning_content", "reasoning"):
+                val = d.get(key)
+                if isinstance(val, str) and val:
+                    return val
+        except Exception:
+            pass
+    return rc if isinstance(rc, str) else ""
+
+
+def _tool_args_as_json_string(args: Any) -> str:
+    """OpenAI protocol: tool_calls[].function.arguments must be a JSON string."""
+    if isinstance(args, str):
+        # Already a string — keep valid JSON as-is; wrap invalid as raw payload.
+        s = args.strip()
+        if not s:
+            return "{}"
+        try:
+            json.loads(s)
+            return s
+        except json.JSONDecodeError:
+            return json.dumps({"raw": args})
+    if isinstance(args, dict):
+        return json.dumps(args)
+    if args is None:
+        return "{}"
+    return json.dumps(args)
+
+
+def _build_assistant_message(
+    content: Any = None,
+    tool_calls_openai: Optional[List[Dict[str, Any]]] = None,
+    reasoning_content: str = "",
+) -> Dict[str, Any]:
+    """Build ONE assistant turn for multi-turn tool loops.
+
+    Includes reasoning_content when present (required by DeepSeek thinking mode)
+    and tool_calls with stringified arguments (OpenAI protocol).
+    """
+    msg: Dict[str, Any] = {"role": "assistant"}
+    # content may be null/empty on tool-only turns (OpenAI/DeepSeek accept null)
+    if content is None or (isinstance(content, str) and not content):
+        msg["content"] = None if tool_calls_openai else (content or "")
+    else:
+        msg["content"] = content if isinstance(content, str) else str(content)
+
+    if tool_calls_openai:
+        # Ensure arguments are JSON strings even if callers passed dicts
+        fixed: List[Dict[str, Any]] = []
+        for tc in tool_calls_openai:
+            tc = dict(tc)
+            fn = dict(tc.get("function") or {})
+            fn["arguments"] = _tool_args_as_json_string(fn.get("arguments"))
+            tc["function"] = fn
+            tc.setdefault("type", "function")
+            fixed.append(tc)
+        msg["tool_calls"] = fixed
+
+    rc = (reasoning_content or "").strip() if isinstance(reasoning_content, str) else ""
+    if not rc and reasoning_content and not isinstance(reasoning_content, str):
+        rc = str(reasoning_content).strip()
+    if rc:
+        msg["reasoning_content"] = rc
+    return msg
 
 
 def _normalize_tool_call(tc: Any) -> Tuple[str, Dict[str, Any], str]:

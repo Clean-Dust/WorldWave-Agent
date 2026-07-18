@@ -11,11 +11,36 @@ def test_normalized_response():
     assert resp.content == "Hello"
     assert resp.finish_reason == "stop"
     assert resp.tool_calls == []
+    assert resp.reasoning_content == ""
+    d = resp.to_dict()
+    assert d["content"] == "Hello"
+    assert d.get("reasoning_content") == ""
 
 
 def test_normalized_response_with_tool_calls():
     resp2 = NormalizedResponse(content="", tool_calls=[{"name": "test"}])
     assert len(resp2.tool_calls) == 1
+
+
+def test_normalized_response_reasoning_content():
+    """DeepSeek thinking mode: reasoning_content must survive to_dict round-trip."""
+    resp = NormalizedResponse(
+        content="I'll call a tool",
+        tool_calls=[{
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": "coding_grep", "arguments": {"pattern": "foo"}},
+        }],
+        reasoning_content="Need to search for the bug first.",
+        finish_reason="tool_calls",
+        model="deepseek-v4-flash",
+        provider="deepseek",
+    )
+    assert resp.reasoning_content == "Need to search for the bug first."
+    d = resp.to_dict()
+    assert d["reasoning_content"] == "Need to search for the bug first."
+    assert d["content"] == "I'll call a tool"
+    assert len(d["tool_calls"]) == 1
 
 
 def test_tool_def():
@@ -165,3 +190,110 @@ def test_gemini_base_url_default():
     t = default_transports()["gemini"]
     assert "generativelanguage.googleapis.com" in t.get_base_url()
     assert t.get_base_url().endswith("/openai") or "/openai" in t.get_base_url()
+
+
+def test_chat_completions_extracts_reasoning_content(monkeypatch):
+    """Fixture message with reasoning_content must land on NormalizedResponse."""
+    import json
+    from core.transports.chat_completions import ChatCompletionsTransport
+
+    fixture = {
+        "choices": [{
+            "finish_reason": "tool_calls",
+            "message": {
+                "role": "assistant",
+                "content": "",
+                "reasoning_content": "I should grep for the failing symbol.",
+                "tool_calls": [{
+                    "id": "call_abc",
+                    "type": "function",
+                    "function": {
+                        "name": "coding_grep",
+                        "arguments": '{"pattern": "broken"}',
+                    },
+                }],
+            },
+        }],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+    }
+
+    class _FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(fixture).encode("utf-8")
+
+    def _fake_urlopen(req, timeout=120):
+        return _FakeResp()
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key-not-real")
+    monkeypatch.setattr(
+        "core.transports.chat_completions.urllib.request.urlopen",
+        _fake_urlopen,
+    )
+
+    t = ChatCompletionsTransport(
+        name="deepseek",
+        api_key_env="DEEPSEEK_API_KEY",
+        base_url_env="DEEPSEEK_BASE_URL",
+        default_base_url="https://api.deepseek.com",
+    )
+    resp = t.chat(
+        model="deepseek-v4-flash",
+        messages=[{"role": "user", "content": "fix it"}],
+        tools=[{"type": "function", "function": {"name": "coding_grep"}}],
+    )
+    assert resp.reasoning_content == "I should grep for the failing symbol."
+    assert resp.content == ""
+    assert len(resp.tool_calls) == 1
+    assert resp.tool_calls[0]["function"]["name"] == "coding_grep"
+    # Internal parse may be dict; message builders re-stringify for the API
+    assert resp.tool_calls[0]["function"]["arguments"]["pattern"] == "broken"
+    assert resp.to_dict()["reasoning_content"] == resp.reasoning_content
+
+
+def test_chat_completions_reasoning_alias(monkeypatch):
+    """Some providers use 'reasoning' instead of 'reasoning_content'."""
+    import json
+    from core.transports.chat_completions import ChatCompletionsTransport
+
+    fixture = {
+        "choices": [{
+            "finish_reason": "stop",
+            "message": {
+                "role": "assistant",
+                "content": "done",
+                "reasoning": "step by step plan",
+            },
+        }],
+        "usage": {},
+    }
+
+    class _FakeResp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return json.dumps(fixture).encode("utf-8")
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key-not-real")
+    monkeypatch.setattr(
+        "core.transports.chat_completions.urllib.request.urlopen",
+        lambda req, timeout=120: _FakeResp(),
+    )
+    t = ChatCompletionsTransport(
+        name="deepseek",
+        api_key_env="DEEPSEEK_API_KEY",
+        base_url_env="DEEPSEEK_BASE_URL",
+        default_base_url="https://api.deepseek.com",
+    )
+    resp = t.chat(model="deepseek-v4-flash", messages=[{"role": "user", "content": "hi"}])
+    assert resp.reasoning_content == "step by step plan"
+    assert resp.content == "done"
