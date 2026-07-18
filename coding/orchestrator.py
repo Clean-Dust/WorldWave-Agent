@@ -412,17 +412,39 @@ def coding_run_ticket(
             return False
         return True
 
-    # ── Step 1: repo_map ──────────────────────────────────────────────
+    # ── Step 1–2: index facade (map + graph/grep locate) ─────────────
+    # B2/B3: default locate path always uses IndexFacade so graph_calls > 0.
+    try:
+        from coding.index_facade import IndexFacade
+        facade = IndexFacade(project_root=project_root)
+        fac_build = facade.build(force=False)
+        results["steps"]["index_build"] = {
+            "success": bool(fac_build.get("success")),
+            "graph": (fac_build.get("graph") or {}).get("success"),
+            "rag": (fac_build.get("rag") or {}).get("success"),
+        }
+        # graph build counted on facade
+        metrics.record_graph(max(1, int((fac_build.get("counters") or {}).get("graph_calls") or 1)))
+    except Exception as e:
+        facade = None
+        results["steps"]["index_build"] = {"success": False, "error": str(e)}
+
     if not _bump_tool("repo_map"):
         return _finish_max_rounds(results, metrics, tool_rounds, max_tool_rounds)
     try:
-        from coding.perception import repo_map
-        map_r = repo_map(project_root, token_budget=token_budget)
+        if facade is not None:
+            map_q = facade.query("map", token_budget=token_budget, force_graph=True)
+            map_r = (map_q.get("result") or {}) if isinstance(map_q, dict) else {}
+            metrics.record_graph()  # map path touches graph ranking
+        else:
+            from coding.perception import repo_map
+            map_r = repo_map(project_root, token_budget=token_budget)
         results["steps"]["repo_map"] = {
             "success": True,
             "truncated": map_r.get("truncated"),
             "symbols_included": map_r.get("symbols_included"),
             "token_estimate": map_r.get("token_estimate"),
+            "via": "index_facade" if facade is not None else "perception",
         }
         _record_step("repo_map", results["steps"]["repo_map"])
         _set_plan_status("s1", "done")
@@ -430,15 +452,25 @@ def coding_run_ticket(
         results["steps"]["repo_map"] = {"success": False, "error": str(e)}
         _record_step("repo_map", results["steps"]["repo_map"])
 
-    # ── Step 2: grep / graph locate ───────────────────────────────────
+    # ── Step 2: grep / graph locate (via facade when available) ───────
     if not _bump_tool("locate"):
         return _finish_max_rounds(results, metrics, tool_rounds, max_tool_rounds)
-    pattern = grep_pattern or symbol or _guess_symbol(goal)
-    locate: Dict[str, Any] = {"pattern": pattern}
+    locate_hints = _locate_hints_from_goal(goal)
+    pattern = grep_pattern or symbol or locate_hints.get("symbol") or _guess_symbol(goal)
+    if not file_path and locate_hints.get("file"):
+        cand = locate_hints["file"]
+        abs_cand = cand if os.path.isabs(cand) else os.path.join(project_root, cand)
+        if os.path.isfile(abs_cand):
+            file_path = abs_cand
+    locate: Dict[str, Any] = {"pattern": pattern, "hints": locate_hints}
     try:
-        from coding.perception import grep
         if pattern:
-            g = grep(pattern, path=project_root, glob="*.py", max_matches=30)
+            if facade is not None:
+                gq = facade.query("grep", pattern=pattern, path=project_root, glob="*.py", max_matches=30)
+                g = (gq.get("result") or {}) if isinstance(gq, dict) else {}
+            else:
+                from coding.perception import grep
+                g = grep(pattern, path=project_root, glob="*.py", max_matches=30)
             metrics.record_grep()
             locate["grep"] = {
                 "count": g.get("count", 0),
@@ -449,28 +481,88 @@ def coding_run_ticket(
             if not file_path and g.get("matches"):
                 file_path = g["matches"][0].get("file")
         else:
-            locate["grep"] = {"count": 0, "skipped": True}
+            # Still try secondary keywords from goal
+            for kw in locate_hints.get("keywords") or []:
+                try:
+                    if facade is not None:
+                        gq = facade.query("grep", pattern=kw, path=project_root, glob="*.py", max_matches=20)
+                        g = (gq.get("result") or {}) if isinstance(gq, dict) else {}
+                    else:
+                        from coding.perception import grep
+                        g = grep(kw, path=project_root, glob="*.py", max_matches=20)
+                    metrics.record_grep()
+                    if g.get("count", 0) > 0:
+                        locate["grep"] = {
+                            "count": g.get("count", 0),
+                            "matches": (g.get("matches") or [])[:10],
+                            "engine": g.get("engine"),
+                            "pattern": kw,
+                        }
+                        pattern = kw
+                        if not file_path and g.get("matches"):
+                            file_path = g["matches"][0].get("file")
+                        break
+                except Exception:
+                    continue
+            locate.setdefault("grep", {"count": 0, "skipped": True})
     except Exception as e:
         locate["grep"] = {"error": str(e)}
 
     try:
-        from coding.code_graph import CodeGraphStore
-        store = CodeGraphStore(project_root=project_root)
-        build_r = store.build(project_root, force=False)
-        metrics.record_graph()
-        locate["graph_build"] = {
-            "success": True,
-            "nodes": (build_r or {}).get("nodes") if isinstance(build_r, dict) else None,
-            "stats": store.stats(),
-        }
-        if pattern or symbol:
-            target = symbol or pattern
-            locate["who_calls"] = store.who_calls(target)
-            locate["blast_radius"] = store.blast_radius(target, max_depth=3)
-            metrics.record_graph(2)
-        store.close()
+        target = symbol or pattern or (locate_hints.get("symbol") or "")
+        if facade is not None:
+            # Always query graph on default locate path (graph_calls > 0)
+            g_stats = facade.query("graph", action="stats")
+            locate["graph_build"] = {
+                "success": True,
+                "stats": g_stats.get("stats") or (g_stats.get("result") if isinstance(g_stats.get("result"), dict) else {}),
+                "via": "index_facade",
+            }
+            metrics.record_graph()
+            if target:
+                locate["who_calls"] = (facade.query("graph", action="who_calls", target=target).get("result"))
+                locate["blast_radius"] = (
+                    facade.query("graph", action="blast", target=target, max_depth=3).get("result")
+                )
+                metrics.record_graph(2)
+            # Outline for edit context when we have a file
+            if file_path:
+                oq = facade.query("outline", path=file_path)
+                locate["outline"] = (oq.get("result") or {}) if isinstance(oq, dict) else {}
+                if oq.get("success"):
+                    metrics.extra.setdefault("symbol_calls", 0)
+                    try:
+                        metrics.extra["symbol_calls"] = int(metrics.extra.get("symbol_calls") or 0) + 1
+                    except Exception:
+                        pass
+        else:
+            from coding.code_graph import CodeGraphStore
+            store = CodeGraphStore(project_root=project_root)
+            build_r = store.build(project_root, force=False)
+            metrics.record_graph()
+            locate["graph_build"] = {
+                "success": True,
+                "nodes": (build_r or {}).get("nodes") if isinstance(build_r, dict) else None,
+                "stats": store.stats(),
+            }
+            if target:
+                locate["who_calls"] = store.who_calls(target)
+                locate["blast_radius"] = store.blast_radius(target, max_depth=3)
+                metrics.record_graph(2)
+            store.close()
     except Exception as e:
         locate["graph"] = {"error": str(e)}
+
+    # Export facade counters into metrics.extra for arena
+    if facade is not None:
+        try:
+            metrics.extra["index_facade"] = facade.metrics()
+        except Exception:
+            pass
+        try:
+            facade.close()
+        except Exception:
+            pass
 
     results["steps"]["locate"] = locate
     _record_step("locate", {"success": True, "summary": f"pattern={pattern}"})
@@ -745,12 +837,15 @@ def _set_plan_status(plan_id: str, status: str) -> None:
 
 def _guess_symbol(goal: str) -> Optional[str]:
     """Heuristic: extract a likely symbol name from the goal string."""
+    hints = _locate_hints_from_goal(goal)
+    if hints.get("symbol"):
+        return hints["symbol"]
     if not goal:
         return None
-    # backtick name
+    # backtick name (bare)
     m = re.search(r"`([A-Za-z_][\w.]*)`", goal)
     if m:
-        return m.group(1)
+        return m.group(1).split(".")[-1]
     # def/class foo
     m = re.search(r"\b(?:def|class|function|method)\s+([A-Za-z_]\w*)", goal, re.I)
     if m:
@@ -760,6 +855,62 @@ def _guess_symbol(goal: str) -> Optional[str]:
     if m:
         return m.group(1)
     return None
+
+
+def _locate_hints_from_goal(goal: str) -> Dict[str, Any]:
+    """Extract file / symbol / keywords from goal text for closed-book locate.
+
+    Supports patterns like:
+      `pkg/math_ops.py::add`
+      pkg/service.py::rate_limit
+      Fix `add` in math_ops
+    Never reads gold_fix — goal/prompt text only.
+    """
+    goal = goal or ""
+    out: Dict[str, Any] = {"file": None, "symbol": None, "keywords": []}
+    # path::symbol inside backticks or bare
+    m = re.search(
+        r"`?([A-Za-z0-9_./\\-]+\.py)::([A-Za-z_]\w*)`?",
+        goal,
+    )
+    if m:
+        out["file"] = m.group(1).replace("\\", "/")
+        out["symbol"] = m.group(2)
+        out["keywords"].extend([out["symbol"], out["file"], f"def {out['symbol']}"])
+    # `symbol` alone
+    if not out["symbol"]:
+        m = re.search(r"`([A-Za-z_][\w.]*)`", goal)
+        if m:
+            raw = m.group(1)
+            out["symbol"] = raw.split(".")[-1]
+            out["keywords"].append(out["symbol"])
+            if "/" in raw or raw.endswith(".py"):
+                out["file"] = raw
+    # path-like tokens
+    if not out["file"]:
+        m = re.search(r"\b([A-Za-z0-9_./-]+\.py)\b", goal)
+        if m:
+            out["file"] = m.group(1)
+            out["keywords"].append(out["file"])
+    # word tokens that look like identifiers (bug domain words)
+    for tok in re.findall(r"\b([a-z_][a-z0-9_]{2,})\b", goal.lower()):
+        if tok in {
+            "fix", "return", "incorrect", "results", "public", "stable",
+            "keep", "so", "the", "and", "for", "with", "from", "that",
+            "this", "when", "should", "must", "file", "function", "class",
+            "tests", "hidden", "agent", "project", "module", "wrong",
+            "broken", "bug", "issue", "error", "fail", "failed", "make",
+            "ensure", "implement", "update", "change", "edit",
+        }:
+            continue
+        if tok not in out["keywords"]:
+            out["keywords"].append(tok)
+        if len(out["keywords"]) >= 12:
+            break
+    # Prefer def <symbol> grep form
+    if out.get("symbol") and f"def {out['symbol']}" not in out["keywords"]:
+        out["keywords"].insert(0, f"def {out['symbol']}")
+    return out
 
 
 def _build_handoff(

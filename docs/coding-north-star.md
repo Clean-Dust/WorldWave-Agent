@@ -1,87 +1,118 @@
-# Coding North Star (WW-PM 0.11)
+# Coding North Star (WW-PM 0.12)
 
 **True north:** exceed frontier coding agents on real multi-file engineering work.  
-**Product essence:** map → locate (grep/graph) → edit → verify → circuit/replan, with steerable redirect, bound context, deny-first policy, and honest metrics — 去芜存菁 of agent coding loops without cargo-cult complexity.
+**Product essence:** map → locate (grep/graph via index facade) → edit → verify → circuit/replan, with steerable redirect, bound context, deny-first policy, and honest metrics — 去芜存菁 of agent coding loops without cargo-cult complexity.
 
-**Baseline foundation:** PM 0.10.0 (live multi-turn path, CodingMetrics, model route, corpus stress).
+**Baseline foundation:** PM 0.10–0.11 (live multi-turn, CodingMetrics, model route, corpus stress, arena harness).  
+**PM 0.12 hardens Outcome A closed-book:** real `run_ww_llm_agent` that **never** applies `gold_fix`.
 
-This document defines **Outcome A / B / C** for the coding arena.  
-**Fixture-prove green alone is not success.** Arena pass@1 vs the reference baseline is the A-gate.
-
-> Do **not** claim “exceeds Claude Code / Codex” (or any external product) in README unless a full-suite arena report shows Outcome A met **and** product policy allows competitive claims. Default README language links here and reports how to run the arena only.
+> Do **not** claim “exceeds Claude Code / Codex” (or any external product) in README unless a full-suite **closed-book** arena report shows Outcome A met **and** product policy allows competitive claims. Default README language links here and reports how to run the arena only.
 
 ---
 
-## Outcome A — Arena infrastructure (primary)
+## What “done” means (A ∧ B ∧ C ∧ D ∧ E)
+
+| Gate | Meaning |
+|------|---------|
+| **A** Closed-book arena | `WW_ARENA_LLM=1` runs real coding path on scaffold only; `gold_applied=false`; pass@1 > baseline on full suite (Apple runs with real keys) |
+| **B** Blueprint essence | require_test default on; index facade; graph on default locate; ACI/circuit/redirect/autocompact/samples/adversarial/model_route wired |
+| **C** Large codebase | scale + corpus + `coding_large_repo_prove.py` green offline |
+| **D** Protocol smoke | MCP/ACP initialize + list + one read-only coding tool |
+| **E** Honesty | docs PM 0.12; mock ≠ A; no README claim over external agents; CI green without API keys |
+
+**Mock + gold is NOT Outcome A product success.** Mock proves the harness and WW path machinery; closed-book is the hard bar.
+
+---
+
+## Outcome A — Closed-book arena (PRIMARY)
 
 | Requirement | Status definition |
 |-------------|-------------------|
-| Task suite | ≥20 multi-file tasks under `tests/fixtures/coding_arena/tasks/` (alt: `coding_arena/tasks/`) |
+| Task suite | ≥20 multi-file tasks under `tests/fixtures/coding_arena/tasks/` |
 | Hidden tests | Each task has `hidden_tests/` **not** shown in the agent prompt |
-| WW path | Run coding agent path (orchestrator / mode) in a sandbox workdir (scaffold only) |
-| Reference baseline | Fixed simplified harness (single-shot naive patch) on the **same** tasks, timeouts, sandbox |
-| Metrics | pass@1 (all hidden tests), tool rounds, wall time, circuit trips, dump violations |
-| Flags | `--smoke` (≤3 tasks), `--full`, `--vs-baseline` |
-| Reports | JSON + Markdown under `results/coding_arena/` (gitignored via `results/`) |
-| Offline | Smoke/full mock mode needs **no network** |
-| Inspired tasks | ≥5 tasks document real issue **patterns** in `SOURCES.md` (no vendored third-party commits) |
-
-### Reference baseline (fair comparison)
-
-| Dimension | WW | Baseline |
-|-----------|----|----------|
-| Timeout | `task.timeout_s` / `WW_ARENA_TIMEOUT` (default 45s) | Same |
-| Sandbox | Temp workdir, scaffold copy only | Same |
-| Model env | `WW_CODING_MODEL` (mock default `arena-mock-model`) | Same env; unused in mock baseline |
-| Driver | Orchestrator: map → grep/graph → edit → verify (+ redirect / autocompact / samples when tagged) | Single-shot naive pattern edits only (no graph/grep/circuit) |
-| Mock CI | Deterministic gold-fix application **through** WW path | Deterministic limited heuristics |
-
-Mock mode is **default** (stable without API keys).  
-Optional: `WW_ARENA_LLM=1` for a real LLM path (not required for CI).
+| WW mock path | Deterministic gold-fix **through** orchestrator/ACI (CI) — `mode=mock`, `gold_applied=true` |
+| WW LLM path | `WW_ARENA_LLM=1` → closed-book driver: scaffold copy + goal/prompt only → multi-turn tools / orchestrator — **never** `_apply_gold_fix`, never reads `gold_fix` for edits |
+| No silent mock-as-llm | If no API key / LLM unavailable: honest fail or skip with `mode=llm`, `gold_applied=false` |
+| Reference baseline | Fixed simplified harness on the **same** tasks, timeouts, sandbox |
+| Metrics | pass@1, tool rounds, wall time, circuit trips, dump violations, graph/grep, **failure_taxonomy** (`locate\|edit\|verify\|timeout\|thrash\|model`) |
+| Timeout | `WW_ARENA_TIMEOUT` (mock default 45s; LLM default **300s** when unset) |
+| Flags | `--smoke` (≤3), `--full`, `--vs-baseline` |
+| Reports | JSON + Markdown under `results/coding_arena/` |
+| Contract test | Offline unit test asserts LLM path never applies gold |
 
 ### Commands
 
 ```bash
-# CI-safe smoke (≤3 tasks)
+# CI-safe smoke (mock)
 python scripts/coding_arena.py --smoke
-
-# Full suite + baseline comparison
 python scripts/coding_arena.py --full --vs-baseline
 
-# Optional real LLM (skip in CI)
-WW_ARENA_LLM=1 WW_CODING_MODEL=your-model python scripts/coding_arena.py --smoke
+# Closed-book (needs API key; never applies gold)
+WW_ARENA_LLM=1 WW_CODING_MODEL=your-model WW_ARENA_TIMEOUT=300 \
+  python scripts/coding_arena.py --full --vs-baseline
 ```
 
 ### Outcome A met?
 
-**A is met for infrastructure** when the harness loads ≥20 tasks, isolates hidden tests, runs WW + optional baseline, and writes reports.
+| Layer | When met |
+|-------|----------|
+| **Harness / mock** | ≥20 tasks, isolation, reports, mock CI green |
+| **Closed-book path real** | Code + contract tests prove `gold_applied=false` on LLM path |
+| **Product hard bar** | Full-suite closed-book WW pass@1 **>** baseline pass@1 |
 
-**A “exceeds baseline”** is met only when full-suite WW pass@1 rate **>** baseline pass@1 rate.  
-If WW ≤ baseline: still ship harness + report scores; **do not** write “north star complete” in README.
-
----
-
-## Outcome B — Gates (wire + prove)
-
-| ID | Gate | Arena / code expectation |
-|----|------|---------------------------|
-| B1 | `require_test` default on | `WW_CODING_REQUIRE_TEST=1`; arena records `require_test=true` on success path; mark_ticket_done gated |
-| B2 | graph/grep usage metrics | `CodingMetrics.graph_calls` / `grep_calls` when locate uses them |
-| B3 | secret / deny / rollback | Existing `coding_prove.py` V3/V5/V9 + e2e still green |
-| B4 | redirect injection | ≥3 tasks with `supports_redirect`; arena exercises `coding_redirect` / loop_bridge |
-| B5 | autocompact / microcompact counters | Metrics fields increment when triggered in arena path |
-| B6 | samples ≥ 2 | Hard tasks set `samples≥2` / `WW_CODING_SAMPLES`; sample_repair path available |
-| B7 | adversarial hidden tests | ≥5 tasks with `adversarial: true` edge cases |
-| B8 | circuit max_same_fp + replan | Metrics include `max_same_fp`, `replans`, `trips` |
-| B9 | model_route model id | Arena results record `model_id` from `resolve_coding_model` / `WW_CODING_MODEL` |
+If scores fail the hard bar, re-dispatch uses failure taxonomy in report JSON — do not claim north-star complete.
 
 ---
 
-## Outcome C — Product honesty
+## Outcome B — Blueprint gates
 
-- README links to this doc + arena run instructions.
-- README does **not** claim exceeds external coding agents unless A exceed-baseline is met **and** explicitly approved.
-- Arena metrics field `public_reply_dump_count` must be **0** for WW user summaries (no raw tool JSON as public reply).
+| ID | Gate | Expectation |
+|----|------|-------------|
+| B1 | `require_test` default on | `WW_CODING_REQUIRE_TEST=1`; arena records `require_test=true` |
+| B2 | **Index facade** | `coding/index_facade.py`: `build` / `update` / `query(kind)` unifies map, graph, outline/symbols, BM25 code_rag; `.ww` lifecycle; counters |
+| B3 | Graph on default locate | Orchestrator default path uses facade → `graph_calls > 0` |
+| B4 | redirect | ≥3 tasks `supports_redirect` |
+| B5 | autocompact / microcompact | Counters when triggered |
+| B6 | samples ≥ 2 | Hard tasks / `WW_CODING_SAMPLES` |
+| B7 | adversarial | ≥5 tasks `adversarial: true` |
+| B8 | circuit max_same_fp + replan | Metrics include trips/replans |
+| B9 | model_route | `model_id` on results |
+| B10 | ACI / policy | Existing prove V3/V5/V9 + e2e green |
+
+---
+
+## Outcome C — Large codebase
+
+```bash
+python scripts/coding_prove.py --scale
+python scripts/coding_corpus_prove.py
+python scripts/coding_large_repo_prove.py
+```
+
+- Cache: `~/.cache/worldwave/coding_corpus` or fixture cache (gitignored)
+- Optional sparse clone when `WW_CODING_CORPUS_CLONE=1` (never vendors into main)
+- Reports: `results/coding_large_repo/`
+
+---
+
+## Outcome D — Protocol smoke
+
+```bash
+python scripts/coding_protocol_smoke.py
+```
+
+- Prefer `core/mcp.py` (initialize + tools/list + read-only map/grep)
+- ACP capabilities covered; LSP optional skip
+- See `docs/coding-engine.md` § Protocol for IDE attach notes
+
+---
+
+## Outcome E — Honesty
+
+- README does **not** claim exceeds Claude Code / Codex
+- This doc + `docs/coding-engine.md` + `coding/CODING_AGENT.md` state: **mock ≠ A**; closed-book hard bar; **PM 0.12.0**
+- CI stays green without API keys (mock + contract tests)
+- `user_summary` / public reply: no raw tool dump
 
 ---
 
@@ -89,29 +120,27 @@ If WW ≤ baseline: still ship harness + report scores; **do not** write “nort
 
 ```
 tests/fixtures/coding_arena/
-  SOURCES.md                 # inspired-by patterns (no third-party commits)
-  tasks/
-    t01_…/
-      task.json              # id, goal, gold_fix, flags, timeout
-      prompt.md              # agent-visible notes
-      scaffold/              # multi-file buggy project (agent sees this)
-      hidden_tests/          # NOT in agent prompt; used only for pass@1
+  SOURCES.md
+  tasks/<id>/
+    task.json       # goal, gold_fix (mock only), flags
+    prompt.md       # agent-visible notes
+    scaffold/       # agent sees this
+    hidden_tests/   # pass@1 only; never in agent prompt
 ```
 
-`gold_fix` is used only by the **mock WW driver** to apply a correct edit through the real orchestrator/ACI path. It is not part of the agent-visible prompt.
+`gold_fix` is used **only** by the mock WW driver. Closed-book LLM path must not read it for edit content.
 
 ---
 
-## Prove matrix (keep green)
+## Prove matrix (offline)
 
 ```bash
-python scripts/coding_prove.py --all
-python scripts/coding_prove.py --e2e
-python scripts/coding_prove.py --scale
-python scripts/coding_prove.py --live
-python scripts/coding_arena.py --smoke
+python -m pytest tests/test_coding*.py -q --tb=line -k "not lsp" --timeout=30
+python scripts/coding_prove.py --all --e2e --scale --live
+python scripts/coding_arena.py --smoke --vs-baseline
 python scripts/coding_arena.py --full --vs-baseline
-python -m pytest tests/test_coding*.py -q --tb=line -k "not lsp"
+python scripts/coding_large_repo_prove.py
+python scripts/coding_protocol_smoke.py
 ```
 
 ---
@@ -120,7 +149,7 @@ python -m pytest tests/test_coding*.py -q --tb=line -k "not lsp"
 
 | Field | Value |
 |-------|-------|
-| PM_VERSION | **0.11.0** |
-| Prior foundation | 0.10.0 |
+| PM_VERSION | **0.12.0** |
+| Prior | 0.11.0 (arena harness), 0.10.0 (live path) |
 
 See also: `docs/coding-engine.md`, `coding/CODING_AGENT.md`.

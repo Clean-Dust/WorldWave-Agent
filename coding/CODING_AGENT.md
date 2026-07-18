@@ -1,6 +1,9 @@
 # CODING_AGENT.md — WorldWave Coding Playbook
 
-Default engineering harness for coding tasks (PM 0.11 coding path). Prefer this sequence over ad-hoc shell edits.
+Default engineering harness for coding tasks (PM 0.12 coding path). Prefer this sequence over ad-hoc shell edits.
+
+**Arena honesty:** mock harness (gold through WW path) ≠ closed-book Outcome A.  
+`WW_ARENA_LLM=1` must edit from goal+scaffold only (`gold_applied=false`). See `docs/coding-north-star.md`.
 
 ## Default path (auto)
 
@@ -10,11 +13,15 @@ When a goal looks like coding (bugfix / implement / refactor / write tests — E
 2. Auto-load project `AGENTS.md` when present
 3. Set capability role = **coder** (architect cannot edit)
 4. Prefer `WW_CODING_MODEL` (optional `WW_CODING_PROVIDER`); fallback to main model
-5. Prefer `coding_run_ticket` / the orchestrated loop below
+5. Prefer `coding_run_ticket` / the orchestrated loop below (index facade on locate)
 
 ```
 ┌─────────────┐
 │ coding mode │  essence + AGENTS.md + role=coder + model route
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│ index_facade│  build(.ww) — graph + BM25/rag
 └──────┬──────┘
        ▼
 ┌─────────────┐     ┌──────────┐     ┌────────────┐
@@ -38,29 +45,27 @@ When a goal looks like coding (bugfix / implement / refactor / write tests — E
 
 ## Loop steps
 
-1. **Map** — `coding_repo_map` for a ranked signature overview (token-budgeted; truncates at scale).
-2. **Grep** — `coding_grep` (ripgrep if present, else `grep -R`) for exact text.
-3. **Graph** — `coding_graph_build` once per project; then:
-   - `coding_graph_who_calls` before changing a leaf API
-   - `coding_graph_blast_radius` before changing a hub
-   - `coding_graph_hubs` / `coding_graph_path` for orientation
-4. **Outline** — `coding_outline` on the target file for line-accurate symbols.
-5. **Edit** — Prefer `coding_edit_symbol` (AST, syntax check, rollback). Use `coding_apply_patch` for multi-hunk unified diffs. Avoid raw `rm`/`dd`/pipe-to-shell.
-6. **Verify** — `coding_verify` (execution-grounded). Causal policy blocks `git commit` until verify is green after coding writes.
-7. **Explain / replan** — On failure: `coding_explain_failure` → `coding_replan` with failure fingerprints **and** explain bullets. Circuit trips after same-fingerprint strikes (`WW_CODING_MAX_SAME_FP`, default 3) → handoff report, stop thrashing. Bound total tool rounds with `WW_CODING_MAX_TOOL_ROUNDS` (default 20).
-8. **Steer** — Mid-task user redirect via `coding_redirect` / `apply_redirect(message)`, or the loop user-message path (`coding.loop_bridge.handle_coding_user_message`) — updates subgoal/plan observably.
-9. **AutoCompact** — Near context budget, `coding_autocompact` (also auto from loop_bridge when over threshold) keeps a structured summary (goal, files touched, tests, open issues) without destroying `.ww/edit_log.jsonl`.
-10. **Optional** — `coding_sample_repair` when `WW_CODING_SAMPLES=k>0`; `coding_adversarial_tests` for edge drafts; **worktree isolation** via `coding_worktree_start` / `coding_worktree_finish` or `WW_CODING_USE_WORKTREE=1`.
+1. **Index** — `IndexFacade.build(project_root)` (or tools that hit the same `.ww` lifecycle).
+2. **Map** — `coding_repo_map` for a ranked signature overview (token-budgeted; truncates at scale).
+3. **Grep** — `coding_grep` (ripgrep if present, else `grep -R`) for exact text; extract keywords from goal (`path.py::symbol`, backticks).
+4. **Graph** — always on default locate: who_calls / blast_radius / hubs as needed (`graph_calls > 0`).
+5. **Outline** — `coding_outline` on the target file for line-accurate symbols before edit.
+6. **Edit** — Prefer `coding_edit_symbol` (AST, syntax check, rollback). Use `coding_apply_patch` for multi-hunk unified diffs. Avoid raw `rm`/`dd`/pipe-to-shell.
+7. **Verify** — `coding_verify` (execution-grounded). Causal policy blocks `git commit` until verify is green after coding writes. Arena pass@1 uses **hidden tests only after the agent finishes** (agent must not read them).
+8. **Explain / replan** — On failure: `coding_explain_failure` → `coding_replan` with failure fingerprints **and** explain bullets. Circuit trips after same-fingerprint strikes (`WW_CODING_MAX_SAME_FP`, default 3) → handoff report, stop thrashing. Bound total tool rounds with `WW_CODING_MAX_TOOL_ROUNDS` (default 20).
+9. **Steer** — Mid-task user redirect via `coding_redirect` / `apply_redirect(message)`, or the loop user-message path (`coding.loop_bridge.handle_coding_user_message`) — updates subgoal/plan observably.
+10. **AutoCompact** — Near context budget, `coding_autocompact` (also auto from loop_bridge when over threshold) keeps a structured summary without destroying `.ww/edit_log.jsonl`.
+11. **Optional** — `coding_sample_repair` when `WW_CODING_SAMPLES=k>0`; worktree isolation via `WW_CODING_USE_WORKTREE=1`.
 
 ## Orchestrator
 
 `coding_run_ticket(goal, …)` runs the deterministic path:
 
-`repo_map → grep/graph locate → edit_symbol|apply_patch → verify → on fail explain + circuit + replan`
+`index_facade.build → repo_map → grep/graph locate → edit_symbol|apply_patch → verify → on fail explain + circuit + replan`
 
 - Same fingerprint threshold / max_tool_rounds → stop + structured handoff
 - `user_summary` is reply-safe (never dump raw tool JSON as the user reply)
-- `CodingMetrics` on the result: `rounds`, `tools`, `verifies`, `redirects`, `trips`, `autocompacts` (export via `.to_dict()` / `.export(path)`)
+- `CodingMetrics` on the result: `rounds`, `tools`, `verifies`, `redirects`, `trips`, `graph_calls`, `grep_calls`, `autocompacts` (export via `.to_dict()` / `.export(path)`)
 
 ## Model route
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WW Coding Arena — hidden-test pass@1 vs reference baseline (PM 0.11).
+"""WW Coding Arena — hidden-test pass@1 vs reference baseline (PM 0.12).
 
 Usage:
   python scripts/coding_arena.py --smoke
@@ -7,7 +7,7 @@ Usage:
   python scripts/coding_arena.py --full --vs-baseline
 
 Default driver is mock (deterministic, no API keys).
-Set WW_ARENA_LLM=1 for optional real LLM path (skipped in CI).
+Set WW_ARENA_LLM=1 for closed-book real LLM path (never applies gold_fix).
 
 Reports land under results/coding_arena/ (gitignored via results/).
 """
@@ -26,7 +26,7 @@ import traceback
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -37,8 +37,24 @@ ALT_TASKS = ROOT / "coding_arena" / "tasks"
 RESULTS_DIR = ROOT / "results" / "coding_arena"
 
 # Shared timeouts / model env (documented in docs/coding-north-star.md)
+# Mock CI default 45s; LLM closed-book needs more headroom (WW_ARENA_TIMEOUT or 300).
 DEFAULT_TIMEOUT_S = int(os.environ.get("WW_ARENA_TIMEOUT", "45") or "45")
+DEFAULT_LLM_TIMEOUT_S = int(
+    os.environ.get("WW_ARENA_TIMEOUT")
+    or os.environ.get("WW_ARENA_LLM_TIMEOUT", "300")
+    or "300"
+)
 DEFAULT_MODEL_ENV = "WW_CODING_MODEL"
+
+# Test/injection hook: replace closed-book body without touching gold path.
+# Signature: (task, workdir, prompt, timeout_s) -> Dict[str, Any]
+_CLOSED_BOOK_HOOK: Optional[Callable[..., Dict[str, Any]]] = None
+
+
+def set_closed_book_hook(fn: Optional[Callable[..., Dict[str, Any]]]) -> None:
+    """Install/clear a closed-book driver hook (unit tests only)."""
+    global _CLOSED_BOOK_HOOK
+    _CLOSED_BOOK_HOOK = fn
 
 
 # ── Data structures ───────────────────────────────────────────────────
@@ -89,6 +105,9 @@ class AgentRunResult:
     require_test: bool = True
     verify_success: bool = False
     error: str = ""
+    gold_applied: bool = False  # MUST be False on LLM closed-book path
+    mode: str = "mock"  # "mock" | "llm"
+    failure_taxonomy: str = ""  # locate|edit|verify|timeout|thrash|model|"" (ok)
     metrics: Dict[str, Any] = field(default_factory=dict)
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -679,6 +698,9 @@ def run_ww_mock_agent(task: TaskSpec, parent: Path) -> AgentRunResult:
             model_id=str(model_id),
             require_test=require_test,
             verify_success=bool(v.get("success")) if isinstance(v, dict) else ok,
+            gold_applied=True,  # mock path intentionally uses gold_fix
+            mode="mock",
+            failure_taxonomy="" if ok else "verify",
             metrics=metrics,
             extra={
                 "redirect": redir_info,
@@ -688,6 +710,8 @@ def run_ww_mock_agent(task: TaskSpec, parent: Path) -> AgentRunResult:
                 "hidden_output_tail": (hout or "")[-500:],
                 "prompt_chars": len(prompt),
                 "prompt_leaks_hidden": "test_add_basic" in prompt or "test_hidden" in prompt,
+                "gold_applied": True,
+                "mode": "mock",
             },
         )
     except Exception as e:
@@ -700,18 +724,771 @@ def run_ww_mock_agent(task: TaskSpec, parent: Path) -> AgentRunResult:
             error=err[:3000],
             model_id=os.environ.get(DEFAULT_MODEL_ENV, "arena-mock-model"),
             require_test=True,
+            gold_applied=True,
+            mode="mock",
+            failure_taxonomy="model",
         )
 
 
+# ── Closed-book LLM path (PM 0.12) ────────────────────────────────────
+
+_API_KEY_ENVS = (
+    "DEEPSEEK_API_KEY",
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OPENROUTER_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "WW_LLM_API_KEY",
+)
+
+
+def _arena_llm_ready() -> Tuple[bool, str]:
+    """Return (ok, reason). Never reads gold. No silent mock fallback."""
+    # Explicit test/injection hook counts as ready
+    if _CLOSED_BOOK_HOOK is not None:
+        return True, "closed_book_hook"
+    if os.environ.get("WW_ARENA_LLM_FORCE", "").strip() in ("1", "true", "yes", "on"):
+        # Force path for local dry-runs without keys still must not apply gold
+        return True, "WW_ARENA_LLM_FORCE"
+    for name in _API_KEY_ENVS:
+        val = (os.environ.get(name) or "").strip()
+        if val and not val.startswith("sk-xxx") and val not in ("test", "changeme", "dummy"):
+            return True, name
+    # Optional base URL + generic key
+    if (os.environ.get("OPENAI_API_BASE") or os.environ.get("WW_LLM_BASE") or "").strip():
+        if (os.environ.get("OPENAI_API_KEY") or os.environ.get("WW_LLM_API_KEY") or "").strip():
+            return True, "openai_compatible"
+    return False, "no_api_key"
+
+
+def _classify_failure(
+    *,
+    pass_at_1: bool,
+    edited: bool,
+    located: bool,
+    verify_ok: bool,
+    timed_out: bool,
+    thrash: bool,
+    model_err: str,
+) -> str:
+    if pass_at_1:
+        return ""
+    if timed_out:
+        return "timeout"
+    if model_err:
+        return "model"
+    if thrash:
+        return "thrash"
+    if not located:
+        return "locate"
+    if not edited:
+        return "edit"
+    if not verify_ok:
+        return "verify"
+    return "verify"
+
+
+def _tool_openai_schema() -> List[Dict[str, Any]]:
+    """Minimal coding-tool schemas for multi-turn closed-book loop."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "coding_repo_map",
+                "description": "Signature-level repository map (token budgeted).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "token_budget": {"type": "integer", "default": 3000},
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "coding_grep",
+                "description": "Search project sources for a pattern.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string"},
+                        "glob": {"type": "string", "default": "*.py"},
+                    },
+                    "required": ["pattern"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "coding_graph_query",
+                "description": "Code graph: build/stats/who_calls/blast_radius.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["build", "stats", "who_calls", "blast"],
+                        },
+                        "target": {"type": "string"},
+                    },
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "coding_outline",
+                "description": "Symbol outline for a Python file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "coding_read",
+                "description": "Read a source file (scaffold only; no hidden tests).",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "max_chars": {"type": "integer", "default": 8000},
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "coding_edit_symbol",
+                "description": "Replace a function/class by name via AST edit.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "symbol_name": {"type": "string"},
+                        "new_body": {"type": "string"},
+                    },
+                    "required": ["path", "symbol_name", "new_body"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "coding_apply_patch",
+                "description": "Apply a unified diff patch.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"patch_text": {"type": "string"}},
+                    "required": ["patch_text"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "coding_verify",
+                "description": "Run agent-visible tests under project tests/ (not hidden suite).",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "coding_done",
+                "description": "Signal that the fix is complete.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "summary": {"type": "string"},
+                    },
+                },
+            },
+        },
+    ]
+
+
+def _dispatch_coding_tool(
+    name: str,
+    args: Dict[str, Any],
+    workdir: Path,
+    facade: Any,
+    metrics: Any,
+    state: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Execute one coding tool against workdir. Never touches gold or hidden_tests."""
+    name = (name or "").strip()
+    args = args or {}
+    # Hard deny paths that look like hidden tests / gold
+    def _safe_path(p: str) -> Optional[Path]:
+        if not p:
+            return None
+        raw = str(p)
+        if "hidden_tests" in raw or "gold_fix" in raw or "_arena_hidden" in raw:
+            return None
+        path = Path(raw)
+        if not path.is_absolute():
+            path = (workdir / path).resolve()
+        else:
+            path = path.resolve()
+        try:
+            path.relative_to(workdir.resolve())
+        except ValueError:
+            return None
+        return path
+
+    try:
+        if name == "coding_repo_map":
+            q = facade.query("map", token_budget=int(args.get("token_budget") or 3000))
+            metrics.record_graph()
+            state["located"] = True
+            return {"ok": True, "map": (q.get("result") or {})}
+        if name == "coding_grep":
+            q = facade.query(
+                "grep",
+                pattern=str(args.get("pattern") or ""),
+                path=str(workdir),
+                glob=str(args.get("glob") or "*.py"),
+            )
+            metrics.record_grep()
+            r = q.get("result") or {}
+            if r.get("count", 0) > 0:
+                state["located"] = True
+            return {"ok": True, "grep": {"count": r.get("count"), "matches": (r.get("matches") or [])[:15]}}
+        if name == "coding_graph_query":
+            action = str(args.get("action") or "stats")
+            target = args.get("target")
+            q = facade.query("graph", action=action, target=target)
+            metrics.record_graph()
+            state["located"] = True
+            return {"ok": True, "graph": q}
+        if name == "coding_outline":
+            sp = _safe_path(str(args.get("path") or ""))
+            if not sp:
+                return {"ok": False, "error": "unsafe or missing path"}
+            q = facade.query("outline", path=str(sp))
+            state["located"] = True
+            return {"ok": True, "outline": q.get("result")}
+        if name == "coding_read":
+            sp = _safe_path(str(args.get("path") or ""))
+            if not sp or not sp.is_file():
+                return {"ok": False, "error": "file not found or unsafe"}
+            max_c = int(args.get("max_chars") or 8000)
+            text = sp.read_text(encoding="utf-8", errors="replace")[:max_c]
+            state["located"] = True
+            return {"ok": True, "path": str(sp.relative_to(workdir)), "content": text}
+        if name == "coding_edit_symbol":
+            sp = _safe_path(str(args.get("path") or ""))
+            sym = str(args.get("symbol_name") or "")
+            body = str(args.get("new_body") or "")
+            if not sp or not sym or not body:
+                return {"ok": False, "error": "path, symbol_name, new_body required"}
+            from coding.aci import DefensiveEditor
+            editor = DefensiveEditor(lint_enabled=True)
+            er = editor.edit_symbol(str(sp), sym, body)
+            if er.get("success"):
+                state["edited"] = True
+                state["files_touched"].append(str(sp.relative_to(workdir)))
+            return {"ok": bool(er.get("success")), "edit": er}
+        if name == "coding_apply_patch":
+            patch = str(args.get("patch_text") or "")
+            if not patch:
+                return {"ok": False, "error": "empty patch"}
+            # Reject patches that touch hidden tests
+            if "hidden_tests" in patch or "test_hidden" in patch:
+                return {"ok": False, "error": "patch must not touch hidden tests"}
+            from coding.aci import DefensiveEditor
+            # apply relative to workdir
+            prev = os.getcwd()
+            try:
+                os.chdir(workdir)
+                editor = DefensiveEditor(lint_enabled=True)
+                er = editor.apply_patch(patch)
+            finally:
+                os.chdir(prev)
+            if er.get("success"):
+                state["edited"] = True
+            return {"ok": bool(er.get("success")), "edit": er}
+        if name == "coding_verify":
+            from coding.harness import coding_verify
+            stub = workdir / "tests"
+            prev = os.getcwd()
+            prev_pp = os.environ.get("PYTHONPATH", "")
+            try:
+                os.chdir(workdir)
+                os.environ["PYTHONPATH"] = str(workdir) + (
+                    os.pathsep + prev_pp if prev_pp else ""
+                )
+                vr = coding_verify(test_path=str(stub) if stub.is_dir() else None)
+            finally:
+                os.chdir(prev)
+                os.environ["PYTHONPATH"] = prev_pp
+            metrics.record_verify()
+            state["verify_ok"] = bool(vr.get("success"))
+            return {"ok": bool(vr.get("success")), "verify": {
+                "success": vr.get("success"),
+                "passed": vr.get("passed"),
+                "failed": vr.get("failed"),
+                "summary": (vr.get("summary") or "")[:500],
+            }}
+        if name == "coding_done":
+            state["done"] = True
+            state["summary"] = str(args.get("summary") or "done")[:400]
+            return {"ok": True, "done": True}
+        return {"ok": False, "error": f"unknown tool: {name}"}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _run_closed_book_loop(
+    task: TaskSpec,
+    workdir: Path,
+    prompt: str,
+    timeout_s: int,
+) -> Dict[str, Any]:
+    """Multi-turn closed-book coding loop. NEVER reads gold_fix or hidden_tests.
+
+    Prefer real LLM tool-calling when API keys exist; hook can replace entirely.
+    """
+    if _CLOSED_BOOK_HOOK is not None:
+        return _CLOSED_BOOK_HOOK(task, workdir, prompt, timeout_s)
+
+    from coding.orchestrator import (
+        reset_metrics,
+        reset_ticket_state,
+        get_metrics,
+        _locate_hints_from_goal,
+    )
+    from coding.policy import get_causal_state
+    from coding.index_facade import IndexFacade
+    from coding.model_route import resolve_coding_model
+
+    get_causal_state().reset()
+    reset_ticket_state()
+    metrics = reset_metrics()
+    metrics.goal = (task.goal or "")[:300]
+    metrics.started_at = datetime.now(timezone.utc).isoformat()
+
+    route = resolve_coding_model(prefer_coding=True)
+    model_id = str((route or {}).get("model") or os.environ.get(DEFAULT_MODEL_ENV) or "")
+    metrics.model_id = model_id
+
+    # Agent-visible stub tests only (hidden suite is arena-side post-pass)
+    stub = workdir / "tests"
+    if not stub.is_dir():
+        stub.mkdir(parents=True)
+        (stub / "test_agent_stub.py").write_text(
+            "def test_agent_stub_placeholder():\n    assert True\n",
+            encoding="utf-8",
+        )
+
+    facade = IndexFacade(project_root=str(workdir))
+    fac_build = facade.build(force=False)
+    metrics.record_graph(max(1, int((fac_build.get("counters") or {}).get("graph_calls") or 1)))
+
+    # Seed locate from goal text only (no gold)
+    hints = _locate_hints_from_goal(task.goal or "")
+    for kw in ([hints.get("symbol")] if hints.get("symbol") else []) + list(hints.get("keywords") or [])[:5]:
+        if not kw:
+            continue
+        try:
+            facade.query("grep", pattern=str(kw), path=str(workdir), glob="*.py")
+            metrics.record_grep()
+        except Exception:
+            pass
+    if hints.get("symbol"):
+        try:
+            facade.query("graph", action="who_calls", target=hints["symbol"])
+            metrics.record_graph()
+        except Exception:
+            pass
+
+    state: Dict[str, Any] = {
+        "located": bool(hints.get("symbol") or hints.get("file")),
+        "edited": False,
+        "verify_ok": False,
+        "done": False,
+        "files_touched": [],
+        "summary": "",
+        "tool_trace": [],
+        "model_error": "",
+        "timed_out": False,
+        "thrash": False,
+    }
+
+    deadline = time.time() + max(30, int(timeout_s))
+    max_rounds = int(os.environ.get("WW_ARENA_LLM_MAX_ROUNDS", "12") or "12")
+    tool_schemas = _tool_openai_schema()
+
+    system = (
+        "You are the WorldWave coding agent on a CLOSED-BOOK arena task.\n"
+        "Fix the bug described in the user goal using coding tools only.\n"
+        "Rules:\n"
+        "- You only see the scaffold project under the workdir.\n"
+        "- Hidden evaluation tests are NOT available. Do not search for them.\n"
+        "- Prefer coding_repo_map → coding_grep/coding_graph_query → coding_outline "
+        "→ coding_edit_symbol (or coding_apply_patch) → coding_verify → coding_done.\n"
+        "- Make minimal correct edits. Keep public APIs stable.\n"
+        "- Never invent gold fixes from outside knowledge of hidden tests.\n"
+    )
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": prompt[:6000]},
+    ]
+
+    # Seed context: outline of hinted file if present
+    if hints.get("file"):
+        fp = workdir / hints["file"]
+        if fp.is_file():
+            try:
+                oq = facade.query("outline", path=str(fp))
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"Seed outline for {hints['file']}:\n"
+                        + str((oq.get('result') or {}).get('outline') or "")[:2000]
+                    ),
+                })
+                state["located"] = True
+            except Exception:
+                pass
+
+    client = None
+    try:
+        from core.llm import LLMClient
+        from coding.model_route import apply_coding_model_to_client
+        client = LLMClient(model=model_id or None)
+        apply_coding_model_to_client(client, route)
+    except Exception as e:
+        state["model_error"] = f"LLMClient init failed: {e}"
+        # Fall through: still try deterministic locate+no-edit path for honest metrics
+
+    rounds = 0
+    if client is not None and not state["model_error"]:
+        while rounds < max_rounds and time.time() < deadline and not state["done"]:
+            rounds += 1
+            metrics.record_round()
+            try:
+                resp = client.chat_with_tools(
+                    messages=messages,
+                    tools=tool_schemas,
+                    temperature=0.2,
+                    max_tokens=2048,
+                )
+            except Exception as e:
+                state["model_error"] = f"chat_with_tools: {e}"
+                break
+
+            content = getattr(resp, "content", None) or ""
+            tool_calls = list(getattr(resp, "tool_calls", None) or [])
+            if content:
+                messages.append({"role": "assistant", "content": content})
+            if not tool_calls:
+                # Try parse JSON tool intent from content as fallback
+                parsed = _parse_tool_intent_from_text(content)
+                if parsed:
+                    tool_calls = [parsed]
+                else:
+                    # No tool calls → stop
+                    if state["edited"]:
+                        state["done"] = True
+                    break
+
+            # Normalize tool_calls to list of {name, arguments, id}
+            for tc in tool_calls:
+                if time.time() >= deadline:
+                    state["timed_out"] = True
+                    break
+                name, args, tc_id = _normalize_tool_call(tc)
+                metrics.record_tool()
+                result = _dispatch_coding_tool(name, args, workdir, facade, metrics, state)
+                state["tool_trace"].append({"tool": name, "ok": result.get("ok")})
+                # Append tool result message (OpenAI-style)
+                messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": tc_id or f"call_{rounds}",
+                        "type": "function",
+                        "function": {
+                            "name": name,
+                            "arguments": json.dumps(args),
+                        },
+                    }],
+                })
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc_id or f"call_{rounds}",
+                    "content": json.dumps(result)[:4000],
+                })
+                if name == "coding_done" or state.get("done"):
+                    state["done"] = True
+                    break
+
+            # Thrash detection: many rounds without edit
+            if rounds >= max(6, max_rounds // 2) and not state["edited"]:
+                state["thrash"] = True
+                break
+    elif not state["model_error"]:
+        state["model_error"] = "no LLM client"
+    else:
+        pass
+
+    if time.time() >= deadline:
+        state["timed_out"] = True
+
+    # If model produced no edit, still record honest handoff (no gold!)
+    try:
+        facade.close()
+    except Exception:
+        pass
+
+    metrics.finished_at = datetime.now(timezone.utc).isoformat()
+    metrics.extra["index_facade"] = facade.metrics() if hasattr(facade, "metrics") else {}
+    metrics.extra["closed_book"] = True
+    metrics.extra["gold_applied"] = False
+    metrics.extra["files_touched"] = list(state.get("files_touched") or [])
+    metrics.extra["tool_trace_len"] = len(state.get("tool_trace") or [])
+    metrics.extra["hints"] = {
+        "symbol": hints.get("symbol"),
+        "file": hints.get("file"),
+    }
+
+    user_summary = state.get("summary") or (
+        "Closed-book coding loop finished."
+        + (" Edited files." if state["edited"] else " No edit applied.")
+    )
+    # Ensure no raw tool dump
+    if user_summary.strip().startswith("{") or "tool_calls" in user_summary:
+        user_summary = "Closed-book coding loop finished."
+
+    return {
+        "success": bool(state.get("edited")),
+        "gold_applied": False,
+        "mode": "llm",
+        "model_id": model_id,
+        "model_route": route,
+        "metrics": metrics.to_dict(),
+        "user_summary": user_summary[:800],
+        "state": {
+            "located": state["located"],
+            "edited": state["edited"],
+            "verify_ok": state["verify_ok"],
+            "timed_out": state["timed_out"],
+            "thrash": state["thrash"],
+            "model_error": state["model_error"],
+            "rounds": rounds,
+            "files_touched": state["files_touched"],
+        },
+        "deadline_exceeded": state["timed_out"],
+    }
+
+
+def _normalize_tool_call(tc: Any) -> Tuple[str, Dict[str, Any], str]:
+    """Return (name, args, id) from various tool_call shapes."""
+    tc_id = ""
+    name = ""
+    args: Dict[str, Any] = {}
+    if isinstance(tc, dict):
+        tc_id = str(tc.get("id") or "")
+        if "function" in tc and isinstance(tc["function"], dict):
+            name = str(tc["function"].get("name") or "")
+            raw = tc["function"].get("arguments") or {}
+        else:
+            name = str(tc.get("name") or "")
+            raw = tc.get("arguments") or tc.get("args") or {}
+        if isinstance(raw, str):
+            try:
+                args = json.loads(raw) if raw.strip() else {}
+            except json.JSONDecodeError:
+                args = {"raw": raw}
+        elif isinstance(raw, dict):
+            args = raw
+    return name, args, tc_id
+
+
+def _parse_tool_intent_from_text(text: str) -> Optional[Dict[str, Any]]:
+    """Best-effort: model returned JSON tool intent instead of tool_calls."""
+    if not text:
+        return None
+    s = text.strip()
+    # fenced json
+    m = re.search(r"```(?:json)?\s*(\{[\s\S]+?\})\s*```", s)
+    if m:
+        s = m.group(1)
+    if not s.startswith("{"):
+        return None
+    try:
+        obj = json.loads(s)
+    except json.JSONDecodeError:
+        return None
+    name = obj.get("tool") or obj.get("name") or obj.get("function")
+    args = obj.get("arguments") or obj.get("args") or obj.get("parameters") or {}
+    if not name:
+        # {coding_edit_symbol: {...}} single-key form
+        if len(obj) == 1:
+            k = next(iter(obj))
+            if str(k).startswith("coding_"):
+                name, args = k, obj[k] if isinstance(obj[k], dict) else {}
+    if not name:
+        return None
+    return {
+        "id": "parsed_0",
+        "function": {"name": str(name), "arguments": args if isinstance(args, dict) else {}},
+    }
+
+
 def run_ww_llm_agent(task: TaskSpec, parent: Path) -> AgentRunResult:
-    """Optional real LLM path (WW_ARENA_LLM=1). Falls back to mock if unavailable."""
-    # Keep optional path thin: try coding_run_ticket without gold body (locate only),
-    # then fall back to mock gold apply so the harness still produces a report.
-    if os.environ.get("WW_ARENA_LLM", "0").strip() not in ("1", "true", "yes", "on"):
-        return run_ww_mock_agent(task, parent)
-    # Real LLM integration is optional; use mock application of gold as scaffold
-    # plus model_route recording. Full autonomous LLM editing is out of CI scope.
-    return run_ww_mock_agent(task, parent)
+    """Closed-book LLM path (WW_ARENA_LLM=1).
+
+    NEVER applies gold_fix. NEVER reads hidden_tests for fix content.
+    If LLM/API unavailable: honest fail with mode=llm, gold_applied=false
+    (no silent mock fallback).
+    """
+    t0 = time.time()
+    if os.environ.get("WW_ARENA_LLM", "0").strip().lower() not in ("1", "true", "yes", "on"):
+        # Not in LLM mode — callers should use mock; keep honest
+        r = run_ww_mock_agent(task, parent)
+        return r
+
+    work = materialize_workdir(task, parent / "ww_llm")
+    os.environ.setdefault("WW_CODING_REQUIRE_TEST", "1")
+    timeout_s = int(
+        os.environ.get("WW_ARENA_TIMEOUT")
+        or task.meta.get("timeout_s")
+        or DEFAULT_LLM_TIMEOUT_S
+        or 300
+    )
+    # Prefer higher timeout for LLM than mock default
+    if timeout_s < 120 and not os.environ.get("WW_ARENA_TIMEOUT"):
+        timeout_s = DEFAULT_LLM_TIMEOUT_S
+
+    prompt = build_agent_prompt(task)
+    # Isolation asserts
+    if "hidden_tests" in prompt and "not available" not in prompt.lower():
+        prompt = re.sub(r"hidden_tests[\s\S]*", "Hidden tests not available.\n", prompt)
+
+    ready, ready_reason = _arena_llm_ready()
+    model_env = os.environ.get(DEFAULT_MODEL_ENV, "").strip()
+
+    if not ready:
+        wall = time.time() - t0
+        return AgentRunResult(
+            agent="ww",
+            task_id=task.id,
+            pass_at_1=False,
+            wall_time_s=round(wall, 4),
+            model_id=model_env or "unavailable",
+            require_test=True,
+            verify_success=False,
+            error=(
+                f"LLM unavailable ({ready_reason}): set DEEPSEEK_API_KEY / "
+                f"OPENAI_API_KEY (or compatible) for closed-book path. "
+                f"Refusing silent mock fallback while mode=llm."
+            ),
+            gold_applied=False,
+            mode="llm",
+            failure_taxonomy="model",
+            metrics={"gold_applied": False, "mode": "llm", "ready_reason": ready_reason},
+            extra={
+                "gold_applied": False,
+                "mode": "llm",
+                "ready_reason": ready_reason,
+                "prompt_chars": len(prompt),
+            },
+        )
+
+    err = ""
+    try:
+        # CRITICAL: never call _apply_gold_fix / never read task.gold_fix for edits
+        loop_out = _run_closed_book_loop(task, work, prompt, timeout_s)
+        assert loop_out.get("gold_applied") is False
+
+        # Arena-side hidden tests only (agent never saw these)
+        ok, hout = run_hidden_tests(task, work, min(timeout_s, max(30, task.timeout_s)))
+
+        metrics = loop_out.get("metrics") or {}
+        st = loop_out.get("state") or {}
+        taxonomy = _classify_failure(
+            pass_at_1=bool(ok),
+            edited=bool(st.get("edited")),
+            located=bool(st.get("located")),
+            verify_ok=bool(st.get("verify_ok")) or bool(ok),
+            timed_out=bool(st.get("timed_out") or loop_out.get("deadline_exceeded")),
+            thrash=bool(st.get("thrash")),
+            model_err=str(st.get("model_error") or ""),
+        )
+        user_summary = loop_out.get("user_summary") or "Closed-book run finished."
+        dump_v = _count_dump_violations(user_summary)
+        pr_dump = _public_reply_dump_count(user_summary)
+        model_id = (
+            loop_out.get("model_id")
+            or metrics.get("model_id")
+            or model_env
+            or "llm"
+        )
+        wall = time.time() - t0
+        return AgentRunResult(
+            agent="ww",
+            task_id=task.id,
+            pass_at_1=bool(ok),
+            wall_time_s=round(wall, 4),
+            tool_rounds=int(metrics.get("rounds") or metrics.get("tools") or st.get("rounds") or 0),
+            circuit_trips=int(metrics.get("trips") or 0),
+            dump_violations=dump_v,
+            public_reply_dump_count=pr_dump,
+            replans=int(metrics.get("replans") or 0),
+            redirects=int(metrics.get("redirects") or 0),
+            autocompacts=int(metrics.get("autocompacts") or 0),
+            microcompacts=int(metrics.get("microcompacts") or 0),
+            graph_calls=int(metrics.get("graph_calls") or 0),
+            grep_calls=int(metrics.get("grep_calls") or 0),
+            samples=int(metrics.get("samples") or 0),
+            max_same_fp=int(metrics.get("max_same_fp") or 0),
+            model_id=str(model_id),
+            require_test=True,
+            verify_success=bool(ok),
+            error=str(st.get("model_error") or "")[:2000],
+            gold_applied=False,
+            mode="llm",
+            failure_taxonomy=taxonomy,
+            metrics=metrics,
+            extra={
+                "gold_applied": False,
+                "mode": "llm",
+                "ready_reason": ready_reason,
+                "closed_book_state": st,
+                "hidden_output_tail": (hout or "")[-500:],
+                "prompt_chars": len(prompt),
+                "prompt_leaks_hidden": "test_add_basic" in prompt or "def test_" in prompt and "hidden" in prompt,
+                "user_summary": user_summary,
+                "model_route": loop_out.get("model_route"),
+            },
+        )
+    except Exception as e:
+        err = f"{e}\n{traceback.format_exc()}"
+        return AgentRunResult(
+            agent="ww",
+            task_id=task.id,
+            pass_at_1=False,
+            wall_time_s=round(time.time() - t0, 4),
+            error=err[:3000],
+            model_id=model_env or "llm",
+            require_test=True,
+            gold_applied=False,
+            mode="llm",
+            failure_taxonomy="model",
+            metrics={"gold_applied": False, "mode": "llm"},
+            extra={"gold_applied": False, "mode": "llm"},
+        )
 
 
 # ── Report / CLI ──────────────────────────────────────────────────────
@@ -726,6 +1503,10 @@ def summarize(
 ) -> Dict[str, Any]:
     n = len(ww) or 1
     ww_pass = sum(1 for r in ww if r.pass_at_1)
+    tax_counts: Dict[str, int] = {}
+    for r in ww:
+        t = (r.failure_taxonomy or ("ok" if r.pass_at_1 else "unknown"))
+        tax_counts[t] = tax_counts.get(t, 0) + 1
     s: Dict[str, Any] = {
         "n_tasks": len(ww),
         "ww_pass": ww_pass,
@@ -742,8 +1523,12 @@ def summarize(
         "ww_autocompacts": sum(r.autocompacts for r in ww),
         "ww_microcompacts": sum(r.microcompacts for r in ww),
         "ww_require_test_all": all(r.require_test for r in ww),
+        "ww_gold_applied_any": any(r.gold_applied for r in ww),
+        "ww_mode": (ww[0].mode if ww else "mock"),
+        "failure_taxonomy": tax_counts,
         "outcome_a_harness": True,
         "outcome_a_exceeds_baseline": False,
+        "outcome_a_closed_book": all((not r.gold_applied) for r in ww) if ww and (ww[0].mode == "llm") else None,
     }
     if baseline is not None:
         bn = len(baseline) or 1
@@ -764,13 +1549,15 @@ def summarize(
 def render_markdown(report: ArenaReport) -> str:
     s = report.summary
     lines = [
-        f"# Coding Arena Report (PM 0.11)",
+        f"# Coding Arena Report (PM 0.12)",
         "",
         f"- Started: {report.started_at}",
         f"- Finished: {report.finished_at}",
         f"- Mode: {report.mode}",
         f"- Flags: `{json.dumps(report.flags)}`",
         f"- Tasks: {s.get('n_tasks')}",
+        f"- gold_applied any WW row: {s.get('ww_gold_applied_any')}",
+        f"- failure taxonomy: `{json.dumps(s.get('failure_taxonomy') or {})}`",
         "",
         "## Summary",
         "",
@@ -801,14 +1588,15 @@ def render_markdown(report: ArenaReport) -> str:
         "",
         "## Per-task WW",
         "",
-        "| task | pass@1 | rounds | wall_s | trips | graph | grep | model |",
-        "|------|--------|--------|--------|-------|-------|------|-------|",
+        "| task | pass@1 | rounds | wall_s | trips | graph | grep | gold | tax | model |",
+        "|------|--------|--------|--------|-------|-------|------|------|-----|-------|",
     ]
     for r in report.ww_results:
         lines.append(
             f"| {r.get('task_id')} | {r.get('pass_at_1')} | {r.get('tool_rounds')} | "
             f"{r.get('wall_time_s')} | {r.get('circuit_trips')} | {r.get('graph_calls')} | "
-            f"{r.get('grep_calls')} | {r.get('model_id')} |"
+            f"{r.get('grep_calls')} | {r.get('gold_applied')} | {r.get('failure_taxonomy') or 'ok'} | "
+            f"{r.get('model_id')} |"
         )
     if report.baseline_results:
         lines += [
@@ -827,9 +1615,10 @@ def render_markdown(report: ArenaReport) -> str:
         "## Notes",
         "",
         "- Hidden tests are never included in the agent prompt.",
-        "- Mock mode is default (deterministic). `WW_ARENA_LLM=1` enables optional LLM path.",
-        "- North-star \"exceeds baseline\" is true only when WW pass rate > baseline pass rate "
-        "on the full suite; fixture-prove green alone is not success.",
+        "- Mock mode is default (deterministic gold through WW path). "
+        "`WW_ARENA_LLM=1` is **closed-book** (never applies gold_fix; honest fail if no API key).",
+        "- North-star closed-book hard bar: full-suite WW pass@1 > baseline with mode=llm "
+        "and gold_applied=false. Fixture-prove / mock green alone is not Outcome A product success.",
         "",
     ]
     if not s.get("outcome_a_exceeds_baseline"):
@@ -887,6 +1676,9 @@ def run_arena(
 
     llm = os.environ.get("WW_ARENA_LLM", "0").strip().lower() in ("1", "true", "yes", "on")
     mode = "llm" if llm else "mock"
+    if llm and not os.environ.get("WW_ARENA_TIMEOUT"):
+        # Raise default timeout for closed-book LLM runs (45s is too low)
+        os.environ.setdefault("WW_ARENA_TIMEOUT", str(DEFAULT_LLM_TIMEOUT_S))
 
     report = ArenaReport(
         started_at=datetime.now(timezone.utc).isoformat(),
@@ -897,6 +1689,7 @@ def run_arena(
             "vs_baseline": vs_baseline,
             "WW_ARENA_LLM": llm,
             "WW_CODING_MODEL": os.environ.get(DEFAULT_MODEL_ENV, ""),
+            "WW_ARENA_TIMEOUT": os.environ.get("WW_ARENA_TIMEOUT", str(DEFAULT_TIMEOUT_S)),
             "tasks_root": str(tasks_root),
         },
         tasks=[t.id for t in tasks],
@@ -922,6 +1715,8 @@ def run_arena(
             print(
                 f"       {status} rounds={wr.tool_rounds} "
                 f"graph={wr.graph_calls} grep={wr.grep_calls} "
+                f"gold={wr.gold_applied} mode={wr.mode} "
+                f"tax={wr.failure_taxonomy or 'ok'} "
                 f"t={wr.wall_time_s:.2f}s"
             )
             if wr.error:
@@ -969,7 +1764,7 @@ def run_arena(
 
 
 def main(argv: Optional[List[str]] = None) -> int:
-    p = argparse.ArgumentParser(description="WW Coding Arena (PM 0.11)")
+    p = argparse.ArgumentParser(description="WW Coding Arena (PM 0.12)")
     p.add_argument("--smoke", action="store_true", help="Run ≤3 smoke tasks")
     p.add_argument("--full", action="store_true", help="Run full suite (≥20)")
     p.add_argument("--vs-baseline", action="store_true", help="Also run reference baseline")

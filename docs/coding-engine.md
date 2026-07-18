@@ -1,79 +1,160 @@
-# Coding Engine (WW-PM 0.11)
+# Coding Engine (WW-PM 0.12)
 
-WorldWave's default engineering harness lives in `coding/`. PM 0.11 hardens (arena + 0.10 foundation) the **live multi-turn path**: mode → map/grep/graph → edit → verify → circuit/replan, with steerable redirect, AutoCompact, CodingMetrics, model route, and corpus stress — all offline-provable.
+WorldWave's default engineering harness lives in `coding/`. PM 0.12 hardens **closed-book arena** + **index facade** on the 0.10–0.11 foundation: mode → map/grep/graph → edit → verify → circuit/replan, with steerable redirect, AutoCompact, CodingMetrics, model route, corpus/large-repo stress, and protocol smoke — offline-provable for CI; closed-book LLM path for the product hard bar.
 
 ## Default path
 
 | Step | Module / tool | Behavior |
 |------|---------------|----------|
-| Coding mode | `mode.py` | Auto-detect coding goals (bugfix / implement / refactor / write tests, EN+ZH); inject CODING_AGENT + AGENTS.md; role=**coder** |
-| Model route | `model_route.py` | Prefer `WW_CODING_MODEL` (+ optional `WW_CODING_PROVIDER`); fallback to main model + log |
-| Orchestrate | `orchestrator.py` / `coding_run_ticket` | repo_map → locate → edit → verify → replan/circuit; `max_tool_rounds` / `max_same_fp` bounds |
-| Explain → replan | `perception` + `harness` | `coding_explain_failure` bullets folded into `coding_replan` context |
-| Steer | `coding_redirect` / loop_bridge | Mid-task subgoal update via tool **or** simulated loop user-message path |
-| AutoCompact | `autocompact.py` + loop_bridge | Near token budget (or mock over threshold); keeps edit_log |
-| Metrics | `CodingMetrics` | JSON: rounds, tools, verifies, redirects, trips, autocompacts |
-| Require test | policy default | `WW_CODING_REQUIRE_TEST=1` — mark_ticket_done needs green verify |
+| Coding mode | `mode.py` | Auto-detect coding goals; inject CODING_AGENT + AGENTS.md; role=**coder** |
+| Model route | `model_route.py` | Prefer `WW_CODING_MODEL` (+ optional provider); fallback to main model |
+| Index facade | `index_facade.py` | `build` / `update` / `query(map\|grep\|graph\|outline\|rag)` — unified `.ww` lifecycle |
+| Orchestrate | `orchestrator.py` / `coding_run_ticket` | facade map → locate (graph+grep) → edit → verify → replan/circuit |
+| Explain → replan | `perception` + `harness` | `coding_explain_failure` → `coding_replan` |
+| Steer | `coding_redirect` / loop_bridge | Mid-task subgoal update |
+| AutoCompact | `autocompact.py` + loop_bridge | Near token budget; keeps edit_log |
+| Metrics | `CodingMetrics` | rounds, tools, verifies, redirects, trips, graph_calls, grep_calls, … |
+| Require test | policy default | `WW_CODING_REQUIRE_TEST=1` |
 
 ```
-coding mode → model route → repo_map → grep/graph → outline → edit_symbol → verify
-                                                      ↘ fail → explain → circuit + replan → handoff
+coding mode → model route → index_facade.build
+           → repo_map → grep/graph → outline → edit_symbol → verify
+                                              ↘ fail → explain → circuit + replan → handoff
 user message ──► loop_bridge (redirect | autocompact)
 ```
+
+## Index facade (B2)
+
+```python
+from coding.index_facade import IndexFacade
+
+fac = IndexFacade(project_root=".")
+fac.build()                          # graph + BM25/code_rag under .ww/
+fac.update(["pkg/foo.py"])           # incremental refresh
+fac.query("map", token_budget=4000)
+fac.query("grep", pattern="def add")
+fac.query("graph", action="who_calls", target="add")
+fac.query("outline", path="pkg/math_ops.py")
+fac.query("rag", query="rate limit")
+fac.metrics()                        # map/grep/graph/rag/symbol counters
+```
+
+Default orchestrator locate path goes through the facade so **graph_calls > 0**.
 
 ## Capabilities
 
 | Layer | Modules | Tools (selection) |
 |-------|---------|-------------------|
 | Mode | `mode`, `model_route`, `loop_bridge` | auto inject; model prefer; user-message path |
-| Perception | `code_graph`, `perception`, `code_search`, `code_rag` | `coding_repo_map`, `coding_grep`, `coding_graph_*`, `coding_outline` |
-| ACI edits | `aci` | `coding_edit_symbol`, `coding_apply_patch`, `coding_edit_lines`, `coding_write_file` |
-| Policy | `policy` | deny-first; secret scan; causal commit gate; require-test default ON |
-| Verify | `harness`, `circuit` | `coding_verify`, circuit 3-strike + same-fingerprint trip |
-| Control | `orchestrator`, `harness`, `planning` | `coding_run_ticket`, `coding_redirect`, `coding_replan`, `coding_mark_ticket_done` |
-| Bound outputs | `microcompact`, `autocompact` | tool microcompact + structured coding summary |
+| Index | `index_facade`, `code_graph`, `perception`, `code_rag` | map / grep / graph / outline / BM25 |
+| ACI edits | `aci` | `coding_edit_symbol`, `coding_apply_patch`, … |
+| Policy | `policy` | deny-first; secret scan; causal; require-test default ON |
+| Verify | `harness`, `circuit` | `coding_verify`; same-fingerprint trip |
+| Control | `orchestrator`, `planning` | `coding_run_ticket`, `coding_redirect`, … |
+| Bound outputs | `microcompact`, `autocompact` | no raw tool dump as user reply |
 
 ## Code graph
 
 - Directed multigraph: nodes = file / class / function; edges = calls, imports, inherits, defines.
-- Python via stdlib `ast` (always). Optional tree-sitter remains progressive elsewhere.
-- Store: `<project>/.ww/code_graph.db` with mtime + content-hash incremental updates.
-- Successful edits append `<project>/.ww/edit_log.jsonl` (AutoCompact never deletes this).
+- Python via stdlib `ast` (always). Store: `<project>/.ww/code_graph.db`.
+- Successful edits append `<project>/.ww/edit_log.jsonl`.
 
 ## Policy
 
-- Dangerous patterns denied with semantic reasons (`rm -rf /`, `mkfs`, dangerous `dd`, `curl|bash`, …).
-- Extra denials: `WW_CODING_DENY_EXTRA` (comma-separated regexes).
-- Causal default **ON** (`WW_CODING_CAUSAL=0` disables): after coding writes, `git_commit` / `check_git_commit_allowed()` blocks until `coding_verify` is green.
-- Secret scan blocks `sk-…`, `api_key=…`, `PRIVATE KEY` on patch/commit.
-- Capability mutex: **architect cannot edit**; default role is **coder**.
-- `WW_CODING_REQUIRE_TEST` default **1**; `WW_CODING_SAMPLES` default **0**.
-- Optional worktree isolation: `WW_CODING_USE_WORKTREE=1` and/or `coding_worktree_start` / `coding_worktree_finish` (see CODING_AGENT.md). No new hard dependencies.
+- Dangerous patterns denied (`rm -rf /`, `mkfs`, dangerous `dd`, `curl|bash`, …).
+- `WW_CODING_DENY_EXTRA` for extra regex denials.
+- Causal default **ON**; secret scan on patch/commit.
+- Architect cannot edit; default role **coder**.
+- `WW_CODING_REQUIRE_TEST` default **1**.
 
-## Orchestrator bounds (PM 0.10)
+## Orchestrator bounds
 
 | Env | Default | Meaning |
 |-----|---------|---------|
-| `WW_CODING_MAX_TOOL_ROUNDS` | 20 | Cap map/locate/edit/verify rounds per ticket |
-| `WW_CODING_MAX_SAME_FP` / `WW_CODING_SAME_FP_THRESHOLD` | 3 | Same fingerprint strikes → handoff |
+| `WW_CODING_MAX_TOOL_ROUNDS` | 20 | Cap rounds per ticket |
+| `WW_CODING_MAX_SAME_FP` | 3 | Same fingerprint → handoff |
 | `WW_CODING_MAX_REPLANS` | 1 | Replans after verify fail |
 | `WW_CODING_MODEL` | (unset) | Preferred coding model |
-| `WW_CODING_PROVIDER` | (unset) | Optional provider for coding model |
-| `WW_CODING_LIVE_LLM` | 0 | Live prove uses mock driver unless 1 |
-| `WW_CODING_SAMPLES` | 0 | Sample repair scaffolds when k>0 |
-| `WW_CODING_USE_WORKTREE` | 0 | Documented opt-in for worktree isolation |
+| `WW_CODING_LIVE_LLM` | 0 | Live prove mock unless 1 |
+| `WW_ARENA_LLM` | 0 | Arena closed-book LLM path |
+| `WW_ARENA_TIMEOUT` | 45 mock / 300 LLM | Per-task wall budget |
+| `WW_CODING_SAMPLES` | 0 | Sample repair when k>0 |
 
-User-facing `user_summary` never dumps raw tool JSON (`tool_calls`, handler dumps, etc.).
+User-facing `user_summary` never dumps raw tool JSON.
 
-## Corpus stress
+## Coding arena (PM 0.12)
 
-Self-bootstrap on in-repo `coding/` + `core/` (always offline):
+Hidden-test pass@1 vs fixed reference baseline.
+
+| Mode | Env | Behavior |
+|------|-----|----------|
+| **mock** (CI default) | `WW_ARENA_LLM` unset/0 | Applies `gold_fix` through WW orchestrator/ACI — deterministic |
+| **llm** (closed-book) | `WW_ARENA_LLM=1` | Multi-turn coding tools from goal+scaffold only; **never** gold; honest fail if no API key |
+
+```bash
+python scripts/coding_arena.py --smoke
+python scripts/coding_arena.py --full --vs-baseline
+
+# Closed-book (Apple / local with keys)
+WW_ARENA_LLM=1 WW_CODING_MODEL=your-model WW_ARENA_TIMEOUT=300 \
+  python scripts/coding_arena.py --full --vs-baseline
+```
+
+Reports: `results/coding_arena/` include `gold_applied`, `mode`, `failure_taxonomy`.
+
+**Mock green ≠ Outcome A product success.** Closed-book pass@1 > baseline on the full suite is the hard bar. See `docs/coding-north-star.md`.
+
+## Protocol (MCP / ACP) — IDE attach
+
+WorldWave can expose coding tools to IDEs/agents via MCP or ACP.
+
+### MCP (preferred)
+
+- Implementation: `core/mcp.py` (`WWMCPServer` over stdio JSON-RPC).
+- Handshake: `initialize` → `notifications/initialized` → `tools/list` → `tools/call`.
+- Smoke (offline):
+
+```bash
+python scripts/coding_protocol_smoke.py
+```
+
+Example IDE config (stdio; adjust command to your install):
+
+```json
+{
+  "mcpServers": {
+    "worldwave": {
+      "command": "python",
+      "args": ["-c", "import asyncio; from core.mcp import WWMCPServer; asyncio.run(WWMCPServer().run_stdio())"],
+      "cwd": "/path/to/worldwave"
+    }
+  }
+}
+```
+
+Prefer registering the full tool registry in a long-lived `ww` process when available. Smoke uses in-process initialize + facade read-only map/grep so CI needs no daemon.
+
+### ACP
+
+- Implementation: `core/acp.py` — capabilities over stdio (`ready`, `capabilities`, tool invoke).
+- Smoke registers `coding_repo_map` / `coding_grep` capabilities.
+
+### LSP
+
+Optional. If language servers are missing, protocol smoke skips LSP without failing the gate.
+
+## Large repo / corpus
 
 ```bash
 python scripts/coding_corpus_prove.py
+python scripts/coding_large_repo_prove.py
+python scripts/coding_prove.py --scale
 ```
 
-Optional allowlist sparse clone to `~/.cache/worldwave/coding_corpus` or `tests/fixtures/coding_corpus_cache` (gitignored) when `WW_CODING_CORPUS_CLONE=1`. Scale fixture (≥200 / 207 py) remains green via `coding_prove.py --scale`.
+- Self-bootstrap: in-repo `coding/` + `core/`
+- Cache: `~/.cache/worldwave/coding_corpus` (optional clone with `WW_CODING_CORPUS_CLONE=1`)
+- Reports: `results/coding_large_repo/`
+- Never vendors third-party trees into the main repo
 
 ## Scale fixture
 
@@ -81,36 +162,24 @@ Optional allowlist sparse clone to `~/.cache/worldwave/coding_corpus` or `tests/
 python scripts/coding_scale_fixture.py --out tests/fixtures/coding_scale --count 207
 ```
 
-Gates: graph_build completes; repo_map truncates under budget; grep finds a known symbol; time bound configurable.
-
 ## Prove
 
 ```bash
 python scripts/coding_prove.py --all
 python scripts/coding_prove.py --e2e
 python scripts/coding_prove.py --scale
-python scripts/coding_prove.py --live   # or scripts/coding_live_prove.py
+python scripts/coding_prove.py --live
 python scripts/coding_corpus_prove.py
-python -m pytest tests/test_coding_upgrade.py tests/test_coding.py \
-  tests/test_coding_agent_path.py tests/test_coding_live.py -q --tb=line -k "not lsp"
+python scripts/coding_large_repo_prove.py
+python scripts/coding_protocol_smoke.py
+python scripts/coding_arena.py --smoke --vs-baseline
+python -m pytest tests/test_coding*.py -q --tb=line -k "not lsp" --timeout=30
 ```
-
-- **V1–V10** — who_calls, blast_radius, deny, microcompact, rollback, AST edit, circuit, causal, secret, meta.
-- **E1–E6** — failing test setup → graph/grep → edit_symbol fix → verify green → circuit trip → secret/deny/causal still pass.
-- **Live** — multi-turn fail → locate → fix → green → redirect → green; edit_log; metrics; no raw tool dump.
-- **Corpus** — coding+core graph/map stress; scale cross-check.
 
 ## Playbook
 
 See `coding/CODING_AGENT.md` for the default-path diagram and worktree guidance.
 
-## Coding arena (PM 0.11)
+## Honesty
 
-Hidden-test pass@1 vs a fixed reference baseline. Mock mode is default for CI.
-
-```bash
-python scripts/coding_arena.py --smoke
-python scripts/coding_arena.py --full --vs-baseline
-```
-
-See `docs/coding-north-star.md` for Outcome A/B/C definitions. Reports: `results/coding_arena/`.
+Do not claim the coding engine exceeds Claude Code / Codex in README. Arena scores and this north-star doc are the source of truth for product gates.

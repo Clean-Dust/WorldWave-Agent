@@ -142,8 +142,168 @@ def test_arena_smoke_subprocess():
         assert row.get("require_test") is True
 
 
-def test_pm_version_0_11():
+def test_pm_version_0_12():
     from coding import PM_VERSION, get_status
 
-    assert PM_VERSION == "0.11.0"
-    assert get_status()["version"] == "0.11.0"
+    assert PM_VERSION == "0.12.0"
+    assert get_status()["version"] == "0.12.0"
+    assert "index_facade" in get_status()["modules"]
+
+
+def test_llm_path_never_applies_gold():
+    """Contract: WW_ARENA_LLM=1 must not call _apply_gold_fix (closed-book)."""
+    arena = _arena_mod()
+    gold_calls: list = []
+    original_gold = arena._apply_gold_fix
+
+    def _spy_gold(workdir, fix):
+        gold_calls.append({"workdir": str(workdir), "fix_keys": list((fix or {}).keys())})
+        return original_gold(workdir, fix)
+
+    arena._apply_gold_fix = _spy_gold  # type: ignore
+
+    def _hook(task, workdir, prompt, timeout_s):
+        # Simulated closed-book agent: no gold, optional no-op edit
+        assert "gold_fix" not in prompt
+        # Ensure gold content not required
+        return {
+            "success": False,
+            "gold_applied": False,
+            "mode": "llm",
+            "model_id": "contract-mock-llm",
+            "model_route": {"model": "contract-mock-llm", "source": "test"},
+            "metrics": {
+                "rounds": 2,
+                "tools": 2,
+                "graph_calls": 2,
+                "grep_calls": 1,
+                "trips": 0,
+                "replans": 0,
+                "redirects": 0,
+                "autocompacts": 0,
+                "microcompacts": 0,
+                "samples": 0,
+                "max_same_fp": 0,
+                "model_id": "contract-mock-llm",
+                "extra": {"gold_applied": False},
+            },
+            "user_summary": "Closed-book contract hook finished without gold.",
+            "state": {
+                "located": True,
+                "edited": False,
+                "verify_ok": False,
+                "timed_out": False,
+                "thrash": False,
+                "model_error": "",
+                "rounds": 2,
+                "files_touched": [],
+            },
+        }
+
+    arena.set_closed_book_hook(_hook)
+    try:
+        tasks = arena.load_tasks(arena.find_tasks_root(), smoke=True)
+        t = tasks[0]
+        # Poison gold would make mock pass — LLM path must not use it
+        assert t.gold_fix, "fixture should have gold for contrast"
+        with tempfile.TemporaryDirectory(prefix="arena-llm-contract-") as td:
+            old = os.environ.get("WW_ARENA_LLM")
+            os.environ["WW_ARENA_LLM"] = "1"
+            try:
+                r = arena.run_ww_llm_agent(t, Path(td))
+            finally:
+                if old is None:
+                    os.environ.pop("WW_ARENA_LLM", None)
+                else:
+                    os.environ["WW_ARENA_LLM"] = old
+        assert gold_calls == [], f"gold must never be applied on LLM path: {gold_calls}"
+        assert r.gold_applied is False
+        assert r.mode == "llm"
+        assert r.extra.get("gold_applied") is False
+        # Must not silently label mock-as-llm with gold
+        assert r.metrics.get("gold_applied") is not True
+    finally:
+        arena.set_closed_book_hook(None)
+        arena._apply_gold_fix = original_gold  # type: ignore
+
+
+def test_llm_path_honest_fail_without_api():
+    """Without API key and without hook: mode=llm, gold_applied=false, not mock."""
+    arena = _arena_mod()
+    arena.set_closed_book_hook(None)
+    # Clear keys for this process check
+    cleared = {}
+    for k in arena._API_KEY_ENVS:
+        if k in os.environ:
+            cleared[k] = os.environ.pop(k)
+    # Also clear force flags
+    force = os.environ.pop("WW_ARENA_LLM_FORCE", None)
+    try:
+        tasks = arena.load_tasks(arena.find_tasks_root(), smoke=True)
+        t = tasks[0]
+        with tempfile.TemporaryDirectory(prefix="arena-llm-noapi-") as td:
+            os.environ["WW_ARENA_LLM"] = "1"
+            r = arena.run_ww_llm_agent(t, Path(td))
+        assert r.mode == "llm"
+        assert r.gold_applied is False
+        assert r.pass_at_1 is False
+        assert r.failure_taxonomy == "model"
+        assert "unavailable" in (r.error or "").lower() or "api" in (r.error or "").lower()
+    finally:
+        os.environ.pop("WW_ARENA_LLM", None)
+        for k, v in cleared.items():
+            os.environ[k] = v
+        if force is not None:
+            os.environ["WW_ARENA_LLM_FORCE"] = force
+
+
+def test_index_facade_build_query():
+    from coding.index_facade import IndexFacade
+
+    root = ROOT / "coding"
+    fac = IndexFacade(project_root=str(root))
+    b = fac.build(force=False)
+    assert b.get("success") is True or (b.get("graph") or {}).get("success")
+    mq = fac.query("map", token_budget=800)
+    assert mq.get("success")
+    gq = fac.query("grep", pattern="IndexFacade", path=str(root), glob="*.py")
+    assert gq.get("success")
+    assert (gq.get("result") or {}).get("count", 0) >= 1
+    graph = fac.query("graph", action="stats")
+    assert graph.get("success")
+    ctr = fac.metrics()
+    assert ctr.get("graph_calls", 0) >= 1
+    assert ctr.get("map_calls", 0) >= 1
+    assert ctr.get("grep_calls", 0) >= 1
+    fac.close()
+
+
+def test_orchestrator_graph_calls_via_facade():
+    """Default locate path must record graph_calls > 0."""
+    import tempfile as tf
+
+    from coding.orchestrator import coding_run_ticket, reset_metrics, get_metrics
+
+    with tf.TemporaryDirectory(prefix="orch-facade-") as td:
+        p = Path(td)
+        (p / "pkg").mkdir()
+        (p / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+        (p / "pkg" / "m.py").write_text(
+            "def add(a, b):\n    return a - b\n",
+            encoding="utf-8",
+        )
+        (p / "tests").mkdir()
+        (p / "tests" / "test_m.py").write_text(
+            "from pkg.m import add\ndef test_add():\n    assert add(1, 2) == 3\n",
+            encoding="utf-8",
+        )
+        reset_metrics()
+        ticket = coding_run_ticket(
+            goal="Fix `pkg/m.py::add` so add(a,b)==a+b",
+            project_root=str(p),
+            # no new_body — locate only; still must use graph
+        )
+        m = ticket.get("metrics") or get_metrics().to_dict()
+        assert int(m.get("graph_calls") or 0) > 0, m
+        locate = (ticket.get("steps") or {}).get("locate") or {}
+        assert "graph_build" in locate or "graph" in locate
