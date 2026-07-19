@@ -22,6 +22,12 @@
 .venv/bin/python scripts/beam_runner.py --scale 100K --systems ww,b1,b2 --chat 1
 .venv/bin/python scripts/beam_runner.py --scale 100K --systems ww --resume
 
+# Resume behavior:
+# - Skips probe keys already present in answers_*.jsonl under the run dir.
+# - Also skips WW ingest_ww when **all** expected probes for that chat are already
+#   complete (avoids multi-hour re-ingest of finished chats). Incomplete chats still
+#   full-ingest then probe only missing keys.
+
 # Full-scale live path (all chats, all abilities, LLM judge)
 # --b1-max-chars defaults to 350000 for 100K-scale context windows
 # --answer-model optional (else WW_BEAM_ANSWER_MODEL / WW_MODEL / DEFAULT_MODEL)

@@ -485,25 +485,51 @@ def run_system_on_chat(
     answer_model: str = "",
 ) -> List[dict]:
     rows: List[dict] = []
-    # Ingest once per chat for WW
+    # Resume: skip WW ingest when all expected probes for this chat are already done
+    # (avoids multi-hour re-ingest of completed chats while answers stay frozen).
+    expected = expected_probe_keys(
+        system,
+        chat,
+        max_abilities=max_abilities,
+        abilities=abilities,
+    )
+    probes_complete = bool(expected) and expected.issubset(done)
+
+    # Ingest once per chat for WW (unless probes already complete on resume)
     if system == "ww" and not dry_run and client is not None:
-        ingest_ww(
-            client,
-            chat,
-            entity_id,
-            ingest_mode=ingest_mode,
-            batch_n=batch_n,
-            max_turns=max_turns,
-            dry_run=False,
-        )
+        if probes_complete:
+            print(
+                f"[ww] chat={chat.chat_id} skip_ingest=1 reason=probes_complete",
+                flush=True,
+            )
+        else:
+            print(
+                f"[ww] chat={chat.chat_id} skip_ingest=0",
+                flush=True,
+            )
+            ingest_ww(
+                client,
+                chat,
+                entity_id,
+                ingest_mode=ingest_mode,
+                batch_n=batch_n,
+                max_turns=max_turns,
+                dry_run=False,
+            )
     elif system == "ww" and dry_run:
-        ingest_ww(
-            client or WWRunClient(),  # type: ignore
-            chat,
-            entity_id,
-            dry_run=True,
-            max_turns=max_turns,
-        )
+        if probes_complete:
+            print(
+                f"[ww] chat={chat.chat_id} skip_ingest=1 reason=probes_complete",
+                flush=True,
+            )
+        else:
+            ingest_ww(
+                client or WWRunClient(),  # type: ignore
+                chat,
+                entity_id,
+                dry_run=True,
+                max_turns=max_turns,
+            )
 
     ability_filter = set(abilities) if abilities else None
     seen_abilities: List[str] = []
