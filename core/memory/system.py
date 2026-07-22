@@ -311,11 +311,17 @@ class MemorySystem:
             ),
         )
 
-    def _collect_vnext_result_rows(self, query: str, limit: int) -> List[dict]:
+    def _collect_vnext_result_rows(
+        self, query: str, limit: int, *, entity_id: str = ""
+    ) -> List[dict]:
         """Recall-shaped rows from AtomNetStore + LabeledFactStore + topic STM.
 
         Product remember() lands in v-next only; POST /ww/memory search/recall
         must surface those hits (content includes raw values for harnesses).
+
+        ``entity_id`` (explicit arg > request ContextVar > vnext instance) is
+        always applied so ``search(query, entity_id=A)`` finds atoms written
+        for A even after a later set_entity(B) without bind_entity.
         """
         if self.vnext is None:
             return []
@@ -343,9 +349,9 @@ class MemorySystem:
                 "source": source,
             })
 
-        # Request ContextVar > vnext instance (never a stale process-global)
+        # Explicit search entity > request ContextVar > vnext instance fallback
         eid = resolve_entity_id(
-            "",
+            entity_id,
             instance_fallback=getattr(self.vnext, "entity_id", None) or "default",
         )
 
@@ -361,6 +367,13 @@ class MemorySystem:
                 meta = ad.get("meta") if isinstance(ad.get("meta"), dict) else {}
                 if meta.get("value") and meta["value"] not in (ad.get("content") or ""):
                     ad["content"] = f"{ad.get('content', '')}\n{meta['value']}".strip()
+                # Ensure entity stamp survives legacy MemoryAtom conversion
+                if eid and eid not in (ad.get("entities") or []):
+                    ad["entities"] = list(ad.get("entities") or []) + [eid]
+                if isinstance(meta, dict) and not meta.get("entity_id"):
+                    meta = dict(meta)
+                    meta["entity_id"] = eid
+                    ad["meta"] = meta
                 _push(ad, float(a.confidence), "vnext_atom")
                 if len(rows) >= limit:
                     break
@@ -387,7 +400,7 @@ class MemorySystem:
                         "atom_type": "semantic",
                         "entities": [k, eid],
                         "source": "vnext_fact",
-                        "tags": [f"kind:{kind}"],
+                        "tags": [f"kind:{kind}", f"entity:{eid}"],
                         "is_core": is_core,
                         "meta": {
                             "key": k,
@@ -421,7 +434,7 @@ class MemorySystem:
                         "atom_type": "episodic",
                         "entities": [eid],
                         "source": "vnext_stm",
-                        "tags": ["topic_stm"],
+                        "tags": ["topic_stm", f"entity:{eid}"],
                         "title": h.get("title"),
                         "meta": {"entity_id": eid},
                     },
@@ -433,8 +446,14 @@ class MemorySystem:
 
         return rows[:limit]
 
-    def recall(self, query: str, top_k: int = 0,
-               max_tokens: int = 0) -> dict:
+    def recall(
+        self,
+        query: str,
+        top_k: int = 0,
+        max_tokens: int = 0,
+        *,
+        entity_id: str = "",
+    ) -> dict:
         """Recall and query related memories.
 
         When v-next is enabled, merges AtomNetStore / LabeledFactStore / topic
@@ -445,12 +464,20 @@ class MemorySystem:
             query: querytext
             top_k: returncount
             max_tokens: token budget limit (0=default, <0=unlimited)
+            entity_id: cognitive entity scope (explicit > ContextVar > instance)
 
         Returns:
             {"results": [...], "total": N, "compressed": bool, ...}
         """
         self.mark_active()
         limit = top_k if top_k > 0 else getattr(self.recall_engine, "top_k", 5)
+        eid = resolve_entity_id(
+            entity_id,
+            instance_fallback=(
+                getattr(self.vnext, "entity_id", None) if self.vnext else None
+            )
+            or "default",
+        )
         results = self.recall_engine.recall(query, top_k=limit,
                                             max_tokens=max_tokens)
 
@@ -480,14 +507,25 @@ class MemorySystem:
                             atom_id[:8], atom.recall_count, atom.stability, atom.importance,
                         )
 
-        # Merge v-next product hits (prefer first so atom_hit harnesses succeed)
-        vnext_rows = self._collect_vnext_result_rows(query, limit)
+        # Merge v-next product hits for the resolved entity (atom_hit harnesses)
+        vnext_rows = self._collect_vnext_result_rows(
+            query, limit, entity_id=eid
+        )
         if vnext_rows:
             seen_ids: set = set()
             seen_content: set = set()
             merged: List[dict] = []
             for r in vnext_rows + list(results):
                 atom = r.get("atom") or {}
+                # Hard filter legacy rows by entity when scoped
+                if eid and eid != "default" and not atom_belongs_to_entity(atom, eid):
+                    # Allow legacy untagged only if content/tags mention eid
+                    tags = list(atom.get("tags") or [])
+                    ents = list(atom.get("entities") or [])
+                    blob = " ".join(str(x) for x in tags + ents)
+                    content = str(atom.get("content") or "")
+                    if eid not in blob and eid not in content:
+                        continue
                 aid = str(atom.get("atom_id") or "")
                 content = str(atom.get("content") or "").strip().lower()
                 if aid and aid in seen_ids:
@@ -507,6 +545,7 @@ class MemorySystem:
             "compressed": any(r.get("compressed") for r in results),
             "max_tokens": max_tokens,
             "vnext_hits": len(vnext_rows) if vnext_rows else 0,
+            "entity_id": eid,
         }
 
     def reconstruct(self, fragment: str, top_k: int = 0) -> dict:
@@ -594,7 +633,8 @@ class MemorySystem:
         Returns MemoryAtom list whose to_dict() content includes raw stored
         values so ``value in json.dumps(search)`` works for product proves.
 
-        Always entity-scoped when a request entity is bound.
+        Always entity-scoped: explicit ``entity_id`` wins over request ContextVar
+        and the vnext instance fallback (Gate 0 narrative atom_hit).
         """
         self.mark_active()
         eid = resolve_entity_id(
@@ -624,17 +664,16 @@ class MemorySystem:
             atoms.append(atom)
 
         # Product path first: AtomNetStore / labeled facts / topic STM
-        for r in self._collect_vnext_result_rows(query, limit):
+        # Pass eid so collect does not depend on ContextVar / stale instance.
+        for r in self._collect_vnext_result_rows(query, limit, entity_id=eid):
             ad = r.get("atom") or {}
-            # Defense: skip foreign entity rows
+            # Hard isolation: never surface another entity's rows
             if not atom_belongs_to_entity(ad, eid):
-                # fact rows always have meta.entity_id; dicts without tag: only default
-                meta = ad.get("meta") if isinstance(ad.get("meta"), dict) else {}
-                if meta.get("entity_id") and str(meta.get("entity_id")) != eid:
-                    continue
-                if ad.get("source") in ("vnext_fact", "vnext_atom") and meta.get("entity_id"):
-                    if str(meta.get("entity_id")) != eid:
-                        continue
+                continue
+            # Skip raw reflex/context dumps when clean remember atoms exist
+            content = str(ad.get("content") or "")
+            if content.startswith("[reflex]") and "[Entity Context]" in content:
+                continue
             _add(self._memory_atom_from_dict(ad))
 
         # Dual-include legacy buffer for migration — entity-tag filter only
@@ -653,13 +692,17 @@ class MemorySystem:
                 atom = self._memory_atom_from_dict(atom_data)
             if atom is None:
                 continue
+            # Never promote polluted reflex Entity Context dumps as search hits
+            content = atom.content or ""
+            if content.startswith("[reflex]") and "[Entity Context]" in content:
+                continue
             # For non-default entities, only surface legacy atoms that mention eid
             if eid and eid != "default":
                 tags = list(getattr(atom, "tags", None) or [])
                 ents = list(getattr(atom, "entities", None) or [])
                 ctx = str(getattr(atom, "context_id", "") or "")
                 blob = " ".join(str(x) for x in tags + ents) + " " + ctx
-                if eid not in blob and eid not in (atom.content or ""):
+                if eid not in blob and eid not in content:
                     continue
             _add(atom)
 
@@ -724,17 +767,35 @@ class MemorySystem:
         *,
         new_topic: bool = False,
         topic_title: str = "",
+        entity_id: str = "",
     ) -> dict:
-        """Passive lossless track: land turn into topic WM + experience atom."""
+        """Passive lossless track: land turn into topic WM + experience atom.
+
+        ``entity_id`` is stamped onto experience atoms and fact extract so
+        entity-scoped search can find the turn later.
+        """
+        eid = resolve_entity_id(
+            entity_id,
+            instance_fallback=(
+                getattr(self.vnext, "entity_id", None) if self.vnext else None
+            )
+            or "default",
+        )
         if self.vnext is None:
-            # Fallback: store as episodic atom only
+            # Fallback: store as episodic atom only (entity-tagged)
             return self._do_store(
                 content=f"{role}: {content}",
                 source="passive",
                 atom_type="episodic",
+                tags=[eid] if eid else None,
+                context_id=f"ingest:{eid}" if eid else "",
             )
         return self.vnext.ingest_turn(
-            role, content, new_topic=new_topic, topic_title=topic_title
+            role,
+            content,
+            new_topic=new_topic,
+            topic_title=topic_title,
+            entity_id=eid,
         )
 
     def recall_vnext(self, query: str, top_k: int = 5) -> dict:

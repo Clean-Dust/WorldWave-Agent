@@ -543,19 +543,26 @@ def test_memory_system_search_recall_hits_vnext_atoms(tmp_path, monkeypatch):
     atom_hits = ms.vnext.atoms.current_truth(fav, limit=5)
     assert any(fav in a.content for a in atom_hits)
 
-    # MemorySystem.search (POST /ww/memory action=search)
-    search_atoms = ms.search(fav, limit=5)
+    # MemorySystem.search (POST /ww/memory action=search) — entity-scoped
+    search_atoms = ms.search(fav, limit=5, entity_id="ent_narr")
     search_blob = json.dumps([a.to_dict() for a in search_atoms])
     assert fav in search_blob, f"search missed raw value: {search_blob[:400]}"
 
+    # After rebind to another entity, explicit entity_id still hits (Gate 0)
+    ms.vnext.set_entity("other_ent")
+    rebind_hits = ms.search(fav, limit=5, entity_id="ent_narr")
+    assert any(fav in (a.content or "") for a in rebind_hits), (
+        "search(entity_id=) must find remember atoms after set_entity rebind"
+    )
+
     # MemorySystem.recall (POST /ww/memory action=recall default)
-    recall_payload = ms.recall(fav, top_k=5)
+    recall_payload = ms.recall(fav, top_k=5, entity_id="ent_narr")
     assert recall_payload.get("vnext_hits", 0) >= 1
     recall_blob = json.dumps(recall_payload)
     assert fav in recall_blob, f"recall missed raw value: {recall_blob[:400]}"
 
     # Also match by key fragment
-    by_key = ms.search("favorite_color_code", limit=5)
+    by_key = ms.search("favorite_color_code", limit=5, entity_id="ent_narr")
     assert any(fav in (a.content or "") for a in by_key)
 
     if ms.vnext:

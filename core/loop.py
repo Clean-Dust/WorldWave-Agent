@@ -1175,7 +1175,11 @@ class Worldwave:
         # Detect independent topic (markers / gap / lexical); park current to STM.
         try:
             if self.memory is not None and hasattr(self.memory, "ingest_turn"):
-                ing = self.memory.ingest_turn("user", user_goal_raw)
+                ing = self.memory.ingest_turn(
+                    "user",
+                    user_goal_raw,
+                    entity_id=self._current_entity_id or "",
+                )
                 if isinstance(ing, dict) and ing.get("switched"):
                     self._log(
                         f"## Topic auto-split → {ing.get('title', '')[:60]} "
@@ -1226,7 +1230,14 @@ class Worldwave:
                 except Exception:
                     pass
                 try:
-                    if self.memory and hasattr(self.memory, "store_text"):
+                    # Do NOT promote polluted Entity Context dumps as durable
+                    # semantic atoms. ingest_turn already landed the raw user
+                    # goal; remember/fact_extract own clean marker content.
+                    if (
+                        self.memory
+                        and hasattr(self.memory, "store_text")
+                        and "[Entity Context]" not in (goal or "")
+                    ):
                         summary = reflex_result.get("summary", "reflex")
                         snippet = ""
                         results = reflex_result.get("results") or []
@@ -1236,8 +1247,16 @@ class Worldwave:
                                 if a.get("tool") == "reflex_text":
                                     snippet = (a.get("result") or {}).get("output", "")[:240]
                                     break
-                        content = f"[reflex] user={goal[:160]} | reply={snippet or summary}"
-                        self.memory.store_text(content, source="reflex", entities=["reflex"])
+                        # Clean short trace only (raw user goal, not wrapped goal)
+                        raw = (user_goal_raw or "")[:120]
+                        content = f"[reflex] user={raw} | reply={snippet or summary}"
+                        eid = self._current_entity_id or ""
+                        ents = ["reflex"]
+                        if eid:
+                            ents.append(eid)
+                        self.memory.store_text(
+                            content, source="reflex", entities=ents
+                        )
                 except Exception:
                     pass
                 try:
@@ -1792,6 +1811,7 @@ class Worldwave:
                         "assistant",
                         asst_text[:2000],
                         new_topic=False,
+                        entity_id=self._current_entity_id or "",
                     )
         except Exception as e:
             logger.debug("ingest_turn (assistant) skipped: %s", e)

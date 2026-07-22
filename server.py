@@ -1379,10 +1379,24 @@ def memory_op(req: MemoryRequest):
     else:  # recall (default)
         # MemorySystem.recall returns a dict with results list of
         # {atom, salience, hops} — not a list of MemoryAtom.
-        payload = server.memory.recall(req.query, top_k=req.limit)
+        with bind_entity(eid or "default"):
+            if eid and getattr(server.memory, "vnext", None) is not None:
+                try:
+                    server.memory.vnext.set_entity(eid)
+                except Exception:
+                    pass
+            payload = server.memory.recall(
+                req.query, top_k=req.limit, entity_id=eid
+            )
         if isinstance(payload, dict):
+            if eid and not payload.get("entity_id"):
+                payload["entity_id"] = eid
             return payload
-        return {"results": payload, "total": len(payload) if payload else 0}
+        return {
+            "results": payload,
+            "total": len(payload) if payload else 0,
+            "entity_id": eid or "",
+        }
 
 @app.get("/ww/memory/stats")
 def memory_stats():
