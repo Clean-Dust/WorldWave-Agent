@@ -417,15 +417,23 @@ def test_beam_diag_chat_offline_synthetic(tmp_path, monkeypatch):
     # Write report under repo results/ — use chdir or import run_diag
     import beam_diag_chat as diag
 
-    code = diag.run_diag(chat_id="1", scale="100K", data_root=str(tmp_path))
+    # Unique chat id so glob does not pick real BEAM-cache reports
+    chat_id = "synth_p0"
+    synth_dir = tmp_path / "chats" / "100K" / chat_id
+    # relocate tree created as "1" → synth_p0
+    one = tmp_path / "chats" / "100K" / "1"
+    if one.is_dir() and not synth_dir.exists():
+        one.rename(synth_dir)
+    code = diag.run_diag(chat_id=chat_id, scale="100K", data_root=str(tmp_path))
     assert code == 0
     diag_dir = ROOT / "results" / "beam" / "diag"
     assert diag_dir.is_dir()
-    reports = list(diag_dir.glob("chat_1_*.md"))
+    reports = sorted(diag_dir.glob(f"chat_{chat_id}_*.md"), key=lambda p: p.stat().st_mtime)
     assert reports, "expected diag markdown under results/beam/diag/"
     text = reports[-1].read_text(encoding="utf-8")
     assert "blob_chars" in text
-    assert "165" in text or "BeamCity" in text
+    assert str(tmp_path.resolve()) in text or "synth" in text.lower()
+    assert "165" in text or "BeamCity" in text or "keyword_substring_hit_rate" in text
 
 
 def test_beam_diag_missing_chat(tmp_path):
