@@ -465,7 +465,11 @@ def test_is_beam_platform_helpers():
 
     assert is_beam_platform(platform="beam")
     assert is_beam_platform(entity_id="beam_100K_1_r1")
+    assert is_beam_platform(chat_id="beam_c_1")
     assert not is_beam_platform(platform="telegram")
+    assert not is_beam_platform(entity_id="beam_mini_384_1")
+    assert not is_beam_platform(platform="http", entity_id="beam_mini_x")
+    assert not is_beam_platform(platform="memory_prove_narrative")
     assert is_beam_ingest_goal(
         "Ingest the following conversation turns into memory. Extract and remember"
     )
@@ -474,3 +478,4 @@ def test_is_beam_platform_helpers():
         "Ingest the following conversation turns into memory.\nuser: hi",
         platform="beam",
     )
+    assert not is_beam_probe_goal("How many commits?", platform="http")

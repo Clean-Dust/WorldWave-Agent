@@ -122,10 +122,30 @@ def is_beam_platform(
     entity_id: str = "",
     chat_id: str = "",
 ) -> bool:
-    """True when this request is on the BEAM product evaluation path."""
-    for s in (platform, conversation_window, entity_id, chat_id):
-        s = (s or "").strip().lower()
-        if s.startswith("beam") or ":beam" in s or "beam_" in s:
+    """True only for official BEAM runner path — not beam_mini / memory_prove.
+
+    Matches:
+    - platform == \"beam\" (beam_runner /ww/run)
+    - entity_id like beam_100K_* / beam_500K_* / beam_1M_*
+    - chat_id / user keys beam_c_* / beam_u_* from beam_runner
+
+    Does **not** match beam_mini_*, prove_*, or any bare prefix \"beam\".
+    """
+    p = (platform or "").strip().lower()
+    if p == "beam":
+        return True
+    # Exclude known non-eval beam-ish prefixes early
+    for s in (entity_id, chat_id, conversation_window):
+        low = (s or "").strip().lower()
+        if not low:
+            continue
+        if low.startswith("beam_mini") or low.startswith("prove_"):
+            return False
+        if re.match(r"^beam_(100k|500k|1m)_", low):
+            return True
+        if low.startswith("beam_c_") or low.startswith("beam_u_"):
+            return True
+        if ":beam_" in low and re.search(r"beam_(100k|500k|1m)_", low):
             return True
     return False
 
