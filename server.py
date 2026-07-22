@@ -1091,10 +1091,12 @@ def run(req: TaskRequest):
     platform = (req.platform or "http").strip() or "http"
     entity_id = (req.entity_id or "").strip()
     conversation_window = ""
+    uid = (req.user_id or "").strip()
+    cid = (req.chat_id or "").strip()
     if not entity_id and server.identity_resolver and (req.user_id or platform != "http"):
         try:
-            uid = (req.user_id or "default").strip() or "default"
-            cid = (req.chat_id or uid).strip() or uid
+            uid = uid or "default"
+            cid = cid or uid
             entity_id = server.identity_resolver.resolve(
                 platform=platform,
                 user_id=uid,
@@ -1111,8 +1113,24 @@ def run(req: TaskRequest):
             conversation_window = f"{platform}:{uid}:{cid}"
         except Exception:
             entity_id = entity_id or ""
+    # BEAM / explicit user+chat: stable conversation window for prepare_for_run isolation
+    if not conversation_window and (uid or cid or platform.startswith("beam")):
+        conversation_window = f"{platform}:{uid or entity_id or 'u'}:{cid or entity_id or 'c'}"
+    goal = req.goal
+    # Product-path beam probe wrap (loop also wraps; belt for clients that skip set_entity)
+    try:
+        from core.beam_remediation import maybe_wrap_beam_goal
+
+        goal = maybe_wrap_beam_goal(
+            goal,
+            platform=platform,
+            conversation_window=conversation_window,
+            entity_id=entity_id,
+        )
+    except Exception:
+        goal = req.goal
     return server.run_task(
-        req.goal,
+        goal,
         req.max_spirals,
         req.model or "",
         req.provider or "",

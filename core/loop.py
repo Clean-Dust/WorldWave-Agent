@@ -17,12 +17,15 @@ from __future__ import annotations
 import sys
 import os
 import json
+import logging
 import re
 import time
 from datetime import datetime
 from typing import Callable, Optional, Dict, Any, List
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+logger = logging.getLogger("ww.loop")
 
 from core.state import StateManager, SpiralState
 from core.llm import create_llm
@@ -272,6 +275,7 @@ class Worldwave:
         Prefer wrapping the full run with ``bind_entity`` at the server layer.
         """
         self._current_entity_id = entity_id or ""
+        self._current_platform = (platform or "").strip()
         if entity_id:
             try:
                 from core.memory.entity_scope import peek_request_entity, set_request_entity
@@ -1020,6 +1024,7 @@ class Worldwave:
         self._log("## Worldwave v0.2 LLM Driven version")
         self._log("## Goal: " + goal)
         self.running = True
+        self._run_error_reason = ""  # LLM/API hard fail → status=error (not silent interrupt)
 
         # Per-user/chat conversation window (do not share default session across users)
         conv_window = conversation_window or ""
@@ -1027,6 +1032,7 @@ class Worldwave:
         # Without this, a prior rewind leaves active_interrupts=1 and the next
         # /ww/run (same or different window) exits with spirals_completed=0
         # and empty response while summary is a metrics dict.
+        # BEAM P0.2: always prepare_for_run so prior interrupted checkpoint is not poison.
         try:
             if hasattr(self.state, "prepare_for_run"):
                 self.state.prepare_for_run(conv_window)
@@ -1042,6 +1048,50 @@ class Worldwave:
         # Exposed for remember auto-repair when the model calls tools with empty args
         self._last_goal = user_goal_raw
         self._current_goal = user_goal_raw
+
+        # ── BEAM P0.5: probe retrieval floor (product /ww/run path) ──
+        # Force memory-first instructions + optional pre-search atom evidence.
+        beam_probe = False
+        try:
+            from core.beam_remediation import (
+                build_beam_probe_goal,
+                build_retrieval_floor_context,
+                is_beam_ingest_goal,
+                is_beam_platform,
+                is_beam_probe_goal,
+            )
+
+            plat = str(getattr(self, "_current_platform", "") or "")
+            if is_beam_platform(
+                platform=plat,
+                conversation_window=conv_window,
+                entity_id=str(getattr(self, "_current_entity_id", "") or ""),
+            ) and is_beam_probe_goal(user_goal_raw, platform=plat or "beam"):
+                beam_probe = True
+                retrieved = ""
+                try:
+                    if self.memory is not None:
+                        retrieved = build_retrieval_floor_context(
+                            self.memory,
+                            user_goal_raw,
+                            entity_id=str(
+                                getattr(self, "_current_entity_id", "") or ""
+                            ),
+                        )
+                except Exception as ret_err:
+                    logger.debug("beam pre-search skipped: %s", ret_err)
+                goal = build_beam_probe_goal(
+                    user_goal_raw, retrieved=retrieved
+                )
+                user_goal_raw = goal
+                self._last_goal = user_goal_raw
+                self._current_goal = user_goal_raw
+                self._log("## BEAM probe retrieval floor applied")
+            elif is_beam_ingest_goal(user_goal_raw):
+                self._log("## BEAM ingest goal (no probe wrap)")
+        except Exception as beam_err:
+            logger.debug("beam floor wrap skipped: %s", beam_err)
+            beam_probe = False
 
         # ── Coding mode auto (PM 0.10): essence + model route + loop bridge ──
         try:
@@ -1136,8 +1186,20 @@ class Worldwave:
 
         # ── Reflex Arc: fast path for trivially simple tasks ──
         # Skip reflex arc for image/photo tasks — they need vision tools
+        # BEAM probes: skip pure reflex when no pre-search evidence so the model
+        # does not abstain without calling memory tools (P0.5 floor).
         is_image_task = "[Photo received:" in goal or "[Attached image:" in goal or image_path
-        if self.config.get("reflex_arc_enabled", True) and not is_image_task:
+        skip_reflex_beam = False
+        if beam_probe:
+            # Allow reflex only when MEMORY EVIDENCE was injected (answer from it)
+            if "=== MEMORY EVIDENCE" not in goal and "retrieved:" not in goal.lower():
+                skip_reflex_beam = True
+                self._log("## BEAM probe: skip reflex (force spiral memory tools)")
+        if (
+            self.config.get("reflex_arc_enabled", True)
+            and not is_image_task
+            and not skip_reflex_beam
+        ):
             # Always try reflex arc first — no complexity gating
             self._log("## ⚡ Reflex Arc — attempting fast path")
             reflex_result = self._reflex_arc_execute(goal)
@@ -1632,19 +1694,22 @@ class Worldwave:
                 break
             except Exception as e:
                 self._log("## Error: " + str(e))
-                self.state.interrupt("error: " + str(e))
+                err_s = str(e)
+                self._run_error_reason = err_s[:300]
+                # Mark checkpoint for diagnostics, but next prepare_for_run clears poison.
+                self.state.interrupt("error: " + err_s)
                 self.checkpoint_db.save_checkpoint(
                     session_id=self.state.session_id,
                     spiral_number=self.state.current_spiral,
                     phase=self.state.current_phase,
-                    scratchpad=f"Error: {str(e)}",
+                    scratchpad=f"Error: {err_s}",
                     interrupted=True,
-                    interrupt_reason="error: " + str(e),
+                    interrupt_reason="error: " + err_s,
                     resume_data={"goal": goal},
                     context_snapshot=build_context_snapshot(
                         goal=goal, spiral_number=self.state.current_spiral, phase=self.state.current_phase,
                         steps_completed=self._steps_completed, steps_total=self._steps_total,
-                        extra={"error": str(e)},
+                        extra={"error": err_s},
                     ),
                 )
                 break
@@ -1718,9 +1783,15 @@ class Worldwave:
             logger.debug("ingest_turn (assistant) skipped: %s", e)
 
         last_cp = self.state.get_last_checkpoint()
+        reason = (last_cp.interrupt_reason if last_cp else "") or ""
+        is_error = bool(
+            (getattr(self, "_run_error_reason", None) or "").strip()
+            or reason.startswith("error:")
+        )
         is_true_interrupt = bool(
             last_cp
-            and not (last_cp.interrupt_reason or "").startswith("rewind:")
+            and not reason.startswith("rewind:")
+            and not is_error
         )
         # Human-readable summary only — never put metrics/interrupt JSON here
         if results:
@@ -1732,7 +1803,14 @@ class Worldwave:
                 or last.get("summary")
                 or f"Completed {len(results)} spiral(s)"
             )
-        elif last_cp and (last_cp.interrupt_reason or "").startswith("rewind:"):
+        elif is_error:
+            summary_str = (
+                "Task failed: "
+                + (
+                    (getattr(self, "_run_error_reason", None) or reason or "error")[:200]
+                )
+            )
+        elif last_cp and reason.startswith("rewind:"):
             summary_str = (
                 "I hit an internal loop guard and stopped early. "
                 "Please restate your request and I will try a clean pass."
@@ -1744,8 +1822,14 @@ class Worldwave:
         else:
             summary_str = "No spiral steps completed for this request."
 
+        if is_error:
+            status_out = "error"
+        elif is_true_interrupt:
+            status_out = "interrupted"
+        else:
+            status_out = "completed"
         out = {
-            "status": "interrupted" if is_true_interrupt else "completed",
+            "status": status_out,
             "spirals_completed": len(results),
             "results": results,
             "session_id": self.state.session_id,
@@ -1753,6 +1837,10 @@ class Worldwave:
             # Debug metrics stay under a non-user key (Gate 0.6)
             "state_metrics": state_metrics if isinstance(state_metrics, dict) else {},
         }
+        if is_error:
+            out["error"] = (
+                (getattr(self, "_run_error_reason", None) or reason or "error")[:300]
+            )
         # Gate 0.4 / 0.6: reply-tool text → response; empty interrupted/rewound
         # runs get a user-facing recovery message (never metrics dump).
         recovery = (

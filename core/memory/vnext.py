@@ -490,6 +490,26 @@ class MemoryVNext:
         )
         self.atoms.add(exp)
 
+        # Deterministic durable-fact extract → searchable atoms (Updates same key).
+        # Default ON via WW_BEAM_FACT_EXTRACT; no LLM. Prefer user turns.
+        extracted_applied: List[dict] = []
+        if role == "user":
+            try:
+                from core.memory.fact_extract import (
+                    apply_facts_to_memory,
+                    extract_durable_facts,
+                    fact_extract_enabled,
+                )
+
+                if fact_extract_enabled():
+                    facts = extract_durable_facts(content)
+                    if facts:
+                        extracted_applied = apply_facts_to_memory(
+                            self, facts, entity_id=eid
+                        )
+            except Exception as fe:
+                logger.debug("fact_extract on ingest_turn skipped: %s", fe)
+
         return {
             "topic_id": topic.topic_id,
             "title": topic.title,
@@ -500,6 +520,8 @@ class MemoryVNext:
             "tokens": topic.token_estimate(),
             "experience_atom": exp.atom_id,
             "entity_id": eid,
+            "facts_extracted": len(extracted_applied),
+            "facts": extracted_applied,
         }
 
     def switch_topic(self, title: str = "", *, is_core: bool = False) -> dict:

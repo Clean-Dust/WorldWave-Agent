@@ -134,13 +134,21 @@ API_GOAL_MAX_CHARS = 2000
 GOAL_CHAR_BUDGET = 1800
 
 BATCH_INGEST_HEADER = (
-    "Ingest the following conversation turns into memory. "
-    "Use remember for durable user facts. Acknowledge briefly.\n\n"
+    "Ingest turns into memory. Extract and remember durable facts "
+    "(numbers, dates, names, metric updates) via remember tools — "
+    "not only ack. Store key=value for search. Ack briefly.\n\n"
 )
 ASSISTANT_NOTE_HEADER = (
     "Note this prior assistant message for conversation continuity "
     "(do not invent new user facts):\n"
 )
+# Turn-mode user turns: light extract/remember nudge (fits goal budget)
+TURN_INGEST_PREFIX = (
+    "Extract and remember durable facts via remember tools, then ack:\n"
+)
+
+# Consecutive empty LLM answers → abort run (chat-9 API collapse)
+API_EMPTY_COLLAPSE_THRESHOLD = 10
 
 
 def hard_split_goal(
@@ -234,7 +242,7 @@ def _pack_turn_goals(
         if role == "assistant":
             goals.extend(hard_split_goal(ASSISTANT_NOTE_HEADER, content, budget))
         else:
-            goals.extend(hard_split_goal("", content, budget))
+            goals.extend(hard_split_goal(TURN_INGEST_PREFIX, content, budget))
     return goals
 
 
@@ -332,6 +340,36 @@ def ingest_ww(
     }
 
 
+def build_ww_probe_goal(question: str, *, retrieved: str = "") -> str:
+    """Build product-path probe goal with retrieval-floor instructions.
+
+    Path chosen: goal wrapper + optional pre-search evidence block (belt).
+    Live HTTP memory search is not required; /ww/run with platform=beam applies
+    the same wrap in product code (core.beam_remediation + loop).
+    """
+    try:
+        from core.beam_remediation import build_beam_probe_goal
+
+        return build_beam_probe_goal(question, retrieved=retrieved)
+    except Exception:
+        # Offline import fallback (scripts-only env)
+        prefix = (
+            "You are answering a long-conversation memory probe.\n"
+            "1) Call memory search/recall tools first with the question and key "
+            "entities/numbers.\n"
+            "2) If search returns evidence, answer ONLY from evidence; never say "
+            "you have no record when hits exist.\n"
+            "3) If search is empty, abstain honestly in one short sentence.\n"
+            "4) Obey any format implied by the question (code fences, lists).\n"
+            "5) User-facing reply via respond/reflex_text only — no tool dumps.\n\n"
+            "=== QUESTION ===\n"
+        )
+        g = prefix + (question or "")
+        if retrieved:
+            g += "\n\n=== MEMORY EVIDENCE (pre-search) ===\n" + retrieved
+        return g
+
+
 def probe_ww(
     client: WWRunClient,
     entity_id: str,
@@ -346,8 +384,9 @@ def probe_ww(
             "raw": {"dry_run": True},
             "status": "dry_run",
         }
+    goal = build_ww_probe_goal(question)
     raw = client.run(
-        question,
+        goal,
         entity_id=entity_id,
         platform="beam",
         user_id=f"beam_u_{chat.chat_id}",
@@ -355,7 +394,11 @@ def probe_ww(
         max_spirals=5,
     )
     resp = str(raw.get("response") or "").strip()
-    return {"llm_response": resp, "raw": raw, "status": raw.get("status")}
+    status = raw.get("status")
+    if not resp and status not in ("interrupted", "error"):
+        # Empty answer without interrupt mark → API/empty product path
+        status = status or "api_empty"
+    return {"llm_response": resp, "raw": raw, "status": status}
 
 
 # Default B1 window large enough for full 100K chat text; override via --b1-max-chars.
@@ -462,6 +505,14 @@ def _simple_llm_answer(
         return ""
 
 
+class ApiCollapseError(RuntimeError):
+    """Raised when ≥N consecutive empty llm_response suggest API death."""
+
+    def __init__(self, message: str, *, consecutive: int = 0):
+        super().__init__(message)
+        self.consecutive = consecutive
+
+
 def run_system_on_chat(
     system: str,
     chat: BeamChat,
@@ -483,6 +534,7 @@ def run_system_on_chat(
     judge_model: str,
     use_llm_judge: bool,
     answer_model: str = "",
+    collapse_guard: Optional[Any] = None,
 ) -> List[dict]:
     rows: List[dict] = []
     # Resume: skip WW ingest when all expected probes for this chat are already done
@@ -534,6 +586,14 @@ def run_system_on_chat(
     ability_filter = set(abilities) if abilities else None
     seen_abilities: List[str] = []
     ans_model = (answer_model or "").strip() or None
+    if collapse_guard is None and not dry_run:
+        try:
+            from core.beam_remediation import ApiCollapseGuard
+
+            collapse_guard = ApiCollapseGuard(API_EMPTY_COLLAPSE_THRESHOLD)
+        except Exception:
+            collapse_guard = None
+
     for probe in chat.probes:
         if ability_filter and probe.ability not in ability_filter:
             continue
@@ -606,6 +666,43 @@ def run_system_on_chat(
                 model=judge_model,
                 temperature=DEFAULT_JUDGE_TEMP,
             )
+
+        # Normalize empty-response status for scoring/debug
+        raw_status = ""
+        if isinstance(raw_extract, dict):
+            raw_status = str(raw_extract.get("status") or "")
+        interrupted = raw_status in ("interrupted", "error")
+        if (
+            not dry_run
+            and not str(llm_response or "").strip()
+            and not interrupted
+        ):
+            if isinstance(raw_extract, dict):
+                raw_extract = dict(raw_extract)
+                raw_extract["status"] = "api_empty"
+            else:
+                raw_extract = {"status": "api_empty", "system": system}
+
+        if collapse_guard is not None and not dry_run:
+            hit = False
+            try:
+                hit = collapse_guard.observe(
+                    str(llm_response or ""),
+                    interrupted=interrupted,
+                )
+            except Exception:
+                hit = False
+            if hit:
+                msg = getattr(collapse_guard, "reason", "") or (
+                    "api_collapse_suspected"
+                )
+                print(f"[FATAL] {msg}", flush=True)
+                raise ApiCollapseError(
+                    msg,
+                    consecutive=int(
+                        getattr(collapse_guard, "consecutive_empty", 0) or 0
+                    ),
+                )
 
         row = {
             "key": key,
@@ -964,6 +1061,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     all_rows: List[dict] = []
     processed_chat_ids: List[str] = []
+    # Shared across systems/chats so API death mid-100K aborts the whole run
+    try:
+        from core.beam_remediation import ApiCollapseGuard
+
+        collapse_guard = ApiCollapseGuard(API_EMPTY_COLLAPSE_THRESHOLD)
+    except Exception:
+        collapse_guard = None
+
     for cid in chat_ids:
         try:
             chat = load_chat(args.scale, cid, data_root)
@@ -978,27 +1083,58 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             done: Set[str] = set()
             if args.resume:
                 done = _load_done_keys(answers_path)
-            rows = run_system_on_chat(
-                system,
-                chat,
-                entity_id=entity_id,
-                client=client,
-                dry_run=bool(args.dry_run),
-                max_abilities=int(args.max_abilities),
-                abilities=ability_list,
-                done=done,
-                answers_path=answers_path,
-                seed=args.seed,
-                run_tag=run_tag,
-                ingest_mode=args.ingest_mode,
-                batch_n=args.batch_n,
-                max_turns=args.max_turns,
-                b1_max_chars=args.b1_max_chars,
-                b2_top_k=args.b2_top_k,
-                judge_model=args.judge_model,
-                use_llm_judge=bool(args.llm_judge),
-                answer_model=answer_model,
-            )
+            try:
+                rows = run_system_on_chat(
+                    system,
+                    chat,
+                    entity_id=entity_id,
+                    client=client,
+                    dry_run=bool(args.dry_run),
+                    max_abilities=int(args.max_abilities),
+                    abilities=ability_list,
+                    done=done,
+                    answers_path=answers_path,
+                    seed=args.seed,
+                    run_tag=run_tag,
+                    ingest_mode=args.ingest_mode,
+                    batch_n=args.batch_n,
+                    max_turns=args.max_turns,
+                    b1_max_chars=args.b1_max_chars,
+                    b2_top_k=args.b2_top_k,
+                    judge_model=args.judge_model,
+                    use_llm_judge=bool(args.llm_judge),
+                    answer_model=answer_model,
+                    collapse_guard=collapse_guard,
+                )
+            except ApiCollapseError as ace:
+                print(
+                    f"[FATAL] api_collapse_suspected — aborting run: {ace}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                # Still write partial meta so operators can diagnose
+                meta_abort = {
+                    "git_sha": _git_sha(),
+                    "scale": args.scale,
+                    "systems": systems,
+                    "run_tag": run_tag,
+                    "protocol_complete": False,
+                    "official_claim": False,
+                    "api_collapse_suspected": True,
+                    "api_collapse_detail": str(ace),
+                    "results_dir": str(out_dir),
+                    "timestamps": {
+                        "aborted": datetime.now(timezone.utc).isoformat(),
+                    },
+                }
+                try:
+                    (out_dir / "meta.json").write_text(
+                        json.dumps(meta_abort, indent=2, default=str),
+                        encoding="utf-8",
+                    )
+                except Exception:
+                    pass
+                return 3
             all_rows.extend(rows)
             print(
                 f"[{system}] chat={cid} turns={len(chat.turns)} "
