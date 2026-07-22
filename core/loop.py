@@ -1052,10 +1052,13 @@ class Worldwave:
         # ── BEAM P0.5: probe retrieval floor (product /ww/run path) ──
         # Force memory-first instructions + optional pre-search atom evidence.
         beam_probe = False
+        self._beam_retrieval = None  # state_metrics.beam_retrieval for runner
         try:
             from core.beam_remediation import (
+                beam_retrieval_metrics,
                 build_beam_probe_goal,
-                build_retrieval_floor_context,
+                collect_atom_evidence,
+                format_retrieval_block,
                 is_beam_ingest_goal,
                 is_beam_platform,
                 is_beam_probe_goal,
@@ -1069,24 +1072,35 @@ class Worldwave:
             ) and is_beam_probe_goal(user_goal_raw, platform=plat or "beam"):
                 beam_probe = True
                 retrieved = ""
+                snippets: list = []
                 try:
                     if self.memory is not None:
-                        retrieved = build_retrieval_floor_context(
+                        snippets = collect_atom_evidence(
                             self.memory,
                             user_goal_raw,
                             entity_id=str(
                                 getattr(self, "_current_entity_id", "") or ""
                             ),
                         )
+                        retrieved = format_retrieval_block(snippets)
                 except Exception as ret_err:
                     logger.debug("beam pre-search skipped: %s", ret_err)
+                    snippets = []
+                metrics = beam_retrieval_metrics(snippets)
+                self._beam_retrieval = metrics
                 goal = build_beam_probe_goal(
-                    user_goal_raw, retrieved=retrieved
+                    user_goal_raw,
+                    retrieved=retrieved,
+                    retrieval_hits=int(metrics.get("retrieval_hits") or 0),
+                    snippets=snippets,
                 )
                 user_goal_raw = goal
                 self._last_goal = user_goal_raw
                 self._current_goal = user_goal_raw
-                self._log("## BEAM probe retrieval floor applied")
+                self._log(
+                    "## BEAM probe retrieval floor applied "
+                    f"hits={metrics.get('retrieval_hits', 0)}"
+                )
             elif is_beam_ingest_goal(user_goal_raw):
                 self._log("## BEAM ingest goal (no probe wrap)")
         except Exception as beam_err:
@@ -1828,6 +1842,15 @@ class Worldwave:
             status_out = "interrupted"
         else:
             status_out = "completed"
+        sm_out = state_metrics if isinstance(state_metrics, dict) else {}
+        if not isinstance(sm_out, dict):
+            sm_out = {}
+        else:
+            sm_out = dict(sm_out)
+        # P0 polish: expose pre-search hit counts for beam_runner raw_extract
+        br = getattr(self, "_beam_retrieval", None)
+        if isinstance(br, dict) and br:
+            sm_out["beam_retrieval"] = dict(br)
         out = {
             "status": status_out,
             "spirals_completed": len(results),
@@ -1835,8 +1858,10 @@ class Worldwave:
             "session_id": self.state.session_id,
             "summary": summary_str,
             # Debug metrics stay under a non-user key (Gate 0.6)
-            "state_metrics": state_metrics if isinstance(state_metrics, dict) else {},
+            "state_metrics": sm_out,
         }
+        if isinstance(br, dict) and br:
+            out["beam_retrieval"] = dict(br)
         if is_error:
             out["error"] = (
                 (getattr(self, "_run_error_reason", None) or reason or "error")[:300]

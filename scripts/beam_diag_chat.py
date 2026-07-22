@@ -268,6 +268,21 @@ def run_diag(
             lines.append(f"- live status: `{raw.get('status')}`")
             lines.append(f"- response_chars: {len(resp)}")
             lines.append(f"- response_preview: {resp or '_(empty)_'}")
+            # Note atom / retrieval pre-search when product attaches metrics
+            sm = raw.get("state_metrics") if isinstance(raw, dict) else None
+            br = (sm or {}).get("beam_retrieval") if isinstance(sm, dict) else None
+            if not br and isinstance(raw, dict):
+                br = raw.get("beam_retrieval")
+            if isinstance(br, dict):
+                lines.append(
+                    f"- atom_search / beam_retrieval: hits={br.get('retrieval_hits')} "
+                    f"empty={br.get('retrieval_empty')}"
+                )
+            else:
+                lines.append(
+                    "- atom_search: live call completed (no beam_retrieval metrics "
+                    "on response — server may predate P0 polish)."
+                )
         except Exception as e:
             lines.append(f"- live call failed: `{e}`")
     else:
@@ -277,6 +292,10 @@ def run_diag(
         lines.append(
             "- Offline report above still compares probe keywords vs chat blob "
             "and B2 BM25 snippets."
+        )
+        lines.append(
+            "- Atom search note: available when `--live` hits a server that attaches "
+            "`state_metrics.beam_retrieval` (retrieval_hits / retrieval_empty)."
         )
     lines.append("")
     lines.append("## Notes")

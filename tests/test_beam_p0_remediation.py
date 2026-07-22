@@ -126,8 +126,11 @@ def test_fact_extract_and_ingest_updates(tmp_path, monkeypatch):
 def test_retrieval_floor_includes_atom_evidence(tmp_path, monkeypatch):
     monkeypatch.setenv("WW_MEMORY_VNEXT", "1")
     from core.beam_remediation import (
+        beam_retrieval_metrics,
         build_beam_probe_goal,
         build_retrieval_floor_context,
+        collect_atom_evidence,
+        probe_metrics_from_run_response,
     )
     from core.memory.vnext import MemoryVNext
 
@@ -140,6 +143,20 @@ def test_retrieval_floor_includes_atom_evidence(tmp_path, monkeypatch):
         )
         assert "165" in ctx
         assert "retrieved" in ctx.lower()
+
+        snips = collect_atom_evidence(
+            mv, "How many commits do I have?", entity_id=eid
+        )
+        metrics = beam_retrieval_metrics(snips)
+        assert metrics["retrieval_hits"] >= 1
+        assert metrics["retrieval_empty"] is False
+        packaged = probe_metrics_from_run_response(
+            {
+                "status": "completed",
+                "state_metrics": {"beam_retrieval": metrics},
+            }
+        )
+        assert packaged["retrieval_hits"] >= 1
 
         goal = build_beam_probe_goal(
             "How many commits do I have?", retrieved=ctx

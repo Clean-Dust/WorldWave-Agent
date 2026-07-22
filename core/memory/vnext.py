@@ -120,6 +120,15 @@ class MemoryVNext:
         self.facts = LabeledFactStore(
             data_dir=os.path.join(self.data_dir, "facts"),
         )
+        # Lightweight dated-event timeline (P1.1 / P2.2 temporal + ordering)
+        try:
+            from core.memory.timeline import TimelineStore
+
+            self.timeline = TimelineStore(
+                data_dir=os.path.join(self.data_dir, "timeline")
+            )
+        except Exception:
+            self.timeline = None  # type: ignore
         # Instance fallback only — request scope prefers ContextVar (Gate 0.2)
         self._default_entity_id: str = "default"
         # Track which entity the active working topic belongs to
@@ -510,6 +519,18 @@ class MemoryVNext:
             except Exception as fe:
                 logger.debug("fact_extract on ingest_turn skipped: %s", fe)
 
+        # Timeline events from dated user turns (P1.1)
+        timeline_events: List[dict] = []
+        if role == "user" and getattr(self, "timeline", None) is not None:
+            try:
+                from core.memory.fact_extract import apply_timeline_from_text
+
+                timeline_events = apply_timeline_from_text(
+                    self, content, entity_id=eid
+                )
+            except Exception as te:
+                logger.debug("timeline on ingest_turn skipped: %s", te)
+
         return {
             "topic_id": topic.topic_id,
             "title": topic.title,
@@ -522,6 +543,7 @@ class MemoryVNext:
             "entity_id": eid,
             "facts_extracted": len(extracted_applied),
             "facts": extracted_applied,
+            "timeline_events": len(timeline_events),
         }
 
     def switch_topic(self, title: str = "", *, is_core: bool = False) -> dict:

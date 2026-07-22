@@ -383,6 +383,8 @@ def probe_ww(
             "llm_response": "",
             "raw": {"dry_run": True},
             "status": "dry_run",
+            "retrieval_hits": 0,
+            "retrieval_empty": True,
         }
     goal = build_ww_probe_goal(question)
     raw = client.run(
@@ -398,7 +400,25 @@ def probe_ww(
     if not resp and status not in ("interrupted", "error"):
         # Empty answer without interrupt mark → API/empty product path
         status = status or "api_empty"
-    return {"llm_response": resp, "raw": raw, "status": status}
+    # P0 polish: retrieval hit counts from state_metrics.beam_retrieval
+    try:
+        from core.beam_remediation import probe_metrics_from_run_response
+
+        m = probe_metrics_from_run_response(raw if isinstance(raw, dict) else {})
+    except Exception:
+        m = {
+            "retrieval_hits": 0,
+            "retrieval_empty": True,
+            "status": status or "completed",
+        }
+    out_status = status or m.get("status") or "completed"
+    return {
+        "llm_response": resp,
+        "raw": raw,
+        "status": out_status,
+        "retrieval_hits": int(m.get("retrieval_hits") or 0),
+        "retrieval_empty": bool(m.get("retrieval_empty", True)),
+    }
 
 
 # Default B1 window large enough for full 100K chat text; override via --b1-max-chars.
@@ -704,6 +724,39 @@ def run_system_on_chat(
                     ),
                 )
 
+        # P0 polish: WW probe rows include retrieval_hits / retrieval_empty / status
+        re_keys = (
+            "status",
+            "prompt_chars",
+            "system",
+            "dry_run",
+            "retrieval_hits",
+            "retrieval_empty",
+        )
+        raw_row: Dict[str, Any] = {}
+        if isinstance(raw_extract, dict):
+            for k in re_keys:
+                if k in raw_extract:
+                    raw_row[k] = raw_extract[k]
+            # Nested raw.state_metrics.beam_retrieval fallback
+            if "retrieval_hits" not in raw_row and system == "ww":
+                try:
+                    from core.beam_remediation import probe_metrics_from_run_response
+
+                    nested = raw_extract.get("raw") if isinstance(
+                        raw_extract.get("raw"), dict
+                    ) else raw_extract
+                    m = probe_metrics_from_run_response(nested or {})
+                    raw_row["retrieval_hits"] = m.get("retrieval_hits", 0)
+                    raw_row["retrieval_empty"] = m.get("retrieval_empty", True)
+                    if "status" not in raw_row:
+                        raw_row["status"] = m.get("status") or raw_extract.get(
+                            "status"
+                        )
+                except Exception:
+                    pass
+            if "status" not in raw_row and raw_extract.get("status"):
+                raw_row["status"] = raw_extract.get("status")
         row = {
             "key": key,
             "system": system,
@@ -714,11 +767,7 @@ def run_system_on_chat(
             "probe_index": probe.index,
             "question": probe.question,
             "llm_response": llm_response,
-            "raw_extract": {
-                k: raw_extract.get(k)
-                for k in ("status", "prompt_chars", "system", "dry_run")
-                if isinstance(raw_extract, dict) and k in raw_extract
-            },
+            "raw_extract": raw_row,
             "judgment": judgment,
             "seed": seed,
             "run_tag": run_tag,
